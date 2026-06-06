@@ -19,7 +19,26 @@ function copyDir(src: string, dest: string): void {
   }
 }
 
+function isDirectoryEmpty(dir: string): boolean {
+  try {
+    return fs.existsSync(dir) && fs.readdirSync(dir).length === 0;
+  } catch {
+    return false;
+  }
+}
+
 declare const __APP_VERSION__: string;
+
+function getAppVersion(): string {
+  if (typeof __APP_VERSION__ !== "undefined") return __APP_VERSION__;
+  try {
+    const pkgPath = path.join(process.cwd(), "package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+    return pkg.version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 function compareVersions(a: string, b: string): number {
   const pa = a
@@ -41,16 +60,17 @@ function compareVersions(a: string, b: string): number {
 }
 
 function initializeData(): void {
-  const srcDir = path.join(process.resourcesPath, "data");
+  const srcDir = app.isPackaged ? path.join(process.resourcesPath, "data") : path.join(process.cwd(), "data");
   const destDir = path.join(app.getPath("userData"), "data");
   const versionFilePath = path.join(destDir, "version.txt");
+  const appVersion = getAppVersion();
 
   let shouldForceReplace = false;
   if (!fs.existsSync(versionFilePath)) {
     shouldForceReplace = true;
   } else {
     const localVersion = fs.readFileSync(versionFilePath, "utf-8").trim();
-    if (compareVersions(localVersion, __APP_VERSION__) < 0) {
+    if (compareVersions(localVersion, appVersion) < 0) {
       shouldForceReplace = true;
     }
   }
@@ -64,12 +84,14 @@ function initializeData(): void {
     }
     if (!fs.existsSync(targetDir)) {
       copyDir(path.join(srcDir, dir), targetDir);
+    } else if (isDirectoryEmpty(targetDir)) {
+      copyDir(path.join(srcDir, dir), targetDir);
     }
   }
 
   if (shouldForceReplace) {
     fs.mkdirSync(destDir, { recursive: true });
-    fs.writeFileSync(versionFilePath, `${__APP_VERSION__}\n`, "utf-8");
+    fs.writeFileSync(versionFilePath, `${appVersion}\n`, "utf-8");
   }
 }
 
@@ -232,6 +254,7 @@ app.whenReady().then(async () => {
       initializeData();
       servePath = path.join(app.getPath("userData"), "data", "serve", "app.js");
     } else {
+      initializeData();
       // 开发环境：直接加载源码（tsx 通过 -r tsx 注册了 require 钩子）
       servePath = path.join(process.cwd(), "src", "app.ts");
     }
