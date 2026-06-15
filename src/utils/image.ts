@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import fss from "fs";
 import path from "node:path";
 import sharp from "sharp";
+import pLimit from "p-limit";
 
 /**
  * 图片缩放选项
@@ -23,6 +24,25 @@ const defaultResizeOptions: Required<ResizeOptions> = {
   fit: "inside",
   withoutEnlargement: true,
 };
+
+const THUMBNAIL_IMAGE_EXTENSIONS = new Set([
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".gif",
+  ".avif",
+  ".tif",
+  ".tiff",
+  ".svg",
+]);
+const thumbnailLimit = pLimit(2);
+const thumbnailJobs = new Map<string, Promise<string | null>>();
+sharp.concurrency(2);
+
+export function isThumbnailImagePath(filePath: string) {
+  return THUMBNAIL_IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
 
 /**
  * 将图片缩放后写入目标路径（自动创建父目录）。
@@ -58,6 +78,9 @@ export async function ensureThumbnail(
   thumbnailPath: string,
   size?: ThumbnailSize,
 ): Promise<string | null> {
+  if (!isThumbnailImagePath(originalPath)) {
+    return null;
+  }
   // 小图已存在，直接返回
   if (fss.existsSync(thumbnailPath)) {
     return thumbnailPath;
@@ -66,7 +89,11 @@ export async function ensureThumbnail(
   if (!fss.existsSync(originalPath)) {
     return null;
   }
-  try {
+  const existing = thumbnailJobs.get(thumbnailPath);
+  if (existing) return existing;
+  const job = thumbnailLimit(async () => {
+    if (fss.existsSync(thumbnailPath)) return thumbnailPath;
+    try {
     if (size?.type === "percentage") {
       // 百分比缩放：先获取原图尺寸，再等比计算目标尺寸
       const meta = await sharp(originalPath).metadata();
@@ -90,8 +117,11 @@ export async function ensureThumbnail(
     }
     console.info(`[${thumbnailPath}] 小图生成成功`);
     return thumbnailPath;
-  } catch (e) {
-    console.warn("[image] 生成缩略图失败:", e);
-    return null;
-  }
+    } catch (e) {
+      console.warn("[image] 生成缩略图失败:", e);
+      return null;
+    }
+  }).finally(() => thumbnailJobs.delete(thumbnailPath));
+  thumbnailJobs.set(thumbnailPath, job);
+  return job;
 }

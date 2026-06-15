@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { z, ZodTypeAny } from "zod";
+import { error } from "@/lib/responseFormat";
 
 import { zhCN } from "zod/locales";
 
@@ -15,10 +16,15 @@ export function validateFields(
     const data = req[source];
     const parseResult = schema.safeParse(data);
     if (!parseResult.success) {
-      const errors = parseResult.error.issues.map((issue) => `字段 ${issue.path.join(".")} ${issue.message}`);
-      console.error(errors);
-      return res.status(400).json({ message: "参数错误", errors });
+      const issues = parseResult.error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message,
+        code: issue.code,
+      }));
+      console.error(issues);
+      return res.status(400).send(error("参数错误", { issues }));
     }
+    (req as any)[source] = parseResult.data;
     next();
   };
 }

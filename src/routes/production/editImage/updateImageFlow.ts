@@ -1,38 +1,33 @@
 import express from "express";
-import u from "@/utils";
 import { z } from "zod";
-import { success } from "@/lib/responseFormat";
+import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { ImageFlowValidationError, saveImageFlow } from "@/services/imageFlow";
 const router = express.Router();
 
 export default router.post(
   "/",
   validateFields({
-    edges: z.any(),
-    nodes: z.any(),
     flowId: z.number(),
+    projectId: z.number().optional(),
+    scriptId: z.number().optional(),
+    targetType: z.enum(["deriveAsset", "storyboard"]).optional(),
+    targetId: z.number().optional(),
+    nodes: z.array(z.any()),
+    edges: z.array(z.any()),
+    selectedImageUrl: z.string().optional(),
+    selectedMediaPath: z.string().optional(),
   }),
   async (req, res) => {
-    const { edges, nodes, flowId } = req.body;
-    nodes.forEach((node: any) => {
-      if (node.type == "upload") {
-        node.data.image = node.data.image ? u.replaceUrl(node.data.image) : "";
+    console.warn("[deprecated] use /production/editImage/saveImageFlow for flow upsert");
+    try {
+      const flowId = await saveImageFlow(req.body);
+      res.status(200).send(success({ flowId, id: flowId }));
+    } catch (cause) {
+      if (cause instanceof ImageFlowValidationError) {
+        return res.status(400).send(error(cause.message, { issues: cause.issues }));
       }
-
-      if (node.type == "generated") {
-        node.data.generatedImage = node.data.generatedImage ? u.replaceUrl(node.data.generatedImage) : "";
-        node.data.references.forEach((item: { image: string }) => {
-          item.image = item.image ? u.replaceUrl(item.image) : "";
-        });
-      }
-    });
-
-    await u
-      .db("o_imageFlow")
-      .where("id", flowId)
-      .update({
-        flowData: JSON.stringify({ edges, nodes }),
-      });
-    return res.status(200).send(success());
+      throw cause;
+    }
   },
 );

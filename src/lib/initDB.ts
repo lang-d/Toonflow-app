@@ -2,13 +2,17 @@ import { Knex } from "knex";
 import { v4 as uuid } from "uuid";
 import { getEmbedding } from "@/utils/agent/embedding";
 
-interface TableSchema {
+export interface TableSchema {
   name: string;
   builder: (table: Knex.CreateTableBuilder) => void;
   initData?: (knex: Knex) => Promise<void>;
 }
 
-export default async (knex: Knex, forceInit: boolean = false): Promise<void> => {
+export default async (
+  knex: Knex,
+  forceInit: boolean = false,
+  options: { includeTables?: Set<string>; excludeTables?: Set<string> } = {},
+): Promise<void> => {
   const tables: TableSchema[] = [
     // 用户表
     {
@@ -44,6 +48,20 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.integer("userId");
         table.primary(["id"]);
         table.unique(["id"]);
+      },
+    },
+    {
+      name: "o_projectStorage",
+      builder: (table) => {
+        table.integer("projectId").notNullable().primary();
+        table.string("storageKey").notNullable().unique();
+        table.integer("revision").notNullable().defaultTo(1);
+        table.integer("snapshotRevision").notNullable().defaultTo(0);
+        table.string("snapshotState").notNullable().defaultTo("stale");
+        table.integer("lastSnapshotAt");
+        table.integer("lastChangedAt");
+        table.text("errorReason");
+        table.index(["snapshotState", "revision"], "idx_project_storage_snapshot");
       },
     },
     //风格表
@@ -320,18 +338,75 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
       name: "o_tasks",
       builder: (table) => {
         table.integer("id").notNullable();
+        table.string("taskId");
         table.integer("projectId");
+        table.integer("scriptId");
         table.string("taskClass");
+        table.string("taskType");
+        table.string("status");
+        table.string("phase");
+        table.float("progress");
+        table.string("targetType");
+        table.string("targetId");
+        table.string("nodeId");
+        table.string("businessType");
+        table.integer("businessId");
+        table.string("handler");
+        table.text("payloadJson");
+        table.text("resultJson");
+        table.integer("priority").defaultTo(0);
+        table.integer("availableAt");
+        table.string("leaseOwner");
+        table.integer("leaseExpiresAt");
+        table.integer("attempt").defaultTo(0);
+        table.integer("maxAttempts").defaultTo(1);
+        table.integer("version").defaultTo(1);
+        table.string("providerTaskId");
+        table.string("idempotencyKey");
         table.string("relatedObjects");
         table.string("model");
         table.text("describe");
         table.string("state");
+        table.integer("episode");
         table.integer("startTime");
+        table.integer("createdAt");
+        table.integer("updateTime");
+        table.integer("finishTime");
         table.text("reason");
         table.primary(["id"]);
         table.unique(["id"]);
+        table.unique(["taskId"]);
+        table.index(["projectId", "status", "updateTime"], "idx_tasks_project_status");
+        table.index(["taskType", "status", "updateTime"], "idx_tasks_type_status");
+        table.index(["status", "availableAt", "priority"], "idx_tasks_dispatch");
+        table.index(["leaseOwner", "leaseExpiresAt"], "idx_tasks_lease");
+        table.index(["businessType", "businessId"], "idx_tasks_business");
       },
       initData: async (knex) => {},
+    },
+    {
+      name: "o_taskEvent",
+      builder: (table) => {
+        table.increments("id").primary();
+        table.string("taskId").notNullable();
+        table.integer("legacyTaskId");
+        table.integer("version").notNullable();
+        table.string("taskType").notNullable();
+        table.integer("projectId");
+        table.integer("scriptId");
+        table.string("targetType");
+        table.string("targetId");
+        table.string("nodeId");
+        table.string("status").notNullable();
+        table.string("phase");
+        table.float("progress");
+        table.text("resultJson");
+        table.text("reason");
+        table.integer("createdAt").notNullable();
+        table.index(["taskId", "version"], "idx_task_event_task_version");
+        table.index(["projectId", "scriptId", "id"], "idx_task_event_scope");
+        table.index(["createdAt"], "idx_task_event_created");
+      },
     },
     //提示词表
     {
@@ -499,6 +574,7 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.integer("flowId"); //工作流id
         table.integer("index");
         table.integer("createTime");
+        table.text("referenceImages").notNullable().defaultTo("[]");
         table.primary(["id"]);
         table.unique(["id"]);
       },
@@ -534,6 +610,67 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.unique(["id"]);
       },
     },
+    {
+      name: "o_videoGenerationTask",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("videoId");
+        table.integer("projectId");
+        table.integer("scriptId");
+        table.text("model");
+        table.string("vendorId");
+        table.integer("taskCenterId");
+        table.integer("payloadVersion");
+        table.text("requestJson");
+        table.string("submitId");
+        table.string("officialTaskId");
+        table.string("historyRecordId");
+        table.string("providerAccountId");
+        table.string("providerModelKey");
+        table.integer("providerSubmittedAt");
+        table.string("phase");
+        table.string("status");
+        table.string("state");
+        table.text("errorReason");
+        table.text("rawOutput");
+        table.integer("nextPollTime");
+        table.integer("nextSubmitTime");
+        table.integer("pollCount");
+        table.integer("submitAttemptCount");
+        table.integer("capacityWaitStartedAt");
+        table.integer("confirmStartedAt");
+        table.integer("confirmDeadline");
+        table.integer("remoteConfirmedAt");
+        table.string("lastProviderStatus");
+        table.string("lastProviderCode");
+        table.integer("providerQueueStatus");
+        table.integer("providerQueueIndex");
+        table.integer("providerQueueLength");
+        table.integer("startTime");
+        table.integer("updateTime");
+        table.integer("finishTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
+    {
+      name: "o_videoProviderCapacity",
+      builder: (table) => {
+        table.integer("id").primary();
+        table.string("vendorId").notNullable();
+        table.string("providerAccountId").notNullable().defaultTo("default");
+        table.string("providerModelKey").notNullable();
+        table.integer("capacityBlocked").notNullable().defaultTo(0);
+        table.integer("blockedUntil");
+        table.string("lastProviderCode");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.unique(["vendorId", "providerAccountId", "providerModelKey"], {
+          indexName: "uq_video_provider_capacity",
+        });
+        table.index(["providerModelKey", "blockedUntil"], "idx_video_provider_capacity_schedule");
+      },
+    },
     // 视频轨道
     {
       name: "o_videoTrack",
@@ -551,7 +688,59 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.unique(["id"]);
       },
     },
+    {
+      name: "o_workbenchMergedReference",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId").notNullable();
+        table.integer("trackId").notNullable();
+        table.string("mergeType").notNullable();
+        table.text("name");
+        table.text("filePath").notNullable();
+        table.string("fileType").notNullable();
+        table.text("prompt");
+        table.text("sourceRefs").notNullable();
+        table.integer("position").notNullable();
+        table.string("state").notNullable();
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+        table.index(["projectId", "scriptId", "trackId"], "idx_merged_reference_owner");
+        table.index(["trackId", "state"], "idx_merged_reference_track_state");
+      },
+    },
     //供应商配置表
+    {
+      name: "o_directorAsset",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId");
+        table.integer("flowId");
+        table.string("nodeId").notNullable();
+        table.string("targetType");
+        table.integer("targetId");
+        table.integer("assetId").notNullable();
+        table.integer("imageId").notNullable();
+        table.string("assetType").notNullable();
+        table.text("name").notNullable();
+        table.text("promptFragment");
+        table.text("sourceRefs").notNullable();
+        table.text("camera");
+        table.text("stageDraft");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+        table.index(["projectId", "scriptId"], "idx_director_asset_project_script");
+        table.index(["assetId"], "idx_director_asset_asset");
+        table.index(["flowId", "nodeId"], "idx_director_asset_flow_node");
+        table.index(["targetType", "targetId"], "idx_director_asset_target");
+        table.index(["assetType"], "idx_director_asset_type");
+      },
+    },
     {
       name: "o_vendorConfig",
       builder: (table) => {
@@ -578,6 +767,12 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
           },
           {
             id: "atlascloud",
+            inputValues: "{}",
+            models: "[]",
+            enable: 0,
+          },
+          {
+            id: "dreamina",
             inputValues: "{}",
             models: "[]",
             enable: 0,
@@ -927,12 +1122,14 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
             state: 1,
           },
         ];
-        await Promise.all(
-          list.map(async (item) => {
-            const embedding = await getEmbedding(item.description);
-            item.embedding = JSON.stringify(embedding);
-          }),
-        );
+        if (process.env.TOONFLOW_SKIP_SKILL_EMBEDDINGS !== "1") {
+          await Promise.all(
+            list.map(async (item) => {
+              const embedding = await getEmbedding(item.description);
+              item.embedding = JSON.stringify(embedding);
+            }),
+          );
+        }
         await knex("o_skillList").insert(list);
       },
     },
@@ -1033,9 +1230,39 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.unique(["assetsAudioId", "assetsRoleId"]);
       },
     },
+    {
+      name: "o_editImageTask",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId");
+        table.integer("scriptId");
+        table.integer("deriveAssetId");
+        table.string("targetType");
+        table.integer("targetId");
+        table.integer("flowId");
+        table.text("nodeId");
+        table.text("references");
+        table.text("model");
+        table.text("quality");
+        table.text("ratio");
+        table.text("prompt");
+        table.string("status");
+        table.string("state");
+        table.text("url");
+        table.text("reason");
+        table.integer("taskCenterId");
+        table.integer("createTime");
+        table.integer("updateTime");
+        table.primary(["id"]);
+        table.unique(["id"]);
+      },
+    },
   ];
 
+  const pendingInitData: TableSchema[] = [];
   for (const t of tables) {
+    if (options.includeTables && !options.includeTables.has(t.name)) continue;
+    if (options.excludeTables?.has(t.name)) continue;
     const tableExists = await knex.schema.hasTable(t.name);
     if (!tableExists || forceInit) {
       if (tableExists && forceInit) {
@@ -1045,10 +1272,11 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         console.log("[初始化数据库] 创建数据表:", t.name);
       }
       await knex.schema.createTable(t.name, t.builder);
-      if (t.initData) {
-        await t.initData(knex);
-        console.log("[初始化数据库] 表数据初始化:", t.name);
-      }
+      if (t.initData) pendingInitData.push(t);
     }
+  }
+  for (const t of pendingInitData) {
+    await t.initData?.(knex);
+    console.log("[初始化数据库] 表数据初始化:", t.name);
   }
 };

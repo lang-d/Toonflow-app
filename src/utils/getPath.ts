@@ -1,23 +1,13 @@
-import path from "path";
 import isPathInside from "is-path-inside";
+import path from "path";
+import { getDataPath } from "@/services/storagePaths";
 
 export default (fileName?: string[] | string) => {
-  let basePath: string;
-  if (typeof process.versions?.electron !== "undefined") {
-    const { app } = require("electron");
-    const userDataDir: string = app.getPath("userData");
-    basePath = path.join(userDataDir, "data");
-  } else {
-    basePath = path.join(process.cwd(), "data");
-  }
+  const basePath = getDataPath();
   if (fileName) {
-    let dbPath: string;
-    if (Array.isArray(fileName)) {
-      dbPath = path.resolve(basePath, ...fileName);
-    } else {
-      dbPath = path.resolve(basePath, fileName);
-    }
-    if (!isPathInside(dbPath, basePath) && dbPath !== basePath) {
+    const dbPath = getDataPath(fileName);
+    const allowedRoots = [basePath, getDataPath("oss"), getDataPath("models"), getDataPath("serve"), getDataPath("web")];
+    if (!allowedRoots.some((root) => dbPath === root || isPathInside(dbPath, root))) {
       throw new Error("路径逃逸错误，路径必须在数据目录内");
     }
     return dbPath;
@@ -26,7 +16,7 @@ export default (fileName?: string[] | string) => {
 };
 
 export function isEletron() {
-  if (typeof process.versions?.electron !== "undefined") {
+  if (typeof process.versions?.electron !== "undefined" && process.env.TOONFLOW_UTILITY !== "1") {
     const { app } = require("electron");
     return true;
   } else {

@@ -16,6 +16,7 @@ export default router.post(
     const data = await u
       .db("o_assets")
       .leftJoin("o_image", "o_assets.imageId", "o_image.id")
+      .leftJoin("o_directorAsset", "o_directorAsset.assetId", "o_assets.id")
       .select(
         "o_assets.*",
         "o_image.filePath",
@@ -24,6 +25,8 @@ export default router.post(
         "o_image.resolution",
         "o_image.errorReason",
         "o_image.id as imageId",
+        "o_directorAsset.id as sourceId",
+        "o_directorAsset.assetType as directorAssetType",
       )
       .where("o_assets.projectId", projectId)
       .andWhere("o_assets.type", "<>", "clip")
@@ -57,6 +60,9 @@ export default router.post(
         );
         return {
           ...parent,
+          source: parent.type === "directorAsset" ? "directorAsset" : "assets",
+          sourceId: parent.type === "directorAsset" ? parent.sourceId : parent.id,
+          assetType: parent.directorAssetType ?? parent.type,
           filePath: parent.filePath && (await u.oss.getSmallImageUrl(parent.filePath!)),
           historyImages: historyImagesWithUrl,
           relepedAudio: repleAssets[parent.id] ?? [],

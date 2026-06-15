@@ -1,0 +1,40 @@
+import { startRuntimeMetrics } from "@/runtime/runtimeMetrics";
+import { startRuntimeHeartbeat } from "@/runtime/runtimeProtocol";
+
+process.env.TOONFLOW_UTILITY = "1";
+process.env.TOONFLOW_RUNTIME_ROLE = "agent";
+
+const parentPort = (process as any).parentPort;
+let apiPort: any = null;
+let detachAgentBridge: undefined | (() => void);
+parentPort?.on("message", (event: any) => {
+  const data = event?.data ?? event;
+  if (data?.type === "runtime:attach" && event?.ports?.[0]) {
+    detachAgentBridge?.();
+    apiPort?.close?.();
+    const port = event.ports[0];
+    apiPort = port;
+    if (data.role === "api") {
+      const { attachAgentSocketBridge } = require("@/runtime/agentSocketBridge") as typeof import("@/runtime/agentSocketBridge");
+      detachAgentBridge = attachAgentSocketBridge(port);
+    }
+    port.start?.();
+  }
+  if (data?.type === "shutdown") {
+    stopMetrics();
+    stopHeartbeat();
+    detachAgentBridge?.();
+    apiPort?.close?.();
+    parentPort?.postMessage({ type: "runtime:stopped", role: "agent", pid: process.pid });
+    process.exit(0);
+  }
+});
+
+const stopHeartbeat = startRuntimeHeartbeat("agent", (message) => parentPort?.postMessage(message));
+
+const stopMetrics = startRuntimeMetrics("agent", (metric) => {
+  parentPort?.postMessage({ type: "runtime:metric", metric });
+  apiPort?.postMessage({ type: "runtime:metric", metric });
+});
+
+parentPort?.postMessage({ type: "runtime:ready", role: "agent", pid: process.pid });

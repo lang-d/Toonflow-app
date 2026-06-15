@@ -12,6 +12,7 @@ export default router.post(
   }),
   async (req, res) => {
     const { id } = req.body;
+    await u.db("o_directorAsset").where({ imageId: id }).delete();
     await u.db("o_assets").where({ imageId: id }).update({
       imageId: null,
     });

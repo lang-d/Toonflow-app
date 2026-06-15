@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { deleteMergedReferences } from "@/services/workbenchReference";
 const router = express.Router();
 
 // 删除剧本
@@ -13,6 +14,7 @@ export default router.post(
   }),
   async (req, res) => {
     const { ids } = req.body;
+    await deleteMergedReferences({ scriptIds: ids });
     const scriptData = await u.db("o_script").whereIn("id", ids);
     if (scriptData && scriptData.length) {
       const scriptProjectId = new Set(scriptData.map((item) => item.projectId));

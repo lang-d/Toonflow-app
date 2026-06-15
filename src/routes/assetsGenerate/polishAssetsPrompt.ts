@@ -23,13 +23,13 @@ export default router.post(
     //获取风格
     const project = await u.db("o_project").where("id", projectId).select("artStyle", "type", "intro").first();
     //如果没有找到对应的项目，返回错误
-    if (!project) return res.status(500).send(success({ message: "项目为空" }));
+    if (!project) return res.status(404).send(error("项目不存在"));
 
     await u.db("o_assets").where("id", assetsId).update({ promptState: "生成中" });
 
     //查询资产是否是衍生资产
     const assetsData = await u.db("o_assets").where("id", assetsId).select("assetsId").first();
-    if (!assetsData) return { code: 500, message: "资产不存在" };
+    if (!assetsData) return res.status(404).send(error("资产不存在"));
     const typeConfig: Record<string, { promptKey: string; itemType: ItemType; label: string; nameLabel: string; visualManual: string }> = {
       role: {
         promptKey: "role-polish",

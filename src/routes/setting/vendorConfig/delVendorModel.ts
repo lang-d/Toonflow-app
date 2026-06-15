@@ -27,6 +27,7 @@ export default router.post(
         .update({
           models: JSON.stringify(updatedModels),
         });
+      u.vendor.invalidateCache(id);
     }
     res.status(200).send(success("更新成功"));
   },

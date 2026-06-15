@@ -1,8 +1,9 @@
 import express from "express";
 import u from "@/utils";
 import { z } from "zod";
-import { success } from "@/lib/responseFormat";
+import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { createUnifiedTask } from "@/services/taskCoordinator";
 
 const router = express.Router();
 
@@ -17,22 +18,28 @@ export default router.post(
   async (req, res) => {
     const { projectId, novelIds, concurrentCount = 5 } = req.body;
 
-    const [allChapters, novel] = await Promise.all([
-      u.db("o_novel").where("projectId", projectId).whereIn("id", novelIds),
-      Promise.resolve(new u.cleanNovel(concurrentCount)),
-    ]);
+    const allChapters = await u.db("o_novel").where("projectId", projectId).whereIn("id", novelIds);
     if (allChapters.length === 0) {
-      return res.status(400).send(success("没有对应章节"));
+      return res.status(400).send(error("没有对应章节"));
     }
     await u.db("o_novel").where("projectId", projectId).whereIn("id", novelIds).update({ eventState: 0, event: null });
-    novel.emitter.on("item", async (item) => {
-      await u
-        .db("o_novel")
-        .where("id", item.id)
-        .update({ event: item.event, eventState: item.event ? 1 : -1, errorReason: item?.errorReason ?? null });
-    });
-    novel.start(allChapters, projectId);
-
-    return res.status(200).send(success("生成事件成功"));
+    const tasks = [];
+    for (const chapter of allChapters) {
+      const task = await createUnifiedTask({
+        projectId,
+        taskClass: "小说事件提取",
+        taskType: "prompt",
+        status: "queued",
+        targetType: "novel",
+        targetId: chapter.id,
+        businessType: "novel",
+        businessId: Number(chapter.id),
+        handler: "novel-event",
+        describe: `提取章节事件：${chapter.chapter || chapter.id}`,
+        payload: { projectId, novelId: chapter.id },
+      });
+      tasks.push({ novelId: chapter.id, taskId: task.taskId, legacyTaskId: task.legacyTaskId });
+    }
+    return res.status(200).send(success({ total: tasks.length, tasks }));
   },
 );

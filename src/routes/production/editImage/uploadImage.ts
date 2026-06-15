@@ -40,7 +40,6 @@ export default router.post(
     const savePath = `/${projectId}/imageFlow/${scriptId}/${uuid()}.${ext}`;
 
     await u.oss.writeFile(savePath, Buffer.from(base64Data.match(/base64,([A-Za-z0-9+/=]+)/)[1] ?? "", "base64"));
-    const url = await u.oss.getSmallImageUrl(savePath);
-    res.status(200).send(success(url));
+    res.status(200).send(success({ media: await u.mediaRef.toMediaRef(savePath, { source: "local" }) }));
   },
 );

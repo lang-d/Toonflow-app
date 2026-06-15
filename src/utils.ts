@@ -13,6 +13,8 @@ import { getArtPrompt } from "@/utils/getArtPrompt";
 import replaceUrl from "@/utils/replaceUrl";
 import writeVersion from "@/utils/writeVersion";
 import * as vendor from "@/utils/vendor";
+import dreaminaCli from "@/utils/dreaminaCli";
+import * as mediaRef from "@/services/mediaRef";
 
 export default {
   db,
@@ -30,4 +32,6 @@ export default {
   replaceUrl,
   writeVersion,
   vendor,
+  dreaminaCli,
+  mediaRef,
 };

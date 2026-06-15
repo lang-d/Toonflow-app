@@ -5,6 +5,7 @@ import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 const router = express.Router();
 import { FlowData } from "@/agents/productionAgent/tools";
+import { resolveStoryboardReferences } from "@/services/storyboardEditor";
 
 export default router.post(
   "/",
@@ -24,12 +25,16 @@ export default router.post(
     const scriptData = await u.db("o_script").where("projectId", projectId).where("id", episodesId).first();
     const scriptAssets = await u.db("o_scriptAssets").where("scriptId", episodesId);
     const assetIds = scriptAssets.map((i) => i.assetId);
+    const boundAudioRows = assetIds.length
+      ? await u.db("o_assetsRole2Audio").whereIn("assetsRoleId", assetIds).select("assetsAudioId")
+      : [];
+    const flowAssetIds = [...new Set([...assetIds, ...boundAudioRows.map((i) => i.assetsAudioId).filter(Boolean)])];
     const assetsData = await u
       .db("o_assets")
       .leftJoin("o_image", "o_assets.imageId", "o_image.id")
       .select("o_assets.*", "o_image.filePath", "o_image.state", "o_image.errorReason")
       // @ts-ignore
-      .where("o_assets.id", "in", assetIds)
+      .where("o_assets.id", "in", flowAssetIds)
       .andWhere("o_assets.assetsId", null)
       .where("o_assets.projectId", projectId);
 
@@ -39,11 +44,41 @@ export default router.post(
       .select("o_assets.*", "o_image.filePath", "o_image.state", "o_image.errorReason")
       .where("o_assets.projectId", projectId)
       // @ts-ignore
-      .where("o_assets.assetsId", "in", assetIds)
+      .where("o_assets.assetsId", "in", flowAssetIds)
       .whereNotNull("o_assets.assetsId");
 
+    const directorAssetsRows = await u
+      .db("o_directorAsset")
+      .join("o_assets", "o_assets.id", "o_directorAsset.assetId")
+      .join("o_image", "o_image.id", "o_directorAsset.imageId")
+      .where("o_directorAsset.projectId", projectId)
+      .andWhere((qb: any) => {
+        qb.where("o_directorAsset.scriptId", episodesId).orWhereNull("o_directorAsset.scriptId");
+      })
+      .select(
+        "o_directorAsset.id",
+        "o_directorAsset.assetId",
+        "o_directorAsset.imageId",
+        "o_directorAsset.assetType",
+        "o_directorAsset.name",
+        "o_directorAsset.promptFragment",
+        "o_image.filePath",
+      );
+    const directorAssets = directorAssetsRows.map((item: any) => ({
+      id: item.id,
+      assetId: item.assetId,
+      imageId: item.imageId,
+      name: item.name,
+      type: "directorAsset",
+      assetType: item.assetType,
+      prompt: item.promptFragment || "",
+      source: "directorAsset",
+      sourceId: item.id,
+      filePath: item.filePath || "",
+    }));
+
     if (!sqlData) {
-      const flowData: FlowData = {
+      const flowData: FlowData & { directorAssets: any[] } = {
         script: scriptData?.content ?? "",
         scriptPlan: "",
         assets: await Promise.all(
@@ -72,6 +107,7 @@ export default router.post(
         ),
         storyboardTable: "",
         storyboard: [],
+        directorAssets,
         //todo：矫正workbench数据
         //@ts-ignore
         workbench: {
@@ -86,9 +122,11 @@ export default router.post(
     } else {
       try {
         const storyboardData = await u.db("o_storyboard").where("scriptId", episodesId);
+        const storyboardReferenceMap = new Map<number, Awaited<ReturnType<typeof resolveStoryboardReferences>>>();
 
         await Promise.all(
           storyboardData.map(async (i) => {
+            storyboardReferenceMap.set(Number(i.id), await resolveStoryboardReferences(i.referenceImages));
             if (i.filePath) {
               try {
                 i.filePath = await u.oss.getSmallImageUrl(i.filePath);
@@ -151,8 +189,10 @@ export default router.post(
             shouldGenerateImage: i.shouldGenerateImage,
             reason: i?.reason ?? "",
             flowId: i.flowId,
+            referenceImages: storyboardReferenceMap.get(Number(i.id)) ?? [],
           }))
           .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+        flowData.directorAssets = directorAssets;
         flowData.script = scriptData?.content ?? "";
         res.status(200).send(success(flowData));
       } catch (err) {

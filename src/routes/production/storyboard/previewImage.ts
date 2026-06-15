@@ -122,9 +122,8 @@ export default router.post(
       .jpeg({ quality: 80 })
       .toBuffer();
 
-    const base64 = resultBuffer.toString("base64");
-    const dataUrl = `data:image/jpeg;base64,${base64}`;
-
-    return res.status(200).send(success(dataUrl));
+    const previewPath = `/preview/storyboard/${u.uuid()}.jpg`;
+    await u.oss.writeFile(previewPath, resultBuffer);
+    return res.status(200).send(success({ media: await u.mediaRef.toMediaRef(previewPath, { source: "local" }) }));
   },
 );

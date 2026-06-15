@@ -21,6 +21,7 @@ export default router.post(
       .update({
         inputValues: JSON.stringify(inputValues),
       });
+    u.vendor.invalidateCache(id);
     res.status(200).send(success("更新成功"));
   },
 );

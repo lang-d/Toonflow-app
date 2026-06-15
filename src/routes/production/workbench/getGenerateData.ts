@@ -16,6 +16,8 @@ interface TrackMedia {
   id?: number;
   fileType: "image" | "video" | "audio";
   videoDesc?: string;
+  sources?: "storyboard" | "assets" | "merged" | "directorAsset";
+  sourceRefs?: Array<{ id: number; sources: "storyboard" | "assets" | "directorAsset"; order: number }>;
 }
 
 interface TrackItem {
@@ -97,8 +99,9 @@ export default router.post(
         .db("o_assets2Storyboard")
         .leftJoin("o_assets", "o_assets2Storyboard.assetId", "o_assets.id")
         .leftJoin("o_image", "o_image.id", "o_assets.imageId")
+        .leftJoin({ parentAsset: "o_assets" }, "parentAsset.id", "o_assets.assetsId")
         .whereIn("o_assets2Storyboard.storyboardId", storyIds as number[])
-        .select("o_assets.*", "o_image.filePath", "o_assets2Storyboard.storyboardId");
+        .select("o_assets.*", "o_image.filePath", "o_image.type as imageType", "parentAsset.name as parentName", "o_assets2Storyboard.storyboardId");
 
       const queryAudioIds = [...assetDatas.map((i) => i.id!), ...assetDatas.map((i) => i.assetsId!)].filter(Boolean);
       const assets2AudioData = await u
@@ -124,6 +127,7 @@ export default router.post(
             name: i.name,
             describe: i.describe,
             type: i.type,
+            category: i.type,
             fileType: "audio" as const,
             sources: "assets",
             prompt: i.prompt,
@@ -139,7 +143,9 @@ export default router.post(
             name: i.name,
             describe: i.describe,
             type: i.type,
-            fileType: "image" as const,
+            category: i.type,
+            parentName: i.parentName || undefined,
+            fileType: i.imageType === "audio" ? ("audio" as const) : i.imageType === "video" || i.type === "clip" ? ("video" as const) : ("image" as const),
             sources: "assets",
             src: i.filePath ? await u.oss.getSmallImageUrl(i.filePath) : "",
           };
@@ -153,6 +159,29 @@ export default router.post(
     }
 
     const trackData = await u.db("o_videoTrack").where({ projectId, scriptId });
+    const mergedRows = await u
+      .db("o_workbenchMergedReference")
+      .where({ projectId, scriptId, state: "active" })
+      .orderBy("createTime", "asc");
+    const mergedByTrack: Record<number, any[]> = {};
+    for (const row of mergedRows) {
+      const trackId = Number(row.trackId);
+      if (!mergedByTrack[trackId]) mergedByTrack[trackId] = [];
+      let sourceRefs: Array<{ id: number; sources: "storyboard" | "assets" | "directorAsset"; order: number }> = [];
+      try {
+        sourceRefs = JSON.parse(row.sourceRefs || "[]");
+      } catch {}
+      mergedByTrack[trackId].push({
+        id: row.id,
+        sources: "merged",
+        fileType: "image",
+        src: row.filePath ? await u.oss.getSmallImageUrl(row.filePath) : "",
+        name: row.name || "合图引用",
+        prompt: row.prompt || "",
+        sourceRefs,
+        position: Number(row.position ?? 0),
+      });
+    }
     const videoList = await u.db("o_video").whereIn(
       "videoTrackId",
       trackData.map((t) => t.id),
@@ -193,7 +222,19 @@ export default router.post(
           const hasImageAssetData = filteredAssets.filter((i) => i.src);
           const notHasImageAssetData = filteredAssets.filter((i) => !i.src);
 
-          return [...hasImageAssetData, ...storyboardMedias, ...notHasImageAssetData];
+          let medias = [...hasImageAssetData, ...storyboardMedias, ...notHasImageAssetData];
+          for (const merged of mergedByTrack[trackId] || []) {
+            const sourceKeys = new Set(merged.sourceRefs.map((ref: any) => `${ref.sources}:${ref.id}`));
+            const firstMatchedIndex = medias.findIndex((item: any) => sourceKeys.has(`${item.sources}:${item.id}`));
+            medias = medias.filter((item: any) => !sourceKeys.has(`${item.sources}:${item.id}`));
+            const insertIndex =
+              firstMatchedIndex >= 0
+                ? Math.min(firstMatchedIndex, medias.length)
+                : Math.max(0, Math.min(Number(merged.position || 0), medias.length));
+            const { position: _, ...media } = merged;
+            medias.splice(insertIndex, 0, media);
+          }
+          return medias;
         })(),
         videoList: await Promise.all(
           videoList

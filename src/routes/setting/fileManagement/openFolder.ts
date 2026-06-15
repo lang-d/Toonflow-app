@@ -23,7 +23,7 @@ export default router.post(
     const cmd = platform === "win32" ? `explorer "${target}"` : platform === "darwin" ? `open "${target}"` : `xdg-open "${target}"`;
     exec(cmd, (err) => {
       if (err) {
-        return res.status(200).send(error(err.message));
+        return res.status(500).send(error(err.message));
       }
       res.status(200).send(success("打开文件夹成功"));
     });

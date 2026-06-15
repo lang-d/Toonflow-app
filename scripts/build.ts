@@ -1,6 +1,7 @@
 import esbuild from "esbuild";
 import fs from "fs";
 import path from "path";
+import generateRouter from "../src/core";
 
 // 打包默认使用 prod 环境变量
 if (!process.env.NODE_ENV) {
@@ -24,6 +25,7 @@ const external = [
   "oracledb",
   "tedious",
   "mssql",
+  "tsx/cjs",
 ];
 
 // 后端服务打包配置
@@ -68,14 +70,40 @@ const mainBuildConfig: esbuild.BuildOptions = {
   },
 };
 
+const runtimeBuildConfig: esbuild.BuildOptions = {
+  entryPoints: {
+    "api-process": "src/runtime/apiProcess.ts",
+    "task-worker": "src/runtime/taskWorker.ts",
+    "agent-process": "src/runtime/agentProcess.ts",
+  },
+  bundle: true,
+  minify: false,
+  format: "cjs",
+  outdir: "data/serve/runtime",
+  allowOverwrite: true,
+  platform: "node",
+  target: "esnext",
+  tsconfig: "./tsconfig.json",
+  alias: {
+    "@": "./src",
+  },
+  sourcemap: false,
+  external,
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
+};
+
 (async () => {
   try {
     console.log("🔨 开始构建...\n");
 
-    // 并行构建
-    await Promise.all([esbuild.build(appBuildConfig), esbuild.build(mainBuildConfig)]);
+    await generateRouter();
 
-    console.log("✅ 后端服务构建完成: build/app.js");
+    // 并行构建
+    await Promise.all([esbuild.build(appBuildConfig), esbuild.build(mainBuildConfig), esbuild.build(runtimeBuildConfig)]);
+
+    console.log("✅ 后端服务构建完成: data/serve/app.js");
     console.log("✅ Electron主进程构建完成: build/main.js");
     console.log("\n🎉 所有构建任务完成!\n");
   } catch (err) {

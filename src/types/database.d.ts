@@ -1,45 +1,6 @@
-// @db-hash d9635951c2c4da90f4cc55b17095da50
+// @db-hash d1a92526983df2f265122592b75b322f
 //该文件由脚本自动生成，请勿手动修改
 
-export interface _o_assets_old_20260428 {
-  'assetsId'?: number | null;
-  'describe'?: string | null;
-  'flowId'?: number | null;
-  'id'?: number;
-  'imageId'?: number | null;
-  'name'?: string | null;
-  'projectId'?: number | null;
-  'prompt'?: string | null;
-  'promptErrorReason'?: string | null;
-  'promptState'?: string | null;
-  'remark'?: string | null;
-  'scriptId'?: number | null;
-  'startTime'?: number | null;
-  'type'?: string | null;
-}
-export interface _o_flowProject_old_20260529 {
-  'id'?: number;
-  'intro'?: string | null;
-  'name'?: string | null;
-  'workFlow'?: string | null;
-}
-export interface _o_project_old_20260529 {
-  'artStyle'?: string | null;
-  'createTime'?: number | null;
-  'directorManual'?: string | null;
-  'id'?: number | null;
-  'imageModel'?: string | null;
-  'imageQuality'?: string | null;
-  'intro'?: string | null;
-  'mode'?: string | null;
-  'name'?: string | null;
-  'projectType'?: string | null;
-  'type'?: string | null;
-  'userId'?: number | null;
-  'videoModel'?: string | null;
-  'videoRatio'?: string | null;
-  'workMode'?: string | null;
-}
 export interface memories {
   'content': string;
   'createTime': number;
@@ -106,6 +67,47 @@ export interface o_assetsRole2Audio {
   'assetsAudioId'?: number;
   'assetsRoleId'?: number;
 }
+export interface o_directorAsset {
+  'assetId': number;
+  'assetType': string;
+  'camera'?: string | null;
+  'createTime': number;
+  'flowId'?: number | null;
+  'id'?: number;
+  'imageId': number;
+  'name': string;
+  'nodeId': string;
+  'projectId': number;
+  'promptFragment'?: string | null;
+  'scriptId'?: number | null;
+  'sourceRefs': string;
+  'stageDraft'?: string | null;
+  'targetId'?: number | null;
+  'targetType'?: string | null;
+  'updateTime': number;
+}
+export interface o_editImageTask {
+  'createTime'?: number | null;
+  'deriveAssetId'?: number | null;
+  'flowId'?: number | null;
+  'id'?: number;
+  'model'?: string | null;
+  'nodeId'?: string | null;
+  'projectId'?: number | null;
+  'prompt'?: string | null;
+  'quality'?: string | null;
+  'ratio'?: string | null;
+  'reason'?: string | null;
+  'references'?: string | null;
+  'scriptId'?: number | null;
+  'state'?: string | null;
+  'status'?: string | null;
+  'targetId'?: number | null;
+  'targetType'?: string | null;
+  'taskCenterId'?: number | null;
+  'updateTime'?: number | null;
+  'url'?: string | null;
+}
 export interface o_event {
   'createTime'?: number | null;
   'detail'?: string | null;
@@ -116,13 +118,6 @@ export interface o_eventChapter {
   'eventId'?: number | null;
   'id'?: number;
   'novelId'?: number | null;
-}
-export interface o_flowProject {
-  'createTime': number;
-  'id'?: number;
-  'intro'?: string | null;
-  'name'?: string | null;
-  'workFlow'?: string | null;
 }
 export interface o_image {
   'assetsId'?: number | null;
@@ -143,7 +138,6 @@ export interface o_modelPrompt {
   'id'?: number;
   'model'?: string | null;
   'path'?: string | null;
-  'prompt'?: string | null;
   'vendorId'?: string | null;
 }
 export interface o_novel {
@@ -157,17 +151,6 @@ export interface o_novel {
   'id'?: number;
   'projectId'?: number | null;
   'reel'?: string | null;
-}
-export interface o_outline {
-  'data'?: string | null;
-  'episode'?: number | null;
-  'id'?: number;
-  'projectId'?: number | null;
-}
-export interface o_outlineNovel {
-  'id'?: number;
-  'novelId'?: number | null;
-  'outlineId'?: number | null;
 }
 export interface o_project {
   'artStyle'?: string | null;
@@ -184,7 +167,16 @@ export interface o_project {
   'userId'?: number | null;
   'videoModel'?: string | null;
   'videoRatio'?: string | null;
-  'workMode'?: string | null;
+}
+export interface o_projectStorage {
+  'errorReason'?: string | null;
+  'lastChangedAt'?: number | null;
+  'lastSnapshotAt'?: number | null;
+  'projectId'?: number;
+  'revision'?: number;
+  'snapshotRevision'?: number;
+  'snapshotState'?: string;
+  'storageKey': string;
 }
 export interface o_prompt {
   'data'?: string | null;
@@ -236,6 +228,7 @@ export interface o_storyboard {
   'projectId'?: number | null;
   'prompt'?: string | null;
   'reason'?: string | null;
+  'referenceImages'?: string | null;
   'scriptId'?: number | null;
   'shouldGenerateImage'?: number | null;
   'state'?: string | null;
@@ -243,16 +236,61 @@ export interface o_storyboard {
   'trackId'?: number | null;
   'videoDesc'?: string | null;
 }
-export interface o_tasks {
-  'describe'?: string | null;
+export interface o_taskEvent {
+  'createdAt': number;
   'id'?: number;
-  'model'?: string | null;
+  'legacyTaskId'?: number | null;
+  'nodeId'?: string | null;
+  'phase'?: string | null;
+  'progress'?: number | null;
   'projectId'?: number | null;
   'reason'?: string | null;
+  'resultJson'?: string | null;
+  'scriptId'?: number | null;
+  'status': string;
+  'targetId'?: string | null;
+  'targetType'?: string | null;
+  'taskId': string;
+  'taskType': string;
+  'version': number;
+}
+export interface o_tasks {
+  'attempt'?: number | null;
+  'availableAt'?: number | null;
+  'businessId'?: number | null;
+  'businessType'?: string | null;
+  'createdAt'?: number | null;
+  'describe'?: string | null;
+  'episode'?: number | null;
+  'finishTime'?: number | null;
+  'handler'?: string | null;
+  'id'?: number;
+  'idempotencyKey'?: string | null;
+  'leaseExpiresAt'?: number | null;
+  'leaseOwner'?: string | null;
+  'maxAttempts'?: number | null;
+  'model'?: string | null;
+  'nodeId'?: string | null;
+  'payloadJson'?: string | null;
+  'phase'?: string | null;
+  'priority'?: number | null;
+  'progress'?: number | null;
+  'projectId'?: number | null;
+  'providerTaskId'?: string | null;
+  'reason'?: string | null;
   'relatedObjects'?: string | null;
+  'resultJson'?: string | null;
+  'scriptId'?: number | null;
   'startTime'?: number | null;
   'state'?: string | null;
+  'status'?: string | null;
+  'targetId'?: string | null;
+  'targetType'?: string | null;
   'taskClass'?: string | null;
+  'taskId'?: string | null;
+  'taskType'?: string | null;
+  'updateTime'?: number | null;
+  'version'?: number | null;
 }
 export interface o_user {
   'id'?: number;
@@ -260,7 +298,6 @@ export interface o_user {
   'password'?: string | null;
 }
 export interface o_vendorConfig {
-  'code'?: string | null;
   'enable'?: number | null;
   'id'?: string;
   'inputValues'?: string | null;
@@ -276,23 +313,84 @@ export interface o_video {
   'time'?: number | null;
   'videoTrackId'?: number | null;
 }
+export interface o_videoGenerationTask {
+  'capacityWaitStartedAt'?: number | null;
+  'confirmDeadline'?: number | null;
+  'confirmStartedAt'?: number | null;
+  'errorReason'?: string | null;
+  'finishTime'?: number | null;
+  'historyRecordId'?: string | null;
+  'id'?: number;
+  'lastProviderCode'?: string | null;
+  'lastProviderStatus'?: string | null;
+  'model'?: string | null;
+  'nextPollTime'?: number | null;
+  'nextSubmitTime'?: number | null;
+  'officialTaskId'?: string | null;
+  'payloadVersion'?: number | null;
+  'phase'?: string | null;
+  'pollCount'?: number | null;
+  'projectId'?: number | null;
+  'providerAccountId'?: string | null;
+  'providerModelKey'?: string | null;
+  'providerQueueIndex'?: number | null;
+  'providerQueueLength'?: number | null;
+  'providerQueueStatus'?: number | null;
+  'providerSubmittedAt'?: number | null;
+  'rawOutput'?: string | null;
+  'remoteConfirmedAt'?: number | null;
+  'requestJson'?: string | null;
+  'scriptId'?: number | null;
+  'startTime'?: number | null;
+  'state'?: string | null;
+  'status'?: string | null;
+  'submitAttemptCount'?: number | null;
+  'submitId'?: string | null;
+  'taskCenterId'?: number | null;
+  'updateTime'?: number | null;
+  'vendorId'?: string | null;
+  'videoId'?: number | null;
+}
+export interface o_videoProviderCapacity {
+  'blockedUntil'?: number | null;
+  'capacityBlocked'?: number;
+  'createTime': number;
+  'id'?: number | null;
+  'lastProviderCode'?: string | null;
+  'providerAccountId'?: string;
+  'providerModelKey': string;
+  'updateTime': number;
+  'vendorId': string;
+}
 export interface o_videoTrack {
   'duration'?: number | null;
   'id'?: number;
   'projectId'?: number | null;
   'prompt'?: string | null;
-  'promptState'?: string | null;
   'reason'?: string | null;
   'scriptId'?: number | null;
   'selectVideoId'?: number | null;
   'state'?: string | null;
   'videoId'?: number | null;
 }
+export interface o_workbenchMergedReference {
+  'createTime': number;
+  'filePath': string;
+  'fileType': string;
+  'id'?: number;
+  'mergeType': string;
+  'name'?: string | null;
+  'position': number;
+  'projectId': number;
+  'prompt'?: string | null;
+  'scriptId': number;
+  'sourceRefs': string;
+  'state': string;
+  'trackId': number;
+  'updateTime': number;
+}
 
 export interface DB {
-  "_o_assets_old_20260428": _o_assets_old_20260428;
-  "_o_flowProject_old_20260529": _o_flowProject_old_20260529;
-  "_o_project_old_20260529": _o_project_old_20260529;
   "memories": memories;
   "o_agentDeploy": o_agentDeploy;
   "o_agentWorkData": o_agentWorkData;
@@ -300,16 +398,16 @@ export interface DB {
   "o_assets": o_assets;
   "o_assets2Storyboard": o_assets2Storyboard;
   "o_assetsRole2Audio": o_assetsRole2Audio;
+  "o_directorAsset": o_directorAsset;
+  "o_editImageTask": o_editImageTask;
   "o_event": o_event;
   "o_eventChapter": o_eventChapter;
-  "o_flowProject": o_flowProject;
   "o_image": o_image;
   "o_imageFlow": o_imageFlow;
   "o_modelPrompt": o_modelPrompt;
   "o_novel": o_novel;
-  "o_outline": o_outline;
-  "o_outlineNovel": o_outlineNovel;
   "o_project": o_project;
+  "o_projectStorage": o_projectStorage;
   "o_prompt": o_prompt;
   "o_script": o_script;
   "o_scriptAssets": o_scriptAssets;
@@ -317,9 +415,13 @@ export interface DB {
   "o_skillAttribution": o_skillAttribution;
   "o_skillList": o_skillList;
   "o_storyboard": o_storyboard;
+  "o_taskEvent": o_taskEvent;
   "o_tasks": o_tasks;
   "o_user": o_user;
   "o_vendorConfig": o_vendorConfig;
   "o_video": o_video;
+  "o_videoGenerationTask": o_videoGenerationTask;
+  "o_videoProviderCapacity": o_videoProviderCapacity;
   "o_videoTrack": o_videoTrack;
+  "o_workbenchMergedReference": o_workbenchMergedReference;
 }

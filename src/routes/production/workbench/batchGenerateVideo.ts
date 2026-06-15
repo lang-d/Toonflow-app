@@ -4,19 +4,9 @@ import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { ReferenceList } from "@/utils/ai";
+import { enqueueVideoGeneration } from "@/utils/videoGenerationQueue";
+import { resolveWorkbenchReferences, validateReferenceLimits } from "@/services/workbenchReference";
 const router = express.Router();
-
-type Type = "imageReference" | "startImage" | "endImage" | "videoReference" | "audioReference";
-interface UploadItem {
-  fileType: "image" | "video" | "audio";
-  type: Type;
-  sources?: "assets" | "storyboard";
-  id?: number;
-  src?: string;
-  label?: string;
-  prompt?: string;
-}
 
 export default router.post(
   "/",
@@ -28,7 +18,7 @@ export default router.post(
         uploadData: z.array(
           z.object({
             id: z.number(),
-            sources: z.string(),
+            sources: z.enum(["storyboard", "assets", "merged", "directorAsset"]),
           }),
         ),
         trackId: z.number(),
@@ -57,27 +47,10 @@ export default router.post(
 
     // 为每个 track 预处理数据并插入数据库，返回任务列表
     const tasks = await Promise.all(
-      (trackData as { uploadData: { id: number; sources: string }[]; trackId: number; prompt: string; duration: number }[]).map(async (track) => {
+      (trackData as { uploadData: { id: number; sources: "storyboard" | "assets" | "merged" | "directorAsset" }[]; trackId: number; prompt: string; duration: number }[]).map(async (track) => {
         const { uploadData, trackId, prompt, duration } = track;
-
-        // 查询出图片数据
-        const images = await Promise.all(
-          uploadData.map(async (item) => {
-            if (item.sources === "storyboard") {
-              const filePath = await u.db("o_storyboard").where("id", item.id).select("filePath").first();
-              return { path: filePath?.filePath, sources: "storyBoard" };
-            }
-            if (item.sources === "assets") {
-              const filePath = await u
-                .db("o_assets")
-                .where("o_assets.id", item.id)
-                .leftJoin("o_image", "o_assets.imageId", "o_image.id")
-                .select("o_image.filePath", "o_image.type")
-                .first();
-              return { path: filePath?.filePath, sources: filePath.type };
-            }
-          }),
-        );
+        const references = await resolveWorkbenchReferences(uploadData, { projectId, scriptId, trackId });
+        validateReferenceLimits(references, modeData.length > 0 ? modeData : mode);
 
         const videoPath = `/${projectId}/video/${uuidv4()}.mp4`;
         const [videoId] = await u.db("o_video").insert({
@@ -89,50 +62,40 @@ export default router.post(
           videoTrackId: trackId,
         });
 
-        return { videoId, videoPath, prompt, duration, images, trackId };
+        return {
+          videoId,
+          videoPath,
+          prompt,
+          duration,
+          trackId,
+          queuedReferences: uploadData.map((item, order) => ({ ...item, order })),
+        };
       }),
     );
 
-    res.status(200).send(success(tasks.map((t) => ({ videoId: t.videoId, trackId: t.trackId }))));
-    for (const { videoId, videoPath, prompt, duration, images } of tasks) {
-      // 所有任务全部并发后台执行，完全不阻塞任何进程
-      const base64 = await Promise.all(
-        images.map(async (item) => {
-          if (!item) return null;
-          return { base64: await u.oss.getImageBase64(item.path), type: item.sources == "audio" ? "audio" : "image" };
-        }),
-      );
+    const queuedTasks = [];
+    for (const { videoId, videoPath, prompt, duration, queuedReferences, trackId } of tasks) {
       const relatedObjects = { projectId, videoId, scriptId, type: "视频" };
-      const aiVideo = u.Ai.Video(model);
-      aiVideo
-        .run(
-          {
-            prompt,
-            referenceList: base64.filter(Boolean) as ReferenceList[],
-            mode: modeData.length > 0 ? modeData : mode,
-            duration,
-            aspectRatio: (ratio?.videoRatio as "16:9" | "9:16") || "16:9",
-            resolution,
-            audio,
-          },
-          {
-            projectId,
-            taskClass: "视频生成",
-            describe: "根据提示词生成视频",
-            relatedObjects: JSON.stringify(relatedObjects),
-          },
-        )
-        .then(async () => await aiVideo.save(videoPath))
-        .then(async () => await u.db("o_video").where("id", videoId).update({ state: "生成成功" }))
-        .catch(async (error: any) => {
-          await u
-            .db("o_video")
-            .where("id", videoId)
-            .update({
-              state: "生成失败",
-              errorReason: u.error(error).message,
-            });
-        });
+      (relatedObjects as any).trackId = trackId;
+      const queued = await enqueueVideoGeneration({
+        videoId,
+        videoPath,
+        projectId,
+        scriptId,
+        model,
+        input: {
+          prompt,
+          references: queuedReferences,
+          mode: modeData.length > 0 ? modeData : mode,
+          duration,
+          aspectRatio: (ratio?.videoRatio as "16:9" | "9:16") || "16:9",
+          resolution,
+          audio,
+        },
+        relatedObjects,
+      });
+      queuedTasks.push({ videoId, trackId, taskId: queued.taskId, queueTaskId: queued.queueTaskId });
     }
+    res.status(200).send(success(queuedTasks));
   },
 );

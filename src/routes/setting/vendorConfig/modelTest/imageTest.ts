@@ -31,8 +31,7 @@ export default router.post(
         aspectRatio: "16:9",
       });
       await reqFn.save("testImage.jpg");
-      const resultUrl = await u.oss.getFileUrl("testImage.jpg");
-      res.status(200).send(success(resultUrl));
+      res.status(200).send(success({ media: await u.mediaRef.toMediaRef("testImage.jpg") }));
     } catch (err) {
       console.error(err);
       const msg = u.error(err).message;

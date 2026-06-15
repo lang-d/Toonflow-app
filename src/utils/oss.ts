@@ -1,8 +1,12 @@
-import isPathInside from "is-path-inside";
-import getPath, { isEletron } from "@/utils/getPath";
+import getPath from "@/utils/getPath";
 import fs from "node:fs/promises";
+import nodeFs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { pipeline } from "node:stream/promises";
+import type { Readable } from "node:stream";
+import { RUNTIME_API_HOST, RUNTIME_API_PORT } from "@/runtime/runtimeProtocol";
+import { isSafeMediaFilePath, resolveMediaFilePath } from "@/services/storagePaths";
 
 // 规范化路径：去除前导斜杠，并将路径分隔符统一转换为系统分隔符
 function normalizeUserPath(userPath: string): string {
@@ -14,10 +18,9 @@ function normalizeUserPath(userPath: string): string {
 }
 
 // 校验路径
-function resolveSafeLocalPath(userPath: string, rootDir: string): string {
-  const safePath = normalizeUserPath(userPath);
-  const absPath = path.join(rootDir, safePath);
-  if (!isPathInside(absPath, rootDir)) {
+function resolveSafeLocalPath(userPath: string, _rootDir: string): string {
+  const absPath = resolveMediaFilePath(normalizeUserPath(userPath));
+  if (!isSafeMediaFilePath(absPath)) {
     throw new Error(`${userPath} 不在 OSS 根目录内`);
   }
   return absPath;
@@ -51,10 +54,7 @@ class OSS {
     await this.ensureInit();
     const safePath = normalizeUserPath(userRelPath);
     // URL 始终使用 /，所以这里需要将系统分隔符转回 /
-    let url = `/${prefix}/`;
-    if (process.env.ossURL && process.env.ossURL !== "") url = process.env.ossURL + `/${prefix}/`;
-    if (process.env.NODE_ENV == "dev") url = `http://localhost:10588/${prefix}/`;
-    if (isEletron()) url = `http://localhost:${process.env.PORT}/${prefix}/`;
+    const url = `http://${RUNTIME_API_HOST}:${RUNTIME_API_PORT}/${prefix}/`;
     return `${url}${safePath.split(path.sep).join("/")}`;
   }
 
@@ -67,6 +67,37 @@ class OSS {
   async getFile(userRelPath: string): Promise<Buffer> {
     await this.ensureInit();
     return fs.readFile(resolveSafeLocalPath(userRelPath, this.rootDir));
+  }
+
+  async getLocalFilePath(userRelPath: string): Promise<string> {
+    await this.ensureInit();
+    if (!userRelPath || /^https?:\/\//i.test(userRelPath) || userRelPath.includes("?")) {
+      throw new Error(`媒体引用必须是数据库中的本地原始文件路径: ${userRelPath || "(empty)"}`);
+    }
+    const normalized = userRelPath.replace(/\\/g, "/").toLowerCase();
+    if (normalized.includes("/smallimage/") || normalized.startsWith("smallimage/")) {
+      throw new Error(`媒体引用不能使用缩略图: ${userRelPath}`);
+    }
+    const absPath = resolveSafeLocalPath(userRelPath, this.rootDir);
+    const stat = await fs.stat(absPath);
+    if (!stat.isFile()) throw new Error(`媒体原始文件不存在: ${userRelPath}`);
+    return absPath;
+  }
+
+  async copyLocalFile(sourcePath: string, userRelPath: string): Promise<void> {
+    await this.ensureInit();
+    const sourceStat = await fs.stat(sourcePath);
+    if (!sourceStat.isFile()) throw new Error(`生成结果不是有效文件: ${sourcePath}`);
+    const targetPath = resolveSafeLocalPath(userRelPath, this.rootDir);
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.copyFile(sourcePath, targetPath);
+  }
+
+  async writeStream(userRelPath: string, stream: Readable): Promise<void> {
+    await this.ensureInit();
+    const targetPath = resolveSafeLocalPath(userRelPath, this.rootDir);
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await pipeline(stream, nodeFs.createWriteStream(targetPath));
   }
 
   /**
@@ -99,7 +130,14 @@ class OSS {
       ".tiff": "image/tiff",
       ".tif": "image/tiff",
       ".mp4": "video/mp4",
+      ".mov": "video/quicktime",
+      ".webm": "video/webm",
       ".mp3": "audio/mpeg",
+      ".wav": "audio/wav",
+      ".m4a": "audio/mp4",
+      ".aac": "audio/aac",
+      ".flac": "audio/flac",
+      ".ogg": "audio/ogg",
     };
 
     const mimeType = mimeTypes[ext];

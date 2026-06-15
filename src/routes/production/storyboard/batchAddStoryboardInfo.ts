@@ -3,6 +3,10 @@ import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import {
+  resolveStoryboardReferences,
+  serializeStoryboardReferences,
+} from "@/services/storyboardEditor";
 const router = express.Router();
 export default router.post(
   "/",
@@ -17,6 +21,7 @@ export default router.post(
         videoDesc: z.string(),
         shouldGenerateImage: z.number(),
         associateAssetsIds: z.array(z.number()),
+        referenceImages: z.array(z.any()).default([]),
       }),
     ),
     scriptId: z.number(),
@@ -24,7 +29,7 @@ export default router.post(
   }),
   async (req, res) => {
     const { data, scriptId, projectId } = req.body;
-    if (!data.length) return res.status(400).send({ success: false, message: "数据不能为空" });
+    if (!data.length) return res.status(400).send(error("数据不能为空"));
     for (const item of data) {
       const [id] = await u.db("o_storyboard").insert({
         prompt: item.prompt,
@@ -36,6 +41,7 @@ export default router.post(
         videoDesc: item.videoDesc,
         shouldGenerateImage: item.shouldGenerateImage,
         createTime: Date.now(),
+        referenceImages: serializeStoryboardReferences(item.referenceImages || []),
       });
       if (item.associateAssetsIds?.length) {
         await u.db("o_assets2Storyboard").insert(
@@ -102,7 +108,9 @@ export default router.post(
           state: i.state,
           scriptId: i.scriptId,
           reason: i.reason,
-          videoDesc: i.videoDesc
+          videoDesc: i.videoDesc,
+          flowId: i.flowId,
+          referenceImages: await resolveStoryboardReferences(i.referenceImages),
         };
       }),
     );

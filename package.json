@@ -23,8 +23,12 @@
     "dev:gui": "electronmon -r tsx scripts/main.ts",
     "dev:gui-vite": "cross-env VITE_DEV=1 electronmon -r tsx scripts/main.ts",
     "start": "cross-env NODE_ENV=prod node data/serve/app.js",
-    "lint": "tsc --noEmit",
-    "build": "cross-env NODE_ENV=prod tsx scripts/build.ts",
+    "lint": "node node_modules/typescript/bin/tsc --noEmit",
+    "api:check": "node node_modules/tsx/dist/cli.mjs scripts/apiCheck.ts",
+    "api:inventory": "node node_modules/tsx/dist/cli.mjs scripts/apiCheck.ts --write",
+    "test:api": "scripts\\runApiTests.cmd",
+    "test:runtime": "node_modules\\.bin\\electron.cmd --disable-gpu --disable-software-rasterizer --in-process-gpu -r tsx scripts/runtimeSmoke.ts",
+    "build": "node node_modules/tsx/dist/cli.mjs scripts/build.ts",
     "pack": "electron-builder --dir",
     "dist": "yarn build && electron-builder",
     "dist:win": "yarn build && electron-builder --win",
@@ -33,6 +37,17 @@
     "debug:ai": "npx @ai-sdk/devtools",
     "license": "node scripts/license.ts",
     "vendor2json": "node scripts/vendor2json.ts"
+  },
+  "electronmon": {
+    "patterns": [
+      "!data/**",
+      "!build/**",
+      "!dist/**",
+      "!docs/**",
+      "!tests/**",
+      "!src/router.ts",
+      "!src/types/database.d.ts"
+    ]
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.35",

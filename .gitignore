@@ -52,6 +52,7 @@ router.ts
 database.d.ts
 
 .devtools
+toonflow.local.json
 data/oss/*
 data/test.sqlite
 version.txt

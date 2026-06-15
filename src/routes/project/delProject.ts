@@ -3,6 +3,9 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { deleteMergedReferences } from "@/services/workbenchReference";
+import fs from "node:fs/promises";
+import { projectDirectory, storageMode } from "@/services/storagePaths";
 const router = express.Router();
 
 // 删除项目
@@ -13,6 +16,7 @@ export default router.post(
   }),
   async (req, res) => {
     const { id } = req.body;
+    await deleteMergedReferences({ projectId: id });
     //删除项目
     await u.db("o_project").where("id", id).delete();
     await u.db("o_agentWorkData").where("projectId", id).delete();
@@ -38,6 +42,7 @@ export default router.post(
     const assetsData = await u.db("o_assets").where("projectId", id).select("id");
     const assetsIds = assetsData.map((item: any) => item.id);
     if (assetsIds.length > 0) {
+      await u.db("o_directorAsset").whereIn("assetId", assetsIds).delete();
       // 先将 o_assets.imageId 置空，解除对 o_image 的外键引用
       await u.db("o_assets").whereIn("id", assetsIds).update({ imageId: null });
       await u.db("o_image").whereIn("assetsId", assetsIds).delete();
@@ -58,6 +63,10 @@ export default router.post(
       console.log(`项目 ${id} 没有对应的OSS文件夹，跳过删除`);
     }
 
+    await u.db("o_projectStorage").where("projectId", id).delete();
+    if (storageMode() === "workspace") {
+      await fs.rm(projectDirectory(id), { recursive: true, force: true });
+    }
     res.status(200).send(success({ message: "删除项目成功" }));
   },
 );

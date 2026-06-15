@@ -8,13 +8,75 @@ import initDB from "@/lib/initDB";
 import type { DB } from "@/types/database";
 import crypto from "crypto";
 import fixDB from "@/lib/fixDB";
+import {
+  PROFILE_TABLES,
+  profileDatabasePath,
+  storageMode,
+  workspaceDatabasePath,
+} from "@/services/storagePaths";
 
 type TableName = keyof DB & string;
 type RowType<TName extends TableName> = DB[TName];
+type SlowQuery = {
+  sql: string;
+  durationMs: number;
+  role: string;
+  at: number;
+};
 
-const dbPath = getPath("db2.sqlite");
+const queryStartedAt = new Map<string, number>();
+const dbDiagnostics = {
+  queryCount: 0,
+  queryTotalMs: 0,
+  slowQueryCount: 0,
+  busyCount: 0,
+  transactionCount: 0,
+  transactionTotalMs: 0,
+  slowTransactions: 0,
+  recentSlowQueries: [] as SlowQuery[],
+};
+
+function runtimeRole() {
+  return process.env.TOONFLOW_RUNTIME_ROLE || "main";
+}
+
+function busyTimeoutMs() {
+  if (runtimeRole() === "api") return 500;
+  if (runtimeRole() === "worker") return 5000;
+  return 2000;
+}
+
+function queryKey(query: any) {
+  return String(query?.__knexQueryUid || query?.queryContext?.__knexQueryUid || "");
+}
+
+function summarizeSql(sql: unknown) {
+  return String(sql || "")
+    .replace(/\s+/g, " ")
+    .slice(0, 2000);
+}
+
+export function getDbDiagnostics() {
+  return {
+    ...dbDiagnostics,
+    role: runtimeRole(),
+    averageQueryMs:
+      dbDiagnostics.queryCount === 0
+        ? 0
+        : Number((dbDiagnostics.queryTotalMs / dbDiagnostics.queryCount).toFixed(2)),
+    averageTransactionMs:
+      dbDiagnostics.transactionCount === 0
+        ? 0
+        : Number((dbDiagnostics.transactionTotalMs / dbDiagnostics.transactionCount).toFixed(2)),
+    recentSlowQueries: [...dbDiagnostics.recentSlowQueries],
+  };
+}
+
+const dbPath = workspaceDatabasePath();
 console.log("数据库目录:", dbPath);
 const dbDir = path.dirname(dbPath);
+const splitStorage = storageMode() === "workspace";
+const profilePath = profileDatabasePath();
 
 // 确保数据库目录存在
 if (!fs.existsSync(dbDir)) {
@@ -25,23 +87,116 @@ if (!fs.existsSync(dbDir)) {
 if (!fs.existsSync(dbPath)) {
   fs.writeFileSync(dbPath, "");
 }
+if (splitStorage) {
+  fs.mkdirSync(path.dirname(profilePath), { recursive: true });
+  if (!fs.existsSync(profilePath)) fs.writeFileSync(profilePath, "");
+}
+
+function escapeSqlitePath(value: string) {
+  return value.replace(/'/g, "''");
+}
+
+const profileDb = splitStorage
+  ? knex({
+      client: "better-sqlite3",
+      connection: { filename: profilePath },
+      pool: {
+        afterCreate(connection: any, done: (error: Error | null, connection: any) => void) {
+          try {
+            connection.pragma("journal_mode = WAL");
+            connection.pragma("synchronous = NORMAL");
+            connection.pragma("busy_timeout = 2000");
+            done(null, connection);
+          } catch (error) {
+            done(error as Error, connection);
+          }
+        },
+      },
+      useNullAsDefault: true,
+    })
+  : null;
 
 const db = knex({
   client: "better-sqlite3",
   connection: {
     filename: dbPath,
   },
+  pool: {
+    afterCreate(connection: any, done: (error: Error | null, connection: any) => void) {
+      try {
+        connection.pragma("journal_mode = WAL");
+        connection.pragma("synchronous = NORMAL");
+        connection.pragma(`busy_timeout = ${busyTimeoutMs()}`);
+        if (splitStorage) connection.exec(`ATTACH DATABASE '${escapeSqlitePath(profilePath)}' AS profile`);
+        done(null, connection);
+      } catch (error) {
+        done(error as Error, connection);
+      }
+    },
+  },
   useNullAsDefault: true,
 });
 
-(async () => {
-  await initDB(db);
-  await fixDB(db);
-  if (process.env.NODE_ENV == "dev") initKnexType(db);
-})();
+db.on("query", (query: any) => {
+  const key = queryKey(query);
+  if (key) queryStartedAt.set(key, performance.now());
+});
+db.on("query-response", (_response: unknown, query: any) => {
+  const key = queryKey(query);
+  const startedAt = key ? queryStartedAt.get(key) : undefined;
+  if (key) queryStartedAt.delete(key);
+  const durationMs = startedAt == null ? 0 : performance.now() - startedAt;
+  dbDiagnostics.queryCount += 1;
+  dbDiagnostics.queryTotalMs += durationMs;
+  if (durationMs >= 50) {
+    dbDiagnostics.slowQueryCount += 1;
+    dbDiagnostics.recentSlowQueries.push({
+      sql: summarizeSql(query?.sql),
+      durationMs: Number(durationMs.toFixed(2)),
+      role: runtimeRole(),
+      at: Date.now(),
+    });
+    dbDiagnostics.recentSlowQueries.splice(0, Math.max(0, dbDiagnostics.recentSlowQueries.length - 50));
+    console.warn(`[db:${runtimeRole()}] slow query ${durationMs.toFixed(1)}ms: ${summarizeSql(query?.sql)}`);
+  }
+});
+db.on("query-error", (error: any, query: any) => {
+  const key = queryKey(query);
+  if (key) queryStartedAt.delete(key);
+  if (String(error?.code || error?.message).includes("SQLITE_BUSY")) dbDiagnostics.busyCount += 1;
+});
+
+export const dbReady =
+  process.env.TOONFLOW_SKIP_DB_INIT === "1"
+    ? Promise.resolve()
+    : (async () => {
+        if (profileDb) await initDB(profileDb, false, { includeTables: PROFILE_TABLES });
+        await initDB(db, false, splitStorage ? { excludeTables: PROFILE_TABLES } : {});
+        await fixDB(db);
+        if (process.env.NODE_ENV == "dev" && !splitStorage) await initKnexType(db);
+      })();
 
 const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db);
 dbClient.schema = db.schema;
+const rawTransaction = db.transaction.bind(db);
+(dbClient as any).transaction = async (...args: any[]) => {
+  const startedAt = performance.now();
+  try {
+    return await rawTransaction(...args);
+  } finally {
+    const durationMs = performance.now() - startedAt;
+    dbDiagnostics.transactionCount += 1;
+    dbDiagnostics.transactionTotalMs += durationMs;
+    if (durationMs >= 100) {
+      dbDiagnostics.slowTransactions += 1;
+      console.warn(`[db:${runtimeRole()}] slow transaction ${durationMs.toFixed(1)}ms`);
+    }
+  }
+};
+(dbClient as any).destroy = async () => {
+  await db.destroy();
+  await profileDb?.destroy();
+};
 export default dbClient;
 
 export { db };

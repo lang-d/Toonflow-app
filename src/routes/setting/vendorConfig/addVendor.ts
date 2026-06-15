@@ -4,6 +4,7 @@ import { validateFields } from "@/middleware/middleware";
 import u from "@/utils";
 import { z } from "zod";
 import { transform } from "sucrase";
+import { queueConfigSchema } from "@/lib/videoQueueConfig";
 const router = express.Router();
 
 const vendorConfigSchema = z.object({
@@ -35,6 +36,7 @@ const vendorConfigSchema = z.object({
         modelName: z.string(),
         type: z.literal("image"),
         mode: z.array(z.enum(["text", "singleImage", "multiReference"])),
+        queueConfig: queueConfigSchema,
       }),
       z.object({
         name: z.string(),
@@ -53,6 +55,7 @@ const vendorConfigSchema = z.object({
             resolution: z.array(z.string()),
           }),
         ),
+        queueConfig: queueConfigSchema,
       }),
     ]),
   ),
@@ -67,11 +70,11 @@ export default router.post(
     const { tsCode } = req.body;
     const jsCode = transform(tsCode, { transforms: ["typescript"] }).code;
     const exports = u.vm(jsCode);
-    if (!exports) return res.status(400).send(success("脚本文件必须导出对象"));
-    if (!exports.textRequest) return res.status(400).send(success("脚本文件必须导出文本请求对象"));
-    if (!exports.imageRequest) return res.status(400).send(success("脚本文件必须导出图像请求对象"));
-    if (!exports.videoRequest) return res.status(400).send(success("脚本文件必须导出视频请求对象"));
-    if (!exports.vendor) return res.status(400).send(success("脚本文件必须导出vendor对象"));
+    if (!exports) return res.status(400).send(error("脚本文件必须导出对象"));
+    if (!exports.textRequest) return res.status(400).send(error("脚本文件必须导出文本请求对象"));
+    if (!exports.imageRequest) return res.status(400).send(error("脚本文件必须导出图像请求对象"));
+    if (!exports.videoRequest) return res.status(400).send(error("脚本文件必须导出视频请求对象"));
+    if (!exports.vendor) return res.status(400).send(error("脚本文件必须导出vendor对象"));
     const vendor = exports.vendor;
     const result = vendorConfigSchema.safeParse(vendor);
     if (!result.success) {

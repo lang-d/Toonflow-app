@@ -92,8 +92,8 @@ export default router.post(
           ...reqConfig.modelData,
         });
         await reqFn.save(type == "video" ? "test.mp4" : "testImage.jpg");
-        const resultUrl = await u.oss.getFileUrl(type == "video" ? "test.mp4" : "testImage.jpg");
-        res.status(200).send(success(resultUrl));
+        const outputPath = type == "video" ? "test.mp4" : "testImage.jpg";
+        res.status(200).send(success({ media: await u.mediaRef.toMediaRef(outputPath) }));
       }
     } catch (err) {
       console.error(err);

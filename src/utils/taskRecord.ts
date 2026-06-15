@@ -1,10 +1,4 @@
-import db from "@/utils/db";
-
-const taskStateMap = {
-  "0": "进行中",
-  "1": "已完成",
-  "-1": "生成失败",
-};
+import { createUnifiedTask, updateUnifiedTask } from "@/services/taskCoordinator";
 /**
  * 记录任务并返回结束函数
  * @param projectId  项目 ID
@@ -38,23 +32,31 @@ export default async function taskRecord(
     }
   }
 
-  const [id] = await db("o_tasks").insert({
+  const task = await createUnifiedTask({
     projectId,
     taskClass,
+    taskType: taskClass.includes("视频")
+      ? "video"
+      : taskClass.includes("图片") || taskClass.includes("图生成")
+        ? "image"
+        : taskClass.includes("音频") || taskClass.includes("音色")
+          ? "audio"
+          : "prompt",
+    status: "processing",
+    phase: "provider-call",
     relatedObjects: opteorContent,
     model: modelName,
     describe,
-    state: taskStateMap[0],
-    startTime: Date.now(),
   });
 
   /** 任务成功时调用 done(1)，失败时调用 done(-1, '原因') */
   return async function done(state: 1 | -1, reason?: string) {
-    await db("o_tasks")
-      .where("id", id)
-      .update({
-        state: taskStateMap[state],
-        reason: state === -1 ? (reason ?? "") : null,
-      });
+    await updateUnifiedTask(task.taskId, {
+      status: state === 1 ? "completed" : "failed",
+      phase: state === 1 ? "completed" : "failed",
+      progress: state === 1 ? 100 : undefined,
+      reason: state === -1 ? reason || "任务失败" : "",
+      clearLease: true,
+    });
   };
 }

@@ -6,6 +6,7 @@ import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { Output, tool } from "ai";
 import { assetItemSchema } from "@/agents/productionAgent/tools";
+import { createUnifiedTask } from "@/services/taskCoordinator";
 const router = express.Router();
 export type AssetData = z.infer<typeof assetItemSchema>;
 
@@ -77,7 +78,28 @@ export default router.post(
       }
     });
     const realStoryData = await u.db("o_storyboard").where("scriptId", scriptId).where("projectId", projectId).whereIn("id", storyIds);
-    res.status(200).send(
+    const queuedTasks: Array<{ storyboardId: number; taskId: string; legacyTaskId: number }> = [];
+    const generateList = compulsory
+      ? storyboardData
+      : storyboardData.filter((item) => item.shouldGenerateImage !== 0);
+    for (const item of generateList) {
+      const task = await createUnifiedTask({
+        projectId,
+        scriptId,
+        taskClass: "生成分镜图片",
+        taskType: "storyboard",
+        status: "queued",
+        targetType: "storyboard",
+        targetId: item.id,
+        businessType: "storyboard",
+        businessId: Number(item.id),
+        handler: "storyboard-image",
+        describe: "分镜图片生成",
+        payload: { projectId, scriptId, storyboardId: item.id },
+      });
+      queuedTasks.push({ storyboardId: Number(item.id), taskId: task.taskId, legacyTaskId: task.legacyTaskId });
+    }
+    return res.status(200).send(
       success(
         realStoryData.map((i) => ({
           id: i.id,
@@ -87,58 +109,10 @@ export default router.post(
           state: i.state,
           videoDesc: i.videoDesc,
           shouldGenerateImage: i.shouldGenerateImage,
+          taskId: queuedTasks.find((task) => task.storyboardId === i.id)?.taskId,
         })),
       ),
     );
-
-    const generateTask = async (item: (typeof storyboardData)[number]) => {
-      const repeloadObj = {
-        prompt: item.prompt!,
-        size: projectSettingData?.imageQuality as "1K" | "2K" | "4K",
-        aspectRatio: projectSettingData?.videoRatio as `${number}:${number}`,
-      };
-      try {
-            console.log("%c Line:104 🍔 assetRecord", "background:#e41a6a", assetRecord);
-
-        const imageCls = await u.Ai.Image(projectSettingData?.imageModel as `${string}:${string}`).run(
-          {
-            referenceList: await getAssetsImageBase64(assetRecord[item.id!] || []),
-            ...repeloadObj,
-          },
-          {
-            taskClass: "生成分镜图片",
-            describe: "分镜图片生成",
-            relatedObjects: JSON.stringify(repeloadObj),
-            projectId: projectId,
-          },
-        );
-        const savePath = `/${projectId}/assets/${scriptId}/${u.uuid()}.jpg`;
-        await imageCls.save(savePath);
-        await u.db("o_storyboard").where("id", item.id).update({
-          filePath: savePath,
-          state: "已完成",
-        });
-      } catch (e) {
-        u.db("o_storyboard")
-          .where("id", item.id)
-          .update({
-            filePath: "",
-            reason: u.error(e).message,
-            state: "生成失败",
-          });
-      }
-    };
-    // 按 concurrentCount 控制并发数，分批执行；跳过 shouldGenerateImage === 0 的分镜
-    let generateList = [];
-    if (compulsory) {
-      generateList = storyboardData;
-    } else {
-      generateList = storyboardData.filter((item) => item.shouldGenerateImage !== 0);
-    }
-    for (let i = 0; i < generateList.length; i += concurrentCount) {
-      const batch = generateList.slice(i, i + concurrentCount);
-      await Promise.all(batch.map(generateTask));
-    }
   },
 );
 async function getAssetsImageBase64(imageIds: number[]) {

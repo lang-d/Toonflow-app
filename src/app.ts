@@ -14,10 +14,23 @@ import u from "@/utils";
 import jwt from "jsonwebtoken";
 import socketInit from "@/socket/index";
 import { isEletron } from "@/utils/getPath";
-import { ensureThumbnail, ThumbnailSize } from "@/utils/image";
+import { isThumbnailImagePath, ThumbnailSize } from "@/utils/image";
+import { apiContract } from "@/middleware/apiContract";
+import { dbReady } from "@/utils/db";
+import { startVideoGenerationQueue, stopVideoGenerationQueue } from "@/utils/videoGenerationQueue";
+import { getTokenKey } from "@/services/authToken";
+import { enqueueThumbnail } from "@/services/thumbnailQueue";
+import { RUNTIME_API_HOST, RUNTIME_API_PORT } from "@/runtime/runtimeProtocol";
+import {
+  cacheDataPath,
+  resolveThumbnailFilePath,
+  storageMode,
+} from "@/services/storagePaths";
+import { isStorageMaintenanceActive } from "@/services/storageMigration";
 
 const app = express();
 const server = http.createServer(app);
+let startPromise: Promise<number> | null = null;
 
 async function checkPermissions() {
   if (!isEletron()) return true;
@@ -43,8 +56,11 @@ async function checkPermissions() {
   }
 }
 
-export default async function startServe(randomPort: Boolean = false) {
+async function startServeOnce(options: { startQueue?: boolean; portRetryMs?: number } = {}) {
+  process.env.PORT = String(RUNTIME_API_PORT);
   await checkPermissions();
+  await dbReady;
+  if (options.startQueue !== false) startVideoGenerationQueue();
 
   await u.writeVersion();
   const io = new Server(server, { cors: { origin: "*" } });
@@ -58,21 +74,69 @@ export default async function startServe(randomPort: Boolean = false) {
   app.use(cors({ origin: "*" }));
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
+  app.use(apiContract);
+  app.use((req, res, next) => {
+    if (
+      isStorageMaintenanceActive() &&
+      !["GET", "HEAD", "OPTIONS"].includes(req.method) &&
+      !req.path.startsWith("/api/task/status/") &&
+      req.path !== "/api/setting/storage/status"
+    ) {
+      return res.status(503).send({
+        code: 503,
+        data: { maintenance: true },
+        message: "Workspace migration is in progress",
+      });
+    }
+    next();
+  });
 
   // oss 静态资源
   const ossDir = u.getPath("oss");
   if (!fs.existsSync(ossDir)) {
     fs.mkdirSync(ossDir, { recursive: true });
   }
+  const localMediaSendOptions = {
+    acceptRanges: false,
+    etag: false,
+    lastModified: false,
+    cacheControl: true,
+    setHeaders(res: Response) {
+      res.setHeader("Cache-Control", "no-store");
+    },
+  };
+  const sendOssFile = async (req: Request, res: Response, next: NextFunction) => {
+    if (storageMode() !== "workspace") {
+      express.static(ossDir, localMediaSendOptions)(req, res, next);
+      return;
+    }
+    try {
+      const filePath = await u.oss.getLocalFilePath(req.path.replace(/^[/\\]+/, ""));
+      res.sendFile(filePath, localMediaSendOptions);
+    } catch {
+      next();
+    }
+  };
   console.log("文件目录:", ossDir);
   app.use(
     "/oss",
-    (req, res, next) => {
+    async (req, res, next) => {
       // 如果传参 type=small，则返回小图
       if (req.query.size) {
         const size = req.query.size as string;
-        const smallImageBaseDir = path.join(ossDir, "smallImage");
-        const originalPath = path.join(ossDir, req.path);
+        const smallImageBaseDir =
+          storageMode() === "workspace" ? cacheDataPath("thumbnails") : path.join(ossDir, "smallImage");
+        let originalPath: string;
+        try {
+          originalPath = await u.oss.getLocalFilePath(req.path.replace(/^[/\\]+/, ""));
+        } catch {
+          next();
+          return;
+        }
+        if (!isThumbnailImagePath(originalPath)) {
+          next();
+          return;
+        }
 
         // 解析 size 参数
         let sizeSubDir: string;
@@ -94,28 +158,38 @@ export default async function startServe(randomPort: Boolean = false) {
           sizeOpts = { type: "percentage", value: pct };
         } else {
           // 无效的 size 参数，降级返回原图
-          express.static(ossDir, { acceptRanges: false })(req, res, next);
+          await sendOssFile(req, res, next);
           return;
         }
 
         const ext = path.extname(req.path);
         const base = path.basename(req.path, ext);
         const dir = path.dirname(req.path);
-        const smallImagePath = path.join(smallImageBaseDir, dir, `${base}_${sizeSubDir}${ext}`);
+        const smallImagePath =
+          storageMode() === "workspace"
+            ? resolveThumbnailFilePath(req.path, sizeSubDir)
+            : path.join(smallImageBaseDir, dir, `${base}_${sizeSubDir}${ext}`);
 
-        ensureThumbnail(originalPath, smallImagePath, sizeOpts).then((thumbnailPath) => {
-          if (thumbnailPath) {
-            res.sendFile(thumbnailPath);
-          } else {
-            // 缩略图生成失败，降级返回原图
-            express.static(ossDir, { acceptRanges: false })(req, res, next);
-          }
-        });
+        if (fs.existsSync(smallImagePath)) {
+          res.sendFile(smallImagePath, localMediaSendOptions);
+          return;
+        }
+        const originalRelativePath = req.path.replace(/^[/\\]+/, "");
+        const thumbnailRelativePath = path
+          .relative(storageMode() === "workspace" ? smallImageBaseDir : ossDir, smallImagePath)
+          .split(path.sep)
+          .join("/");
+        void enqueueThumbnail({
+          originalPath: originalRelativePath,
+          thumbnailPath: thumbnailRelativePath,
+          size: sizeOpts,
+        }).catch((cause) => console.warn("[thumbnail] 入队失败:", u.error(cause).message));
+        res.sendFile(originalPath, localMediaSendOptions);
         return;
       }
       next();
     },
-    express.static(ossDir, { acceptRanges: false }),
+    sendOssFile,
   );
   // skills 静态资源
   const skillsDir = u.getPath("skills");
@@ -150,9 +224,8 @@ export default async function startServe(randomPort: Boolean = false) {
   }
 
   app.use(async (req, res, next) => {
-    const setting = await u.db("o_setting").where("key", "tokenKey").select("value").first();
-    if (!setting) return res.status(444).send({ message: "服务器秘钥未配置，请联系管理员" });
-    const { value: tokenKey } = setting;
+    const tokenKey = await getTokenKey();
+    if (!tokenKey) return res.status(444).send({ message: "服务器秘钥未配置，请联系管理员" });
     // 从 header 或 query 参数获取 token
     const rawToken = req.headers.authorization || (req.query.token as string) || "";
     const token = rawToken.replace("Bearer ", "");
@@ -161,7 +234,7 @@ export default async function startServe(randomPort: Boolean = false) {
 
     if (!token) return res.status(401).send({ message: "未提供token" });
     try {
-      const decoded = jwt.verify(token, tokenKey as string);
+      const decoded = jwt.verify(token, tokenKey);
       (req as any).user = decoded;
       next();
     } catch (err) {
@@ -169,7 +242,7 @@ export default async function startServe(randomPort: Boolean = false) {
     }
   });
 
-  const router = await import("@/router");
+  const router = require("@/router") as typeof import("@/router");
   await router.default(app);
 
   // 404 处理
@@ -185,23 +258,52 @@ export default async function startServe(randomPort: Boolean = false) {
     res.status(err.status || 500).send(err);
   });
 
-  const port = randomPort ? 0 : 10588;
-  return await new Promise((resolve) => {
-    server.listen(port, async () => {
-      const address = server.address();
-      const realPort = typeof address === "string" ? address : address?.port;
-      console.log(`[服务启动成功]: http://localhost:${realPort}`);
-      resolve(realPort);
-    });
+  const retryDeadline = Date.now() + Math.max(0, options.portRetryMs ?? 0);
+  return await new Promise<number>((resolve, reject) => {
+    const listen = () => {
+      const onError = (cause: NodeJS.ErrnoException) => {
+        server.off("listening", onListening);
+        if (cause.code === "EADDRINUSE" && Date.now() < retryDeadline) {
+          const remainingMs = Math.max(0, retryDeadline - Date.now());
+          console.warn(
+            `[api] ${RUNTIME_API_HOST}:${RUNTIME_API_PORT} is in use; retrying in 1s (${Math.ceil(remainingMs / 1000)}s remaining)`,
+          );
+          setTimeout(listen, Math.min(1_000, remainingMs || 1_000));
+          return;
+        }
+        reject(cause);
+      };
+      const onListening = () => {
+        server.off("error", onError);
+        console.log(`[api] listening at http://${RUNTIME_API_HOST}:${RUNTIME_API_PORT}`);
+        resolve(RUNTIME_API_PORT);
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(RUNTIME_API_PORT, RUNTIME_API_HOST);
+    };
+    listen();
   });
 }
 
+export default function startServe(options: { startQueue?: boolean; portRetryMs?: number } = {}) {
+  if (!startPromise) {
+    startPromise = startServeOnce(options).catch((error) => {
+      startPromise = null;
+      throw error;
+    });
+  }
+  return startPromise;
+}
+
 // 支持await关闭
-export function closeServe(): Promise<void> {
+export async function closeServe(): Promise<void> {
+  await stopVideoGenerationQueue();
   return new Promise((resolve, reject) => {
     if (server) {
       server.close((err?: Error) => {
         if (err) return reject(err);
+        startPromise = null;
         console.log("[服务已关闭]");
         resolve();
       });
@@ -212,4 +314,4 @@ export function closeServe(): Promise<void> {
 }
 
 const isElectron = typeof process.versions?.electron !== "undefined";
-if (!isElectron) startServe();
+if (!isElectron && process.env.TOONFLOW_UTILITY !== "1") startServe();

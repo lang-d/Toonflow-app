@@ -1,5 +1,5 @@
 // 判断是否为打包后的 Electron 环境
-const isElectron = typeof process.versions?.electron !== "undefined";
+const isElectron = typeof process.versions?.electron !== "undefined" && process.env.TOONFLOW_UTILITY !== "1";
 let isPackaged = false;
 if (isElectron) {
   const { app } = require("electron");

@@ -4,6 +4,8 @@ import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { createUnifiedTask } from "@/services/taskCoordinator";
+import { extensionFromDataUrl, taskInputPath } from "@/services/backgroundTaskHandlers";
 
 const router = express.Router();
 
@@ -62,8 +64,8 @@ function buildPrompt(cfg: AssetTypeConfig, artStyle: string, name: string, promp
 
 const requestSchema = {
   projectId: z.number(),
-  model: z.string(),
-  resolution: z.string(),
+  model: z.string().optional(),
+  resolution: z.string().optional(),
   id: z.number(),
   type: z.enum(["role", "scene", "tool", "storyboard"]),
   name: z.string(),
@@ -72,11 +74,15 @@ const requestSchema = {
 };
 
 export default router.post("/", validateFields(requestSchema), async (req, res) => {
-  const { projectId, model, resolution, id, type, name, prompt, base64 } = req.body;
+  const { projectId, id, type, name, prompt, base64 } = req.body;
 
   // 1. 查询项目 & 获取类型配置
-  const project = await u.db("o_project").where("id", projectId).select("artStyle", "type", "intro").first();
-  if (!project) return res.status(500).send(success({ message: "项目为空" }));
+  const project = await u.db("o_project").where("id", projectId).select("artStyle", "type", "intro", "imageModel", "imageQuality").first();
+  if (!project) return res.status(404).send(error("项目不存在"));
+  const model = req.body.model || project.imageModel;
+  const resolution = req.body.resolution || project.imageQuality;
+  if (!model) return res.status(400).send(error("项目未配置默认图片模型"));
+  if (!resolution) return res.status(400).send(error("项目未配置默认图片质量"));
 
   const cfg = assetTypeConfig[type as AssetType];
   if (!cfg) return res.status(400).send(error("不支持的类型"));
@@ -91,53 +97,44 @@ export default router.post("/", validateFields(requestSchema), async (req, res) 
   });
   await u.db("o_assets").where("id", id).update({ imageId });
 
-  // 3. 准备生成参数
-  const imagePath = `/${projectId}/${cfg.dir}/${uuidv4()}.jpg`;
-  const userPrompt = buildPrompt(cfg, project.artStyle!, name, prompt);
-  const describe = `生成${cfg.label}图，名称：${name}，提示词：${prompt}`;
-  const relatedObjects = { id, projectId, type: cfg.label };
-
-  try {
-    const aiImage = u.Ai.Image(model);
-    await aiImage.run(
-      {
-        prompt: userPrompt,
-        referenceList: base64 ? [{ type: "image", base64 }] : [],
-        size: resolution,
-        aspectRatio: "16:9",
-      },
-      {
-        taskClass: cfg.taskClass,
-        describe,
-        projectId,
-        relatedObjects: JSON.stringify(relatedObjects),
-      },
-    );
-    aiImage.save(imagePath);
-    // 5. 更新记录 & 返回结果
-    const imageData = await u.db("o_image").where("id", imageId).select("*").first();
-    if (!imageData) return res.status(500).send("资产已被删除");
-    if (imageData.state === "生成失败") return;
-    await u
-      .db("o_image")
-      .where("id", imageId)
-      .update({
-        state: "已完成",
-        filePath: imagePath,
-        type,
-        model: model.split(/:(.+)/)[1],
-        resolution,
-      });
-
-    const path = await u.oss.getSmallImageUrl(imagePath);
-    await u.db("o_assets").where("id", id).update({ imageId });
-
-    return res.status(200).send(success({ path, assetsId: id }));
-  } catch (e) {
-    await u
-      .db("o_image")
-      .where("id", imageId)
-      .update({ state: "生成失败", errorReason: u.error(e).message });
-    return res.status(400).send(error(u.error(e).message || "图片生成失败"));
+  let referencePath: string | undefined;
+  if (base64) {
+    referencePath = taskInputPath(projectId, extensionFromDataUrl(base64));
+    await u.oss.writeFile(referencePath, base64);
   }
+  await u.db("o_image").where("id", imageId).update({ state: "排队中" });
+  const task = await createUnifiedTask({
+    projectId,
+    taskClass: cfg.taskClass,
+    taskType: "asset",
+    status: "queued",
+    targetType: "asset",
+    targetId: id,
+    businessType: "image",
+    businessId: Number(imageId),
+    handler: "asset-image",
+    model,
+    describe: `生成${cfg.label}图：${name}`,
+    payload: {
+      projectId,
+      imageId: Number(imageId),
+      assetId: id,
+      type,
+      name,
+      prompt,
+      model,
+      resolution,
+      referencePath,
+    },
+  });
+  return res.status(200).send(
+    success({
+      assetsId: id,
+      imageId: Number(imageId),
+      taskId: task.taskId,
+      legacyTaskId: task.legacyTaskId,
+      status: "queued",
+      state: "排队中",
+    }),
+  );
 });

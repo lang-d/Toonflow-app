@@ -1,7 +1,7 @@
 import { generateText, streamText, wrapLanguageModel, stepCountIs, extractReasoningMiddleware } from "ai";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import axios from "axios";
-import { transform } from "sucrase";
+import crypto from "node:crypto";
 import u from "@/utils";
 
 type AiType =
@@ -122,9 +122,11 @@ async function getVendorTemplateFn(fnName: FnName, modelName: `${string}:${strin
   const modelList = await u.vendor.getModelList(id);
   const selectedModel = modelList.find((i: any) => i.modelName == name);
   if (!selectedModel) throw new Error(`未找到模型 ${name} id=${id}`);
-  const code = u.vendor.getCode(id);
-  const jsCode = transform(code, { transforms: ["typescript"] }).code;
-  const running = u.vm(jsCode);
+  const runtimeVariant = crypto
+    .createHash("sha1")
+    .update(`${vendorConfigData.inputValues ?? "{}"}\n${vendorConfigData.models ?? "[]"}`)
+    .digest("hex");
+  const running = u.vendor.getRuntime(id, runtimeVariant);
   if (running.vendor) {
     Object.assign(running.vendor.inputValues, JSON.parse(vendorConfigData.inputValues ?? "{}"));
     running.vendor.models = modelList;
@@ -153,10 +155,10 @@ async function withTaskRecord<T>(
   try {
     const result = await fn(modelName, false, 0);
 
-    taskRecord(1);
+    await taskRecord(1);
     return result;
   } catch (e) {
-    taskRecord(-1, u.error(e).message);
+    await taskRecord(-1, u.error(e).message);
     throw new Error(u.error(e).message);
   }
 }

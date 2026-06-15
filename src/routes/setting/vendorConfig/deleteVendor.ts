@@ -18,6 +18,7 @@ export default router.post(
       model: null,
       vendorId: null,
     });
+    u.vendor.invalidateCache(id);
     fs.rmSync(path.join(u.getPath("vendor"), `${id}.ts`), { recursive: true, force: true });
     res.status(200).send(success("删除成功"));
   },

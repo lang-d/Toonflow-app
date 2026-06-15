@@ -14,6 +14,7 @@ export default router.post(
   }),
   async (req, res) => {
     const { id } = req.body;
+    await u.db("o_directorAsset").whereIn("assetId", id).delete();
     await u.db("o_assets").whereIn("id", id).delete();
     res.status(200).send(success({ message: "删除资产成功" }));
   },

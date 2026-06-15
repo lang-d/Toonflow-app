@@ -62,8 +62,7 @@ export default router.post(
         mode: modeData.length > 0 ? modeData : mode,
       });
       await reqFn.save("test.mp4");
-      const resultUrl = await u.oss.getFileUrl("test.mp4");
-      res.status(200).send(success(resultUrl));
+      res.status(200).send(success({ media: await u.mediaRef.toMediaRef("test.mp4") }));
     } catch (err) {
       console.error(err);
       const msg = u.error(err).message;
