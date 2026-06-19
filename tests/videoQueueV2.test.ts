@@ -41,6 +41,9 @@ test("Dreamina model slots and queue metadata are parsed independently", () => {
   assert.equal(getDreaminaProviderModelKey("multimodal2video:seedance2.0"), "dreamina:seedance2.0");
   assert.equal(getDreaminaProviderModelKey("multimodal2video:seedance2.0fast"), "dreamina:seedance2.0fast");
   assert.equal(getDreaminaProviderModelKey("image2video:seedance2.0_fast"), "dreamina:seedance2.0fast");
+  assert.equal(getDreaminaProviderModelKey("text2video:seedance2.0mini"), "dreamina:seedance2.0mini");
+  assert.equal(getDreaminaProviderModelKey("image2video:seedance2.0-mini"), "dreamina:seedance2.0mini");
+  assert.equal(getDreaminaProviderModelKey("multimodal2video:seedance2.0_mini"), "dreamina:seedance2.0mini");
   assert.equal(getDreaminaProviderModelKey("multimodal2video:seedance2.0_vip"), "dreamina:seedance2.0_vip");
   assert.equal(getDreaminaProviderModelKey("multimodal2video:seedance2.0fast_vip"), "dreamina:seedance2.0fast_vip");
   assert.equal(getDreaminaProviderModelKey("text2video:seedance2.0-fast-vip"), "dreamina:seedance2.0fast_vip");

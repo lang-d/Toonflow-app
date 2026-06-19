@@ -572,6 +572,9 @@ export function normalizeDreaminaModelVersion(modelName: string) {
     {
       "seedance2.0-fast": "seedance2.0fast",
       "seedance2.0_fast": "seedance2.0fast",
+      "seedance2.0-mini": "seedance2.0mini",
+      "seedance2.0_mini": "seedance2.0mini",
+      "seedance2.0mini": "seedance2.0mini",
       "seedance2.0-fast-vip": "seedance2.0fast_vip",
       "seedance2.0-fast_vip": "seedance2.0fast_vip",
       "seedance2.0_fast_vip": "seedance2.0fast_vip",
@@ -1067,6 +1070,7 @@ function inferDisplayName(id: string) {
     return id
       .replace(/^seedance/i, "Seedance ")
       .replace(/2\.0fast_vip/i, "2.0 Fast VIP")
+      .replace(/2\.0mini/i, "2.0 Mini")
       .replace(/2\.0_vip/i, "2.0 VIP")
       .replace(/2\.0fast/i, "2.0 Fast");
   }
