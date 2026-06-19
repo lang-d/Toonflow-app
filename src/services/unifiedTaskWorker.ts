@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import db, { dbReady } from "@/utils/db";
 import u from "@/utils";
 import { executeImageFlowTask } from "@/services/imageFlowTask";
-import { generateWorkbenchVideoPrompt } from "@/services/workbenchVideoPrompt";
+import { generateWorkbenchVideoPromptResult } from "@/services/workbenchVideoPrompt";
 import {
   executeAssetImageTask,
   executeAssetPromptTask,
@@ -25,10 +25,15 @@ type TaskHandler = (payload: any, task: any) => Promise<Record<string, unknown> 
 
 const handlers: Record<string, TaskHandler> = {
   "image-flow": async (payload) => executeImageFlowTask(payload),
-  "workbench-prompt": async (payload) => {
-    const text = await generateWorkbenchVideoPrompt(payload);
-    await u.db("o_videoTrack").where({ id: payload.trackId }).update({ prompt: text, state: "已完成", reason: "" });
-    return { businessId: payload.trackId };
+  "workbench-prompt": async (payload, task) => {
+    const result = await generateWorkbenchVideoPromptResult(payload, { taskId: task.taskId, legacyTaskId: task.id });
+    await u.db("o_videoTrack").where({ id: payload.trackId }).update({ prompt: result.text, state: "已完成", reason: "" });
+    return {
+      businessId: payload.trackId,
+      diagnosticFile: result.diagnosticFile,
+      factSourceSummary: result.factSourceSummary,
+      groupSummary: result.groupSummary,
+    };
   },
   "asset-image": async (payload) => executeAssetImageTask(payload),
   "asset-prompt": async (payload) => executeAssetPromptTask(payload),

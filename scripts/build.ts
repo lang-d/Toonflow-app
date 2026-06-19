@@ -35,7 +35,7 @@ const appBuildConfig: esbuild.BuildOptions = {
   minify: false,
   format: "cjs",
   allowOverwrite: true,
-  outfile: `data/serve/app.js`,
+  outfile: "data/serve/app.js",
   platform: "node",
   target: "esnext",
   tsconfig: "./tsconfig.json",
@@ -55,7 +55,7 @@ const mainBuildConfig: esbuild.BuildOptions = {
   bundle: true,
   minify: false,
   format: "cjs",
-  outfile: `build/main.js`,
+  outfile: "build/main.js",
   allowOverwrite: true,
   platform: "node",
   target: "esnext",
@@ -104,7 +104,7 @@ const runtimeBuildConfig: esbuild.BuildOptions = {
     await Promise.all([esbuild.build(appBuildConfig), esbuild.build(mainBuildConfig), esbuild.build(runtimeBuildConfig)]);
 
     console.log("✅ 后端服务构建完成: data/serve/app.js");
-    console.log("✅ Electron主进程构建完成: build/main.js");
+    console.log("✅ Electron 主进程构建完成: build/main.js");
     console.log("\n🎉 所有构建任务完成!\n");
   } catch (err) {
     console.error("❌ 构建失败:", err);

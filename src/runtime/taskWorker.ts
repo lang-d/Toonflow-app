@@ -1,8 +1,11 @@
 import { startRuntimeMetrics } from "@/runtime/runtimeMetrics";
 import { startRuntimeHeartbeat } from "@/runtime/runtimeProtocol";
+import { initLogger, createLogger } from "@/logger";
 
 process.env.TOONFLOW_UTILITY = "1";
 process.env.TOONFLOW_RUNTIME_ROLE = "worker";
+initLogger({ role: "worker", hijackConsole: true });
+const runtimeLog = createLogger("runtime-worker");
 
 const parentPort = (process as any).parentPort;
 let apiPort: any = null;
@@ -41,12 +44,17 @@ async function shutdown() {
   stopMetrics();
   stopHeartbeat();
   try {
+    runtimeLog.info("Worker shutdown started", { event: "shutdown.start" });
     await stopWorker?.();
     const queue = require("@/utils/videoGenerationQueue") as typeof import("@/utils/videoGenerationQueue");
     await queue.stopVideoGenerationQueue();
     const portable = require("@/services/projectPortable") as typeof import("@/services/projectPortable");
     const summary = await portable.generateStaleProjectSnapshotsOnExit(undefined, { timeoutMs: 60_000 });
     if (summary.scanned) {
+      runtimeLog.info("Exit project snapshot flush completed", {
+        event: "project-snapshot.exit-flush",
+        ...summary,
+      });
       parentPort?.postMessage({
         type: "runtime:log",
         role: "worker",
@@ -62,6 +70,7 @@ async function shutdown() {
 }
 
 void (async () => {
+  runtimeLog.info("Worker utility process starting", { event: "startup" });
   const dbModule = require("@/utils/db") as typeof import("@/utils/db");
   const { dbReady } = dbModule;
   readDbDiagnostics = dbModule.getDbDiagnostics;
@@ -76,8 +85,10 @@ void (async () => {
     },
   });
   stopWorker = () => unified.stop();
+  runtimeLog.info("Worker utility process ready", { event: "ready" });
   parentPort?.postMessage({ type: "runtime:ready", role: "worker", pid: process.pid });
 })().catch((error) => {
+  runtimeLog.error("Worker utility process failed", { event: "fatal", error });
   parentPort?.postMessage({
     type: "runtime:error",
     role: "worker",

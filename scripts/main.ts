@@ -23,13 +23,16 @@ import {
   writeRuntimeStorageConfig,
   type RuntimeStorageConfig,
 } from "../src/services/storagePaths";
+import { initLogger, createLogger } from "../src/logger";
 
-// 鍔犻€?Electron 鍚姩锛氳烦杩?GPU 淇℃伅鏀堕泦锛屽噺灏戝垵濮嬪寲鑰楁椂
+const mainLog = createLogger("runtime-main");
+
+// 加速 Electron 启动：跳过 GPU 信息收集，减少初始化耗时
 app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
-const SYSTEM_ENTRIES = new Set(["assets", "models", "serve", "web"]);
-const USER_ENTRIES = new Set(["skills", "vendor", "modelPrompt"]);
+const SYSTEM_ENTRIES = new Set(["assets", "models", "serve", "web", "skills", "modelPrompt"]);
+const USER_ENTRIES = new Set(["vendor"]);
 const VITE_DEV_ORIGIN = "http://127.0.0.1:50188";
 const VITE_READY_TIMEOUT_MS = 30_000;
 const VITE_READY_INTERVAL_MS = 300;
@@ -219,7 +222,7 @@ function initializeData(): void {
   }
 }
 
-//鑾峰彇鍏ㄩ儴渚濊禆璺緞锛屼紭鍏堜粠 unpacked 鍔犺浇鍘熺敓妯″潡锛屽叾浠栨ā鍧椾粠 asar 鍔犺浇
+// 主窗口与运行时状态
 let mainWindow: BrowserWindow | null = null;
 let loadingWindow: BrowserWindow | null = null;
 let workspaceLockPath: string | null = null;
@@ -295,7 +298,7 @@ body{height:100vh;display:flex;flex-direction:column;align-items:center;justify-
   border-top-color:#000;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 p{margin-top:20px;font-size:14px;opacity:.6}
-</style></head><body><div class="spinner"></div><p>姝ｅ湪鍚姩鏈嶅姟鈥?/p></body></html>`)}`;
+</style></head><body><div class="spinner"></div><p>正在启动服务...</p></body></html>`)}`;
 
 function showLoading(): void {
   loadingWindow = new BrowserWindow({
@@ -377,7 +380,7 @@ async function isViteReady(): Promise<boolean> {
 
 async function waitForViteReady(timeoutMs = VITE_READY_TIMEOUT_MS): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  updateLoadingMessage("鍓嶇鏈嶅姟姝ｅ湪鍚姩...");
+  updateLoadingMessage("前端服务正在启动...");
   while (Date.now() < deadline) {
     if (await isViteReady()) return true;
     await new Promise((resolve) => setTimeout(resolve, VITE_READY_INTERVAL_MS));
@@ -394,17 +397,17 @@ background:#f5f6f8;color:#202124;font-family:-apple-system,BlinkMacSystemFont,"S
 h1{font-size:20px;margin:0 0 16px}p{line-height:1.7;margin:8px 0}.address{font-family:Consolas,monospace}
 button{margin-top:20px;padding:9px 18px;border:0;border-radius:4px;background:#0052d9;color:#fff;cursor:pointer}
 button:disabled{opacity:.6;cursor:wait}
-</style></head><body><div class="panel"><h1>鍓嶇鏈嶅姟灏氭湭灏辩华</h1>
-<p>寮€鍙戞湇鍔″櫒 <span class="address">${VITE_DEV_ORIGIN}</span> 褰撳墠鏃犳硶瀹屾暣鍔犺浇銆?/p>
-<p>璇风‘璁?Vite 宸插惎鍔ㄣ€傚悗绔繍琛岃繘绋嬩笉浼氬洜姝ゅ仠姝€?/p>
-<button id="retry">閲嶆柊妫€娴?/button>
+</style></head><body><div class="panel"><h1>前端服务尚未就绪</h1>
+<p>开发服务器 <span class="address">${VITE_DEV_ORIGIN}</span> 当前无法完整加载。</p>
+<p>请确认 Vite 已启动。后端运行进程不会因此停止。</p>
+<button id="retry">重新检测</button>
 <script>
 const button=document.getElementById("retry");
 button.addEventListener("click",async()=>{
   button.disabled=true;
-  button.textContent="姝ｅ湪妫€娴?..";
+  button.textContent="正在检测...";
   try{await fetch("toonflow://retryvite");}
-  catch{button.disabled=false;button.textContent="閲嶆柊妫€娴?;}
+  catch{button.disabled=false;button.textContent="重新检测";}
 });
 </script></div></body></html>`)}`;
   if (!loadingWindow || loadingWindow.isDestroyed()) showLoading();
@@ -421,9 +424,9 @@ background:#f5f6f8;color:#202124;font-family:-apple-system,BlinkMacSystemFont,"S
 h1{font-size:20px;margin:0 0 16px}p{line-height:1.7;margin:8px 0}.address{font-family:Consolas,monospace}
 .error{margin-top:18px;padding:12px;background:#f8f8f8;border-left:3px solid #d93025;white-space:pre-wrap;
 word-break:break-word;font-family:Consolas,monospace;font-size:12px}
-</style></head><body><div class="panel"><h1>Toonflow API 鍚姩澶辫触</h1>
-<p>鍥哄畾鍦板潃 <span class="address">${RUNTIME_API_URL}</span> 褰撳墠涓嶅彲鐢ㄣ€?/p>
-<p>璇峰叧闂棫鐨?Toonflow锛屾垨缁撴潫鍗犵敤绔彛 ${RUNTIME_API_PORT} 鐨勭▼搴忓悗閲嶆柊鍚姩銆?/p>
+</style></head><body><div class="panel"><h1>Toonflow API 启动失败</h1>
+<p>固定地址 <span class="address">${RUNTIME_API_URL}</span> 当前不可用。</p>
+<p>请关闭旧的 Toonflow，或结束占用端口 ${RUNTIME_API_PORT} 的程序后重新启动。</p>
 <div class="error">${message.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`)}</div>
 </div></body></html>`)}`;
   if (!loadingWindow || loadingWindow.isDestroyed()) showLoading();
@@ -531,7 +534,15 @@ function runtimeEntry(role: RuntimeRole) {
 }
 
 function forwardRuntimeOutput(role: RuntimeRole, stream: NodeJS.ReadableStream | null, level: "log" | "error") {
-  stream?.on("data", (chunk) => console[level](`[${role}] ${String(chunk).trimEnd()}`));
+  stream?.on("data", (chunk) => {
+    const message = String(chunk).trimEnd();
+    if (!message) return;
+    mainLog[level === "error" ? "error" : "info"](message, {
+      event: level === "error" ? "runtime.stderr" : "runtime.stdout",
+      role: "main",
+      childRole: role,
+    });
+  });
 }
 
 function getRuntimeSnapshot(): RuntimeSupervisorSnapshot {
@@ -656,8 +667,20 @@ function spawnRuntime(role: RuntimeRole, restartCount = 0): Promise<{ pid: numbe
       });
     }
     if (message?.type === "runtime:error") {
-      console.error(`[${role}] fatal:`, message.message);
+      mainLog.error("Runtime child reported fatal error", {
+        event: "runtime.error",
+        childRole: role,
+        childPid: message.pid,
+        error: message.message,
+      });
       updateRuntimeState(role, { status: "failed", lastError: String(message.message || "unknown runtime error") });
+    }
+    if (message?.type === "runtime:log") {
+      mainLog.info(String(message.message || ""), {
+        event: "runtime.child-log",
+        childRole: message.role || role,
+        childPid: message.pid,
+      });
     }
     if (message?.type === "runtime:stopped") {
       updateRuntimeState(role, { status: "stopped" });
@@ -689,7 +712,12 @@ function spawnRuntime(role: RuntimeRole, restartCount = 0): Promise<{ pid: numbe
       return;
     }
     const delays = [1000, 3000, 10_000];
-    console.warn(`[runtime] ${role} exited with code ${code}; restarting in ${delays[nextAttempt - 1]}ms`);
+    mainLog.warn("Runtime child exited; restarting", {
+      event: "runtime.restart",
+      childRole: role,
+      code,
+      delayMs: delays[nextAttempt - 1],
+    });
     setTimeout(() => {
       void spawnRuntime(role, nextAttempt)
         .then(() => {
@@ -739,7 +767,12 @@ function startRuntimeHealthMonitor(): void {
           status: "failed",
           lastError: `heartbeat timed out after ${Math.round(heartbeatAge / 1000)}s`,
         });
-        console.error(`[runtime] ${role} heartbeat timed out; terminating pid ${record.process.pid}`);
+        mainLog.error("Runtime heartbeat timed out; terminating child", {
+          event: "runtime.heartbeat-timeout",
+          childRole: role,
+          childPid: record.process.pid,
+          heartbeatAge,
+        });
         record.process.kill();
       } else if (heartbeatAge > 15_000 && state?.status === "ready") {
         updateRuntimeState(role, {
@@ -816,7 +849,9 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
-  // 绔嬪嵆鏄剧ず鍔犺浇绐楀彛锛坉ata URL + backgroundColor锛岀灛闂村彲瑙侊級
+  initLogger({ role: "main", logDir: path.join(app.getPath("userData"), "logs"), hijackConsole: true });
+  mainLog.info("Electron main process ready", { event: "ready" });
+  // 立即显示加载窗口（data URL + backgroundColor，瞬间可见）
   showLoading();
 
   try {
@@ -835,7 +870,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       }
     }
     if (app.isPackaged) {
-      // 鐢熶骇鐜锛氳鍑轰富绾跨▼涓€娆★紝纭繚 loading 绐楀彛娓叉煋鍚庡啀鍋氳€楁椂鏂囦欢鎷疯礉
+      // 生产环境：让出主线程一次，确保 loading 窗口渲染后再做耗时文件拷贝
       await new Promise((r) => setTimeout(r, 0));
       initializeData();
     } else {
@@ -848,7 +883,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         resolve();
       }, 2000);
     });
-    // 娉ㄥ唽鍗忚澶勭悊鍣?
+    // 注册协议处理器
     protocol.handle("toonflow", async (request) => {
       const url = new URL(request.url);
       const pathname = url.hostname.toLowerCase();
@@ -881,12 +916,12 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           return { ok: true };
         },
         apprestart: () => {
-          // 寤惰繜鎵ц锛岃鍝嶅簲鍏堣繑鍥炵粰鍓嶇
+          // 延迟执行，让响应先返回给前端
           setTimeout(() => {
             app.relaunch();
             app.exit(0);
           }, 500);
-          return { ok: true, message: "搴旂敤鍗冲皢閲嶅惎" };
+          return { ok: true, message: "应用即将重启" };
         },
         windowismaximized: () => ({
           maximized: mainWindow?.isMaximized() ?? false,
@@ -903,7 +938,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
             shell.openExternal(targetUrl);
             return { ok: true };
           } else {
-            return { ok: false, error: "缂哄皯url鍙傛暟" };
+            return { ok: false, error: "缺少 url 参数" };
           }
         },
         selectdirectory: () => {
@@ -930,9 +965,9 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           return openError ? { ok: false, error: openError } : { ok: true, path: target };
         },
         getlocallanguage: () => {
-          // 鑾峰彇搴旂敤鍖哄煙璁剧疆
+          // 获取应用区域设置
 
-          // macOS绯荤粺鐗瑰畾鏂规硶
+          // macOS 系统特定方法
           if (process.platform === "darwin") {
             const systemLocale = systemPreferences.getUserDefault("AppleLocale", "string");
             return { ok: true, local: systemLocale };
@@ -944,7 +979,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
 
       const handler = handlers[pathname];
 
-      const responseData = handler ? await handler() : { error: "鏈煡鎺ュ彛" };
+      const responseData = handler ? await handler() : { error: "未知接口" };
       return new Response(JSON.stringify(responseData), {
         headers: {
           "Content-Type": "application/json",
@@ -953,7 +988,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       });
     });
 
-    // 鏈嶅姟鍚姩鎴愬姛锛屽垱寤轰富绐楀彛锛堜富绐楀彛 ready-to-show 鏃惰嚜鍔ㄥ叧闂璴oading锛?
+    // 服务启动成功，创建主窗口（主窗口 ready-to-show 时自动关闭 loading）
     await createMainWindow();
   } catch (err) {
     console.error("[runtime startup failed]:", err);
@@ -983,7 +1018,7 @@ app.on("before-quit", (event) => {
   shutdownStarted = true;
   void stopRuntimeProcesses()
     .catch((error) => {
-      console.error("[鏈嶅姟鍏抽棴澶辫触]:", error);
+      console.error("[服务关闭失败]:", error);
     })
     .finally(() => {
       releaseWorkspaceLock();

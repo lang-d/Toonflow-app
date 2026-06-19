@@ -3,7 +3,13 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { buildStoryboardVideoFact } from "@/services/storyboardFacts";
+import { parseMusicPlan } from "@/services/musicSuggestion";
 const router = express.Router();
+
+function normalizeReviewState(value: unknown): "pending" | "passed" | "hasIssues" | "blocked" {
+  return value === "passed" || value === "hasIssues" || value === "blocked" ? value : "pending";
+}
 
 interface VideoItem {
   id: number;
@@ -16,6 +22,14 @@ interface TrackMedia {
   id?: number;
   fileType: "image" | "video" | "audio";
   videoDesc?: string;
+  scene?: string;
+  picture?: string;
+  action?: string;
+  shotSize?: string;
+  cameraMove?: string;
+  dialogue?: string;
+  sound?: string;
+  visibleEmotion?: string;
   sources?: "storyboard" | "assets" | "merged" | "directorAsset";
   sourceRefs?: Array<{ id: number; sources: "storyboard" | "assets" | "directorAsset"; order: number }>;
 }
@@ -29,6 +43,12 @@ interface TrackItem {
   selectVideoId?: number;
   medias: TrackMedia[];
   videoList: VideoItem[];
+  groupKey?: string;
+  groupName?: string;
+  groupIntent?: string;
+  musicPlan?: unknown;
+  reviewState?: "pending" | "passed" | "hasIssues" | "blocked";
+  reviewIssues?: unknown[];
 }
 
 export default router.post(
@@ -60,12 +80,36 @@ export default router.post(
     );
     const storyboardTrackRecord: Record<number, any[]> = {};
     storyboardList.forEach((i) => {
+      const fact = buildStoryboardVideoFact(i);
+      const factSummary = [
+        fact.location,
+        fact.timeOfDay,
+        fact.picture,
+        fact.action,
+        fact.dialogue,
+        fact.sound,
+      ]
+        .filter(Boolean)
+        .join(" · ");
       if (storyboardTrackRecord[i.trackId!]) {
         storyboardTrackRecord[i.trackId!].push({
           src: i.filePath,
           fileType: "image",
           sources: "storyboard",
-          ...(i.prompt != null ? { prompt: i.videoDesc } : {}),
+          prompt: factSummary,
+          videoDesc: fact.rawVideoDesc,
+          scene: fact.scene,
+          picture: fact.picture,
+          action: fact.action,
+          shotSize: fact.shotSize,
+          cameraMove: fact.cameraMove,
+          dialogue: fact.dialogue,
+          sound: fact.sound,
+          visibleEmotion: fact.visibleEmotion,
+          location: fact.location,
+          timeOfDay: fact.timeOfDay,
+          tableRowJson: i.tableRowJson,
+          factStatus: fact.factStatus,
           ...(i.id != null ? { id: i.id } : {}),
           index: i.index,
         });
@@ -75,7 +119,20 @@ export default router.post(
             src: i.filePath,
             fileType: "image",
             sources: "storyboard",
-            ...(i.prompt != null ? { prompt: i.videoDesc } : {}),
+            prompt: factSummary,
+            videoDesc: fact.rawVideoDesc,
+            scene: fact.scene,
+            picture: fact.picture,
+            action: fact.action,
+            shotSize: fact.shotSize,
+            cameraMove: fact.cameraMove,
+            dialogue: fact.dialogue,
+            sound: fact.sound,
+            visibleEmotion: fact.visibleEmotion,
+            location: fact.location,
+            timeOfDay: fact.timeOfDay,
+            tableRowJson: i.tableRowJson,
+            factStatus: fact.factStatus,
             ...(i.id != null ? { id: i.id } : {}),
             index: i.index,
           },
@@ -158,7 +215,7 @@ export default router.post(
       );
     }
 
-    const trackData = await u.db("o_videoTrack").where({ projectId, scriptId });
+    const trackData = await u.db("o_videoTrack").where({ projectId, scriptId, archived: 0 });
     const mergedRows = await u
       .db("o_workbenchMergedReference")
       .where({ projectId, scriptId, state: "active" })
@@ -196,6 +253,18 @@ export default router.post(
         prompt: item?.prompt || "",
         state: (item?.state as "未生成" | "生成中" | "已完成" | "生成失败") ?? "未生成",
         reason: item?.reason ?? "",
+        groupKey: item?.groupKey ?? "",
+        groupName: item?.groupName ?? "",
+        groupIntent: item?.groupIntent ?? "",
+        musicPlan: parseMusicPlan(item?.musicPlanJson),
+        reviewState: normalizeReviewState(item?.reviewState),
+        reviewIssues: (() => {
+          try {
+            return JSON.parse(item?.reviewIssuesJson || "[]");
+          } catch {
+            return [];
+          }
+        })(),
         selectVideoId: Number(item?.videoId)!,
         medias: (() => {
           const storyboardMedias = storyboardTrackRecord[trackId] ?? [];

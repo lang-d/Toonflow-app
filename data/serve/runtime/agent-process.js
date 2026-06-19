@@ -51,6 +51,477 @@ var init_runtimeProtocol = __esm({
   }
 });
 
+// node_modules/is-path-inside/index.js
+function isPathInside(childPath, parentPath) {
+  const relation = import_node_path.default.relative(parentPath, childPath);
+  return Boolean(
+    relation && relation !== ".." && !relation.startsWith(`..${import_node_path.default.sep}`) && relation !== import_node_path.default.resolve(childPath)
+  );
+}
+var import_node_path;
+var init_is_path_inside = __esm({
+  "node_modules/is-path-inside/index.js"() {
+    "use strict";
+    import_node_path = __toESM(require("node:path"), 1);
+  }
+});
+
+// src/services/storagePaths.ts
+function absolute(value, fallback) {
+  return import_node_path2.default.resolve(value?.trim() || fallback);
+}
+function appDataRoot() {
+  return absolute(process.env.TOONFLOW_APP_DATA_DIR, import_node_path2.default.join(process.cwd(), "data"));
+}
+function storageMode() {
+  return process.env.TOONFLOW_STORAGE_MODE === "workspace" ? "workspace" : "legacy";
+}
+function legacyDataRoot() {
+  return absolute(
+    process.env.TOONFLOW_LEGACY_DATA_DIR || process.env.TOONFLOW_DATA_DIR,
+    import_node_path2.default.join(process.cwd(), "data")
+  );
+}
+function workspaceRoot() {
+  return absolute(process.env.TOONFLOW_WORKSPACE_DIR, legacyDataRoot());
+}
+function systemDataPath(...parts) {
+  return import_node_path2.default.join(
+    absolute(process.env.TOONFLOW_SYSTEM_DATA_DIR, import_node_path2.default.join(appDataRoot(), "system")),
+    ...parts
+  );
+}
+function userDataPath(...parts) {
+  return import_node_path2.default.join(appDataRoot(), "user", ...parts);
+}
+function cacheDataPath(...parts) {
+  return import_node_path2.default.join(appDataRoot(), "cache", ...parts);
+}
+function workspaceDataPath(...parts) {
+  return import_node_path2.default.join(workspaceRoot(), ...parts);
+}
+function profileDatabasePath() {
+  return import_node_path2.default.join(appDataRoot(), "profile.sqlite");
+}
+function workspaceDatabasePath() {
+  return storageMode() === "workspace" ? workspaceDataPath("workspace.sqlite") : import_node_path2.default.join(legacyDataRoot(), "db2.sqlite");
+}
+function projectDirectory(projectId) {
+  return workspaceDataPath("projects", String(projectId));
+}
+function projectMediaDirectory(projectId) {
+  return import_node_path2.default.join(projectDirectory(projectId), "media");
+}
+function resolveMediaFilePath(userPath) {
+  const normalized = userPath.replace(/^[/\\]+/, "").replace(/[\\/]+/g, import_node_path2.default.sep);
+  if (storageMode() !== "workspace") return import_node_path2.default.resolve(legacyDataRoot(), "oss", normalized);
+  const segments = normalized.split(import_node_path2.default.sep).filter(Boolean);
+  if (segments[0]?.toLowerCase() === "smallimage") {
+    return import_node_path2.default.resolve(cacheDataPath("thumbnails"), ...segments.slice(1));
+  }
+  if (/^\d+$/.test(segments[0] || "")) {
+    return import_node_path2.default.resolve(projectMediaDirectory(segments[0]), ...segments.slice(1));
+  }
+  return import_node_path2.default.resolve(workspaceDataPath("shared"), ...segments);
+}
+function isSafeMediaFilePath(filePath) {
+  const resolved = import_node_path2.default.resolve(filePath);
+  const roots = storageMode() === "workspace" ? [workspaceRoot(), cacheDataPath("thumbnails")] : [import_node_path2.default.join(legacyDataRoot(), "oss")];
+  return roots.some((root2) => resolved === import_node_path2.default.resolve(root2) || isPathInside(resolved, import_node_path2.default.resolve(root2)));
+}
+function getDataPath(fileName) {
+  if (storageMode() === "legacy") {
+    const base = legacyDataRoot();
+    return fileName == null ? base : import_node_path2.default.resolve(base, ...Array.isArray(fileName) ? fileName : [fileName]);
+  }
+  if (fileName == null) return appDataRoot();
+  const parts = Array.isArray(fileName) ? fileName : [fileName];
+  const [head, ...tail] = parts;
+  const mapping = {
+    "db2.sqlite": workspaceDatabasePath(),
+    "workspace.sqlite": workspaceDatabasePath(),
+    oss: workspaceRoot(),
+    backups: workspaceDataPath("backups"),
+    vendor: userDataPath("vendor"),
+    skills: userDataPath("skills"),
+    modelPrompt: userDataPath("modelPrompt"),
+    bin: userDataPath("bin"),
+    models: systemDataPath("models"),
+    serve: systemDataPath("serve"),
+    web: systemDataPath("web"),
+    assets: systemDataPath("assets"),
+    logs: import_node_path2.default.join(appDataRoot(), "logs"),
+    temp: import_node_path2.default.join(appDataRoot(), "temp"),
+    cache: import_node_path2.default.join(appDataRoot(), "cache"),
+    "version.txt": systemDataPath("version.txt")
+  };
+  const root2 = mapping[head] || userDataPath(head);
+  return import_node_path2.default.resolve(root2, ...tail);
+}
+var import_node_path2, PROFILE_TABLES;
+var init_storagePaths = __esm({
+  "src/services/storagePaths.ts"() {
+    "use strict";
+    import_node_path2 = __toESM(require("node:path"));
+    init_is_path_inside();
+    PROFILE_TABLES = /* @__PURE__ */ new Set([
+      "o_user",
+      "o_artStyle",
+      "o_agentDeploy",
+      "o_setting",
+      "o_prompt",
+      "o_modelPrompt",
+      "o_vendorConfig",
+      "o_skillList",
+      "o_skillAttribution"
+    ]);
+  }
+});
+
+// src/logger.ts
+function dateKey(time4 = Date.now()) {
+  return new Date(time4).toISOString().slice(0, 10);
+}
+function ensureDir(dir) {
+  import_node_fs.default.mkdirSync(dir, { recursive: true });
+}
+function streamKey(role, channel) {
+  return `${dateKey()}:${role}:${channel}`;
+}
+function logFilePath(role, channel = role) {
+  return import_node_path3.default.join(rootLogDir, dateKey(), `${channel}.jsonl`);
+}
+function getStream(role, channel = role) {
+  const key = streamKey(role, channel);
+  const existing = writeStreams.get(key);
+  if (existing && !existing.destroyed) return existing;
+  const file3 = logFilePath(role, channel);
+  ensureDir(import_node_path3.default.dirname(file3));
+  const stream4 = import_node_fs.default.createWriteStream(file3, { flags: "a", encoding: "utf8" });
+  writeStreams.set(key, stream4);
+  return stream4;
+}
+function byteLength(value) {
+  return Buffer.byteLength(value, "utf8");
+}
+function stringifyError(error50) {
+  if (!error50) return void 0;
+  if (error50 instanceof Error) {
+    return {
+      name: error50.name,
+      message: error50.message,
+      stack: error50.stack
+    };
+  }
+  return sanitizeValue(error50, 0);
+}
+function truncateString(value, maxBytes = MAX_FIELD_BYTES) {
+  const clean = value.replace(BASE64_PATTERN, "[base64 omitted]");
+  if (byteLength(clean) <= maxBytes) return clean;
+  let size = 0;
+  let output = "";
+  for (const char of clean) {
+    const next = byteLength(char);
+    if (size + next > maxBytes) break;
+    output += char;
+    size += next;
+  }
+  return `${output}...[truncated ${byteLength(clean) - size} bytes]`;
+}
+function sanitizeValue(value, depth = 0) {
+  if (depth > 5) return "[max depth]";
+  if (value == null) return value;
+  if (typeof value === "string") return truncateString(value);
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Error) return stringifyError(value);
+  if (Buffer.isBuffer(value)) return `[buffer ${value.length} bytes]`;
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => sanitizeValue(item, depth + 1));
+  if (typeof value === "object") {
+    const output = {};
+    for (const [key, item] of Object.entries(value).slice(0, 100)) {
+      output[key] = SENSITIVE_KEYS.test(key) ? "[redacted]" : sanitizeValue(item, depth + 1);
+    }
+    return output;
+  }
+  return String(value);
+}
+function compactLine(entry) {
+  let line = `${JSON.stringify(entry)}
+`;
+  if (byteLength(line) <= MAX_LINE_BYTES) return { line };
+  const diagnosticFile = writeDiagnosticFile("oversize-log-entry", JSON.stringify(entry, null, 2));
+  const compact = {
+    time: entry.time,
+    level: entry.level,
+    role: entry.role,
+    pid: entry.pid,
+    module: entry.module,
+    event: entry.event,
+    message: truncateString(String(entry.message || "oversize log entry"), 2048),
+    diagnosticFile
+  };
+  line = `${JSON.stringify(compact)}
+`;
+  return { line, diagnosticFile };
+}
+function consoleMethod(level) {
+  if (level === "error") return "error";
+  if (level === "warn") return "warn";
+  if (level === "debug") return "debug";
+  return "info";
+}
+function formatConsole(level, entry) {
+  const moduleName = entry.module ? `[${entry.module}]` : "";
+  const eventName = entry.event ? ` ${entry.event}` : "";
+  const message = entry.message ? ` ${entry.message}` : "";
+  return `[${entry.role}] [${level}]${moduleName}${eventName}${message}`;
+}
+function writeLog(level, message, context2 = {}) {
+  if (!initialized) initLogger();
+  const role = context2.role || currentRole;
+  const channel = context2.module === "video-queue" ? "video-queue" : role;
+  const entry = {
+    time: (/* @__PURE__ */ new Date()).toISOString(),
+    level,
+    role,
+    pid: process.pid,
+    module: context2.module || "app",
+    event: context2.event || "log",
+    message: truncateString(message)
+  };
+  for (const [key, value] of Object.entries(context2)) {
+    if (["role", "module", "event", "error"].includes(key)) continue;
+    entry[key] = SENSITIVE_KEYS.test(key) ? "[redacted]" : sanitizeValue(value);
+  }
+  if (context2.error) entry.error = stringifyError(context2.error);
+  const { line, diagnosticFile } = compactLine(entry);
+  if (diagnosticFile) entry.diagnosticFile = diagnosticFile;
+  getStream(role, channel).write(line);
+  const original = originalConsole[consoleMethod(level)];
+  if (original) {
+    writingRaw = true;
+    try {
+      original(formatConsole(level, entry));
+    } finally {
+      writingRaw = false;
+    }
+  }
+}
+function createLogger(moduleName, defaults2 = {}) {
+  const write = (level, message, context2 = {}) => writeLog(level, message, { ...defaults2, ...context2, module: context2.module || defaults2.module || moduleName });
+  return {
+    debug: (message, context2) => write("debug", message, context2),
+    info: (message, context2) => write("info", message, context2),
+    warn: (message, context2) => write("warn", message, context2),
+    error: (message, context2) => write("error", message, context2)
+  };
+}
+function writeRaw(level, chunk) {
+  if (writingRaw) return;
+  const value = typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+  const text2 = value.replace(ANSI_PATTERN, "").trim();
+  if (!text2) return;
+  writingRaw = true;
+  try {
+    writeLog(level, text2, { module: "stdout", event: level === "error" ? "stderr" : "stdout" });
+  } finally {
+    writingRaw = false;
+  }
+}
+function hijackConsole() {
+  if (hijacked) return;
+  for (const method of ["log", "info", "warn", "error", "debug"]) {
+    originalConsole[method] = console[method].bind(console);
+    console[method] = (...args) => {
+      const level = method === "log" ? "info" : method;
+      writeLog(level, args.map((item) => typeof item === "string" ? item : JSON.stringify(sanitizeValue(item))).join(" "), {
+        module: "console",
+        event: method
+      });
+    };
+  }
+  originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  originalStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stdout.write = ((chunk, ...rest) => {
+    writeRaw("info", chunk);
+    return originalStdoutWrite(chunk, ...rest);
+  });
+  process.stderr.write = ((chunk, ...rest) => {
+    writeRaw("error", chunk);
+    return originalStderrWrite(chunk, ...rest);
+  });
+  hijacked = true;
+}
+function initLogger(options = {}) {
+  currentRole = options.role || process.env.TOONFLOW_RUNTIME_ROLE || currentRole;
+  rootLogDir = options.logDir || import_node_path3.default.join(appDataRoot(), "logs");
+  retentionDays = options.retentionDays || DEFAULT_RETENTION_DAYS;
+  ensureDir(rootLogDir);
+  for (const method of ["log", "info", "warn", "error", "debug"]) {
+    if (!originalConsole[method]) originalConsole[method] = console[method].bind(console);
+  }
+  if (options.hijackConsole) hijackConsole();
+  initialized = true;
+  return logger;
+}
+function closeLogger() {
+  for (const stream4 of writeStreams.values()) stream4.end();
+  writeStreams.clear();
+  if (hijacked) {
+    for (const method of ["log", "info", "warn", "error", "debug"]) {
+      const original = originalConsole[method];
+      if (original) console[method] = original;
+    }
+    if (originalStdoutWrite) process.stdout.write = originalStdoutWrite;
+    if (originalStderrWrite) process.stderr.write = originalStderrWrite;
+    originalConsole = {};
+    originalStdoutWrite = null;
+    originalStderrWrite = null;
+    hijacked = false;
+  }
+  initialized = false;
+}
+function writeDiagnosticFile(name28, content, context2 = {}) {
+  if (!initialized) initLogger();
+  const provider = context2.provider || "app";
+  const safeName = name28.replace(/[^\w.-]+/g, "_").slice(0, 80) || "diagnostic";
+  const fileName = `${Date.now()}-${safeName}.log`;
+  const file3 = import_node_path3.default.join(rootLogDir, "provider", String(provider), dateKey(), fileName);
+  ensureDir(import_node_path3.default.dirname(file3));
+  import_node_fs.default.writeFileSync(file3, content, typeof content === "string" ? "utf8" : void 0);
+  return file3;
+}
+function walkFiles(dir) {
+  if (!import_node_fs.default.existsSync(dir)) return [];
+  const files = [];
+  const walk = (current) => {
+    for (const entry of import_node_fs.default.readdirSync(current, { withFileTypes: true })) {
+      const file3 = import_node_path3.default.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(file3);
+      } else if (entry.isFile()) {
+        const stat = import_node_fs.default.statSync(file3);
+        files.push({ path: file3, relativePath: import_node_path3.default.relative(dir, file3), size: stat.size, mtimeMs: stat.mtimeMs });
+      }
+    }
+  };
+  walk(dir);
+  return files;
+}
+function readRecentErrors(files) {
+  const errors = [];
+  for (const file3 of files.filter((item) => item.path.endsWith(".jsonl")).sort((a, b) => b.path.localeCompare(a.path))) {
+    if (errors.length >= 50) break;
+    try {
+      const lines = import_node_fs.default.readFileSync(file3.path, "utf8").trim().split(/\r?\n/).slice(-300);
+      for (const line of lines.reverse()) {
+        if (errors.length >= 50) break;
+        const parsed = JSON.parse(line);
+        if (parsed.level === "error" || parsed.level === "warn") {
+          errors.push({
+            time: parsed.time,
+            level: parsed.level,
+            role: parsed.role,
+            module: parsed.module,
+            event: parsed.event,
+            message: parsed.message,
+            file: file3.relativePath
+          });
+        }
+      }
+    } catch {
+    }
+  }
+  return errors;
+}
+function getLoggerStatus() {
+  if (!initialized) initLogger();
+  const files = walkFiles(rootLogDir);
+  const totalSize = files.reduce((sum, item) => sum + item.size, 0);
+  const lastLogAtByRole = {};
+  for (const file3 of files) {
+    const name28 = import_node_path3.default.basename(file3.path, ".jsonl");
+    if (!lastLogAtByRole[name28] || lastLogAtByRole[name28] < file3.mtimeMs) lastLogAtByRole[name28] = file3.mtimeMs;
+  }
+  return {
+    logDir: rootLogDir,
+    retentionDays,
+    currentRole,
+    files,
+    totalSize,
+    recentErrors: readRecentErrors(files),
+    lastLogAtByRole
+  };
+}
+function cleanupLogs(days = retentionDays) {
+  if (!initialized) initLogger();
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1e3;
+  let removedFiles = 0;
+  let removedBytes = 0;
+  for (const file3 of walkFiles(rootLogDir)) {
+    if (file3.mtimeMs >= cutoff) continue;
+    try {
+      import_node_fs.default.rmSync(file3.path, { force: true });
+      removedFiles += 1;
+      removedBytes += file3.size;
+    } catch {
+    }
+  }
+  pruneEmptyDirs(rootLogDir);
+  return { removedFiles, removedBytes, cutoff };
+}
+function pruneEmptyDirs(dir) {
+  if (!import_node_fs.default.existsSync(dir)) return;
+  for (const entry of import_node_fs.default.readdirSync(dir, { withFileTypes: true })) {
+    const child = import_node_path3.default.join(dir, entry.name);
+    if (entry.isDirectory()) pruneEmptyDirs(child);
+  }
+  if (dir !== rootLogDir && import_node_fs.default.existsSync(dir) && import_node_fs.default.readdirSync(dir).length === 0) {
+    try {
+      import_node_fs.default.rmdirSync(dir);
+    } catch {
+    }
+  }
+}
+var import_node_fs, import_node_path3, DEFAULT_RETENTION_DAYS, MAX_FIELD_BYTES, MAX_LINE_BYTES, SENSITIVE_KEYS, BASE64_PATTERN, ANSI_PATTERN, currentRole, rootLogDir, retentionDays, initialized, hijacked, writeStreams, originalConsole, originalStdoutWrite, originalStderrWrite, writingRaw, logger;
+var init_logger = __esm({
+  "src/logger.ts"() {
+    "use strict";
+    import_node_fs = __toESM(require("node:fs"));
+    import_node_path3 = __toESM(require("node:path"));
+    init_storagePaths();
+    DEFAULT_RETENTION_DAYS = 7;
+    MAX_FIELD_BYTES = 8 * 1024;
+    MAX_LINE_BYTES = 64 * 1024;
+    SENSITIVE_KEYS = /authorization|cookie|token|secret|password|credential|api[_-]?key|access[_-]?key|refresh[_-]?token/i;
+    BASE64_PATTERN = /data:[^;]+;base64,[A-Za-z0-9+/=\r\n]+/gi;
+    ANSI_PATTERN = /\x1B\[[0-9;]*m/g;
+    currentRole = process.env.TOONFLOW_RUNTIME_ROLE || "script";
+    rootLogDir = import_node_path3.default.join(appDataRoot(), "logs");
+    retentionDays = DEFAULT_RETENTION_DAYS;
+    initialized = false;
+    hijacked = false;
+    writeStreams = /* @__PURE__ */ new Map();
+    originalConsole = {};
+    originalStdoutWrite = null;
+    originalStderrWrite = null;
+    writingRaw = false;
+    logger = {
+      init: initLogger,
+      close: closeLogger,
+      create: createLogger,
+      diagnostic: writeDiagnosticFile,
+      status: getLoggerStatus,
+      cleanup: cleanupLogs,
+      debug: (message, context2) => writeLog("debug", message, context2),
+      info: (message, context2) => writeLog("info", message, context2),
+      warn: (message, context2) => writeLog("warn", message, context2),
+      error: (message, context2) => writeLog("error", message, context2)
+    };
+  }
+});
+
 // node_modules/safe-buffer/index.js
 var require_safe_buffer = __commonJS({
   "node_modules/safe-buffer/index.js"(exports2, module2) {
@@ -362,14 +833,14 @@ var require_jwa = __commonJS({
   "node_modules/jwa/index.js"(exports2, module2) {
     "use strict";
     var Buffer3 = require_safe_buffer().Buffer;
-    var crypto7 = require("crypto");
+    var crypto9 = require("crypto");
     var formatEcdsa = require_ecdsa_sig_formatter();
     var util4 = require("util");
     var MSG_INVALID_ALGORITHM = '"%s" is not a valid algorithm.\n  Supported algorithms are:\n  "HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512" and "none".';
     var MSG_INVALID_SECRET = "secret must be a string or buffer";
     var MSG_INVALID_VERIFIER_KEY = "key must be a string or a buffer";
     var MSG_INVALID_SIGNER_KEY = "key must be a string, a buffer or an object";
-    var supportsKeyObjects = typeof crypto7.createPublicKey === "function";
+    var supportsKeyObjects = typeof crypto9.createPublicKey === "function";
     if (supportsKeyObjects) {
       MSG_INVALID_VERIFIER_KEY += " or a KeyObject";
       MSG_INVALID_SECRET += "or a KeyObject";
@@ -459,17 +930,17 @@ var require_jwa = __commonJS({
       return function sign(thing, secret) {
         checkIsSecretKey(secret);
         thing = normalizeInput(thing);
-        var hmac = crypto7.createHmac("sha" + bits, secret);
+        var hmac = crypto9.createHmac("sha" + bits, secret);
         var sig = (hmac.update(thing), hmac.digest("base64"));
         return fromBase64(sig);
       };
     }
     var bufferEqual;
-    var timingSafeEqual = "timingSafeEqual" in crypto7 ? function timingSafeEqual2(a, b) {
+    var timingSafeEqual = "timingSafeEqual" in crypto9 ? function timingSafeEqual2(a, b) {
       if (a.byteLength !== b.byteLength) {
         return false;
       }
-      return crypto7.timingSafeEqual(a, b);
+      return crypto9.timingSafeEqual(a, b);
     } : function timingSafeEqual2(a, b) {
       if (!bufferEqual) {
         bufferEqual = require_buffer_equal_constant_time();
@@ -486,7 +957,7 @@ var require_jwa = __commonJS({
       return function sign(thing, privateKey) {
         checkIsPrivateKey(privateKey);
         thing = normalizeInput(thing);
-        var signer = crypto7.createSign("RSA-SHA" + bits);
+        var signer = crypto9.createSign("RSA-SHA" + bits);
         var sig = (signer.update(thing), signer.sign(privateKey, "base64"));
         return fromBase64(sig);
       };
@@ -496,7 +967,7 @@ var require_jwa = __commonJS({
         checkIsPublicKey(publicKey);
         thing = normalizeInput(thing);
         signature = toBase64(signature);
-        var verifier = crypto7.createVerify("RSA-SHA" + bits);
+        var verifier = crypto9.createVerify("RSA-SHA" + bits);
         verifier.update(thing);
         return verifier.verify(publicKey, signature, "base64");
       };
@@ -505,11 +976,11 @@ var require_jwa = __commonJS({
       return function sign(thing, privateKey) {
         checkIsPrivateKey(privateKey);
         thing = normalizeInput(thing);
-        var signer = crypto7.createSign("RSA-SHA" + bits);
+        var signer = crypto9.createSign("RSA-SHA" + bits);
         var sig = (signer.update(thing), signer.sign({
           key: privateKey,
-          padding: crypto7.constants.RSA_PKCS1_PSS_PADDING,
-          saltLength: crypto7.constants.RSA_PSS_SALTLEN_DIGEST
+          padding: crypto9.constants.RSA_PKCS1_PSS_PADDING,
+          saltLength: crypto9.constants.RSA_PSS_SALTLEN_DIGEST
         }, "base64"));
         return fromBase64(sig);
       };
@@ -519,12 +990,12 @@ var require_jwa = __commonJS({
         checkIsPublicKey(publicKey);
         thing = normalizeInput(thing);
         signature = toBase64(signature);
-        var verifier = crypto7.createVerify("RSA-SHA" + bits);
+        var verifier = crypto9.createVerify("RSA-SHA" + bits);
         verifier.update(thing);
         return verifier.verify({
           key: publicKey,
-          padding: crypto7.constants.RSA_PKCS1_PSS_PADDING,
-          saltLength: crypto7.constants.RSA_PSS_SALTLEN_DIGEST
+          padding: crypto9.constants.RSA_PKCS1_PSS_PADDING,
+          saltLength: crypto9.constants.RSA_PSS_SALTLEN_DIGEST
         }, signature, "base64");
       };
     }
@@ -828,9 +1299,9 @@ var require_decode = __commonJS({
   "node_modules/jsonwebtoken/decode.js"(exports2, module2) {
     "use strict";
     var jws = require_jws();
-    module2.exports = function(jwt5, options) {
+    module2.exports = function(jwt6, options) {
       options = options || {};
-      var decoded = jws.decode(jwt5, options);
+      var decoded = jws.decode(jwt6, options);
       if (!decoded) {
         return null;
       }
@@ -8374,11 +8845,11 @@ var require_baseGet = __commonJS({
     "use strict";
     var castPath2 = require_castPath();
     var toKey2 = require_toKey();
-    function baseGet2(object4, path23) {
-      path23 = castPath2(path23, object4);
-      var index = 0, length = path23.length;
+    function baseGet2(object4, path28) {
+      path28 = castPath2(path28, object4);
+      var index = 0, length = path28.length;
       while (object4 != null && index < length) {
-        object4 = object4[toKey2(path23[index++])];
+        object4 = object4[toKey2(path28[index++])];
       }
       return index && index == length ? object4 : void 0;
     }
@@ -8391,8 +8862,8 @@ var require_get = __commonJS({
   "node_modules/lodash/get.js"(exports2, module2) {
     "use strict";
     var baseGet2 = require_baseGet();
-    function get2(object4, path23, defaultValue) {
-      var result = object4 == null ? void 0 : baseGet2(object4, path23);
+    function get2(object4, path28, defaultValue) {
+      var result = object4 == null ? void 0 : baseGet2(object4, path28);
       return result === void 0 ? defaultValue : result;
     }
     module2.exports = get2;
@@ -8979,26 +9450,26 @@ var require_flatten = __commonJS({
 var require_fs = __commonJS({
   "node_modules/knex/lib/migrations/util/fs.js"(exports2, module2) {
     "use strict";
-    var fs19 = require("fs");
+    var fs24 = require("fs");
     var flatten = require_flatten();
     var os2 = require("os");
-    var path23 = require("path");
+    var path28 = require("path");
     var { promisify } = require("util");
-    var stat = promisify(fs19.stat);
-    var readFile2 = promisify(fs19.readFile);
-    var writeFile2 = promisify(fs19.writeFile);
-    var readdir = promisify(fs19.readdir);
-    var mkdir = promisify(fs19.mkdir);
-    function existsSync3(path24) {
+    var stat = promisify(fs24.stat);
+    var readFile2 = promisify(fs24.readFile);
+    var writeFile2 = promisify(fs24.writeFile);
+    var readdir = promisify(fs24.readdir);
+    var mkdir = promisify(fs24.mkdir);
+    function existsSync3(path29) {
       try {
-        fs19.accessSync(path24);
+        fs24.accessSync(path29);
         return true;
       } catch (e) {
         return false;
       }
     }
     function createTemp() {
-      return promisify(fs19.mkdtemp)(`${os2.tmpdir()}${path23.sep}`);
+      return promisify(fs24.mkdtemp)(`${os2.tmpdir()}${path28.sep}`);
     }
     function ensureDirectoryExists(dir) {
       return stat(dir).catch(() => mkdir(dir, { recursive: true }));
@@ -9008,7 +9479,7 @@ var require_fs = __commonJS({
       return flatten(
         await Promise.all(
           pathsList.sort().map(async (currentPath) => {
-            const currentFile = path23.resolve(dir, currentPath);
+            const currentFile = path28.resolve(dir, currentPath);
             const statFile = await stat(currentFile);
             if (statFile && statFile.isDirectory()) {
               if (recursive) {
@@ -9494,11 +9965,11 @@ var require_hasPath = __commonJS({
     var isIndex2 = require_isIndex();
     var isLength2 = require_isLength();
     var toKey2 = require_toKey();
-    function hasPath2(object4, path23, hasFunc) {
-      path23 = castPath2(path23, object4);
-      var index = -1, length = path23.length, result = false;
+    function hasPath2(object4, path28, hasFunc) {
+      path28 = castPath2(path28, object4);
+      var index = -1, length = path28.length, result = false;
       while (++index < length) {
-        var key = toKey2(path23[index]);
+        var key = toKey2(path28[index]);
         if (!(result = object4 != null && hasFunc(object4, key))) {
           break;
         }
@@ -9520,8 +9991,8 @@ var require_hasIn = __commonJS({
     "use strict";
     var baseHasIn2 = require_baseHasIn();
     var hasPath2 = require_hasPath();
-    function hasIn2(object4, path23) {
-      return object4 != null && hasPath2(object4, path23, baseHasIn2);
+    function hasIn2(object4, path28) {
+      return object4 != null && hasPath2(object4, path28, baseHasIn2);
     }
     module2.exports = hasIn2;
   }
@@ -9540,13 +10011,13 @@ var require_baseMatchesProperty = __commonJS({
     var toKey2 = require_toKey();
     var COMPARE_PARTIAL_FLAG7 = 1;
     var COMPARE_UNORDERED_FLAG5 = 2;
-    function baseMatchesProperty2(path23, srcValue) {
-      if (isKey2(path23) && isStrictComparable2(srcValue)) {
-        return matchesStrictComparable2(toKey2(path23), srcValue);
+    function baseMatchesProperty2(path28, srcValue) {
+      if (isKey2(path28) && isStrictComparable2(srcValue)) {
+        return matchesStrictComparable2(toKey2(path28), srcValue);
       }
       return function(object4) {
-        var objValue = get2(object4, path23);
-        return objValue === void 0 && objValue === srcValue ? hasIn2(object4, path23) : baseIsEqual2(srcValue, objValue, COMPARE_PARTIAL_FLAG7 | COMPARE_UNORDERED_FLAG5);
+        var objValue = get2(object4, path28);
+        return objValue === void 0 && objValue === srcValue ? hasIn2(object4, path28) : baseIsEqual2(srcValue, objValue, COMPARE_PARTIAL_FLAG7 | COMPARE_UNORDERED_FLAG5);
       };
     }
     module2.exports = baseMatchesProperty2;
@@ -9571,9 +10042,9 @@ var require_basePropertyDeep = __commonJS({
   "node_modules/lodash/_basePropertyDeep.js"(exports2, module2) {
     "use strict";
     var baseGet2 = require_baseGet();
-    function basePropertyDeep2(path23) {
+    function basePropertyDeep2(path28) {
       return function(object4) {
-        return baseGet2(object4, path23);
+        return baseGet2(object4, path28);
       };
     }
     module2.exports = basePropertyDeep2;
@@ -9588,8 +10059,8 @@ var require_property = __commonJS({
     var basePropertyDeep2 = require_basePropertyDeep();
     var isKey2 = require_isKey();
     var toKey2 = require_toKey();
-    function property2(path23) {
-      return isKey2(path23) ? baseProperty2(toKey2(path23)) : basePropertyDeep2(path23);
+    function property2(path28) {
+      return isKey2(path28) ? baseProperty2(toKey2(path28)) : basePropertyDeep2(path28);
     }
     module2.exports = property2;
   }
@@ -9848,10 +10319,10 @@ var require_sortBy = __commonJS({
 var require_is_node_modules = __commonJS({
   "node_modules/get-package-type/is-node-modules.cjs"(exports2, module2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     function isNodeModules(directory) {
-      let basename = path23.basename(directory);
-      if (path23.sep === "\\") {
+      let basename = path28.basename(directory);
+      if (path28.sep === "\\") {
         basename = basename.toLowerCase();
       }
       return basename === "node_modules";
@@ -9872,7 +10343,7 @@ var require_cache = __commonJS({
 var require_async = __commonJS({
   "node_modules/get-package-type/async.cjs"(exports2, module2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     var { promisify } = require("util");
     var readFile2 = promisify(require("fs").readFile);
     var isNodeModules = require_is_node_modules();
@@ -9883,10 +10354,10 @@ var require_async = __commonJS({
         return "commonjs";
       }
       try {
-        return JSON.parse(await readFile2(path23.resolve(directory, "package.json"))).type || "commonjs";
+        return JSON.parse(await readFile2(path28.resolve(directory, "package.json"))).type || "commonjs";
       } catch (_) {
       }
-      const parent = path23.dirname(directory);
+      const parent = path28.dirname(directory);
       if (parent === directory) {
         return "commonjs";
       }
@@ -9907,7 +10378,7 @@ var require_async = __commonJS({
       return result;
     }
     function getPackageType(filename) {
-      return getDirectoryType(path23.resolve(path23.dirname(filename)));
+      return getDirectoryType(path28.resolve(path28.dirname(filename)));
     }
     module2.exports = getPackageType;
   }
@@ -9917,7 +10388,7 @@ var require_async = __commonJS({
 var require_sync = __commonJS({
   "node_modules/get-package-type/sync.cjs"(exports2, module2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     var { readFileSync: readFileSync2 } = require("fs");
     var isNodeModules = require_is_node_modules();
     var resultsCache = require_cache();
@@ -9926,10 +10397,10 @@ var require_sync = __commonJS({
         return "commonjs";
       }
       try {
-        return JSON.parse(readFileSync2(path23.resolve(directory, "package.json"))).type || "commonjs";
+        return JSON.parse(readFileSync2(path28.resolve(directory, "package.json"))).type || "commonjs";
       } catch (_) {
       }
-      const parent = path23.dirname(directory);
+      const parent = path28.dirname(directory);
       if (parent === directory) {
         return "commonjs";
       }
@@ -9944,7 +10415,7 @@ var require_sync = __commonJS({
       return result;
     }
     function getPackageTypeSync(filename) {
-      return getDirectoryType(path23.resolve(path23.dirname(filename)));
+      return getDirectoryType(path28.resolve(path28.dirname(filename)));
     }
     module2.exports = getPackageTypeSync;
   }
@@ -9987,7 +10458,7 @@ var require_import_file = __commonJS({
 var require_MigrationsLoader = __commonJS({
   "node_modules/knex/lib/migrations/common/MigrationsLoader.js"(exports2, module2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     var DEFAULT_LOAD_EXTENSIONS = Object.freeze([
       ".co",
       ".coffee",
@@ -10009,8 +10480,8 @@ var require_MigrationsLoader = __commonJS({
         this.loadExtensions = loadExtensions || DEFAULT_LOAD_EXTENSIONS;
       }
       getFile(migrationsInfo) {
-        const absoluteDir = path23.resolve(process.cwd(), migrationsInfo.directory);
-        const _path = path23.join(absoluteDir, migrationsInfo.file);
+        const absoluteDir = path28.resolve(process.cwd(), migrationsInfo.directory);
+        const _path = path28.join(absoluteDir, migrationsInfo.file);
         const importFile = require_import_file();
         return importFile(_path);
       }
@@ -10026,7 +10497,7 @@ var require_MigrationsLoader = __commonJS({
 var require_fs_migrations = __commonJS({
   "node_modules/knex/lib/migrations/migrate/sources/fs-migrations.js"(exports2, module2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     var sortBy = require_sortBy();
     var { readdir } = require_fs();
     var { AbstractMigrationsLoader } = require_MigrationsLoader();
@@ -10037,7 +10508,7 @@ var require_fs_migrations = __commonJS({
        */
       getMigrations(loadExtensions) {
         const readMigrationsPromises = this.migrationsPaths.map((configDir) => {
-          const absoluteDir = path23.resolve(process.cwd(), configDir);
+          const absoluteDir = path28.resolve(process.cwd(), configDir);
           return readdir(absoluteDir).then((files) => ({
             files,
             configDir,
@@ -10078,7 +10549,7 @@ var require_fs_migrations = __commonJS({
     function filterMigrations(migrationSource, migrations, loadExtensions) {
       return migrations.filter((migration) => {
         const migrationName = migrationSource.getMigrationName(migration);
-        const extension = path23.extname(migrationName);
+        const extension = path28.extname(migrationName);
         return loadExtensions.includes(extension);
       });
     }
@@ -10392,7 +10863,7 @@ var require_migrator_configuration_merger = __commonJS({
       disableMigrationsListValidation: false,
       sortDirsSeparately: false
     });
-    function getMergedConfig(config3, currentConfig, logger2 = defaultLogger) {
+    function getMergedConfig(config3, currentConfig, logger3 = defaultLogger) {
       const mergedConfig = Object.assign(
         {},
         CONFIG_DEFAULT,
@@ -10403,7 +10874,7 @@ var require_migrator_configuration_merger = __commonJS({
       // clear specified migrationSource to avoid ambiguity
       (config3.directory || config3.sortDirsSeparately !== void 0 || config3.loadExtensions)) {
         if (config3.migrationSource) {
-          logger2.warn(
+          logger3.warn(
             "FS-related option specified for migration configuration. This resets migrationSource to default FsMigrations"
           );
         }
@@ -10440,18 +10911,18 @@ var require_timestamp = __commonJS({
 var require_MigrationGenerator = __commonJS({
   "node_modules/knex/lib/migrations/migrate/MigrationGenerator.js"(exports2, module2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     var { writeJsFileUsingTemplate } = require_template2();
     var { getMergedConfig } = require_migrator_configuration_merger();
     var { ensureDirectoryExists } = require_fs();
     var { yyyymmddhhmmss } = require_timestamp();
     var MigrationGenerator = class {
-      constructor(migrationConfig, logger2) {
-        this.config = getMergedConfig(migrationConfig, void 0, logger2);
+      constructor(migrationConfig, logger3) {
+        this.config = getMergedConfig(migrationConfig, void 0, logger3);
       }
       // Creates a new migration, with a given name.
-      async make(name28, config3, logger2) {
-        this.config = getMergedConfig(config3, this.config, logger2);
+      async make(name28, config3, logger3) {
+        this.config = getMergedConfig(config3, this.config, logger3);
         if (!name28) {
           return Promise.reject(
             new Error("A name must be specified for the generated migration")
@@ -10469,7 +10940,7 @@ var require_MigrationGenerator = __commonJS({
         return Promise.all(promises4);
       }
       _getStubPath() {
-        return this.config.stub || path23.join(__dirname, "stub", this.config.extension + ".stub");
+        return this.config.stub || path28.join(__dirname, "stub", this.config.extension + ".stub");
       }
       _getNewMigrationName(name28) {
         if (name28[0] === "-") name28 = name28.slice(1);
@@ -10479,7 +10950,7 @@ var require_MigrationGenerator = __commonJS({
         const fileName = this._getNewMigrationName(name28);
         const dirs = this._absoluteConfigDirs();
         const dir = dirs.slice(-1)[0];
-        return path23.join(dir, fileName);
+        return path28.join(dir, fileName);
       }
       // Write a new migration to disk, using the config and generated filename,
       // passing any `variables` given in the config to the template.
@@ -10501,7 +10972,7 @@ var require_MigrationGenerator = __commonJS({
               "Failed to resolve config file, knex cannot determine where to generate migrations"
             );
           }
-          return path23.resolve(process.cwd(), directory);
+          return path28.resolve(process.cwd(), directory);
         });
       }
     };
@@ -10979,9 +11450,9 @@ var require_Migrator = __commonJS({
         return c.name === migrationSource.getMigrationName(a);
       });
     }
-    function checkPromise(logger2, migrationPromise, name28) {
+    function checkPromise(logger3, migrationPromise, name28) {
       if (!migrationPromise || typeof migrationPromise.then !== "function") {
-        logger2.warn(`migration ${name28} did not return a promise`);
+        logger3.warn(`migration ${name28} did not return a promise`);
       }
       return migrationPromise;
     }
@@ -11143,25 +11614,25 @@ var require_includes = __commonJS({
 var require_fs_seeds = __commonJS({
   "node_modules/knex/lib/migrations/seed/sources/fs-seeds.js"(exports2, module2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     var flatten = require_flatten();
     var includes = require_includes();
     var { AbstractMigrationsLoader } = require_MigrationsLoader();
     var { getFilepathsInFolder } = require_fs();
     var filterByLoadExtensions = (extensions) => (value) => {
-      const extension = path23.extname(value);
+      const extension = path28.extname(value);
       return includes(extensions, extension);
     };
     var FsSeeds = class extends AbstractMigrationsLoader {
-      _getConfigDirectories(logger2) {
+      _getConfigDirectories(logger3) {
         const directories = this.migrationsPaths;
         return directories.map((directory) => {
           if (!directory) {
-            logger2.warn(
+            logger3.warn(
               "Empty value passed as a directory for Seeder, this is not supported."
             );
           }
-          return path23.resolve(process.cwd(), directory);
+          return path28.resolve(process.cwd(), directory);
         });
       }
       async getSeeds(config3) {
@@ -11178,7 +11649,7 @@ var require_fs_seeds = __commonJS({
           files.sort();
         }
         if (specific) {
-          files = files.filter((file3) => path23.basename(file3) === specific);
+          files = files.filter((file3) => path28.basename(file3) === specific);
           if (files.length === 0) {
             throw new Error(
               `Invalid argument provided: the specific seed "${specific}" does not exist.`
@@ -11216,21 +11687,21 @@ var require_seeder_configuration_merger = __commonJS({
       recursive: false,
       sortDirsSeparately: false
     });
-    function getMergedConfig(config3, currentConfig, logger2 = defaultLogger) {
+    function getMergedConfig(config3, currentConfig, logger3 = defaultLogger) {
       const mergedConfig = Object.assign(
         {},
         CONFIG_DEFAULT,
         currentConfig || {},
         config3,
         {
-          logger: logger2
+          logger: logger3
         }
       );
       if (config3 && // If user specifies any FS related config,
       // clear specified migrationSource to avoid ambiguity
       (config3.directory || config3.sortDirsSeparately !== void 0 || config3.loadExtensions)) {
         if (config3.seedSource) {
-          logger2.warn(
+          logger3.warn(
             "FS-related option specified for seed configuration. This resets seedSource to default FsMigrations"
           );
         }
@@ -11255,7 +11726,7 @@ var require_seeder_configuration_merger = __commonJS({
 var require_Seeder = __commonJS({
   "node_modules/knex/lib/migrations/seed/Seeder.js"(exports2, module2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     var { ensureDirectoryExists } = require_fs();
     var { writeJsFileUsingTemplate } = require_template2();
     var { yyyymmddhhmmss } = require_timestamp();
@@ -11306,7 +11777,7 @@ var require_Seeder = __commonJS({
         return filepath;
       }
       _getStubPath() {
-        return this.config.stub || path23.join(__dirname, "stub", this.config.extension + ".stub");
+        return this.config.stub || path28.join(__dirname, "stub", this.config.extension + ".stub");
       }
       _getNewStubFileName(name28) {
         if (name28[0] === "-") name28 = name28.slice(1);
@@ -11321,7 +11792,7 @@ var require_Seeder = __commonJS({
           this.config.logger
         );
         const dir = dirs.slice(-1)[0];
-        return path23.join(dir, fileName);
+        return path28.join(dir, fileName);
       }
       // Write a new seed to disk, using the config and generated filename,
       // passing any `variables` given in the config to the template.
@@ -14567,11 +15038,11 @@ var require_querybuilder = __commonJS({
       }
       jsonExtract() {
         const column = arguments[0];
-        let path23;
+        let path28;
         let alias;
         let singleValue = true;
         if (arguments.length >= 2) {
-          path23 = arguments[1];
+          path28 = arguments[1];
         }
         if (arguments.length >= 3) {
           alias = arguments[2];
@@ -14584,32 +15055,32 @@ var require_querybuilder = __commonJS({
         }
         return this._json("jsonExtract", {
           column,
-          path: path23,
+          path: path28,
           alias,
           singleValue
           // boolean used only in MSSQL to use function for extract value instead of object/array.
         });
       }
-      jsonSet(column, path23, value, alias) {
+      jsonSet(column, path28, value, alias) {
         return this._json("jsonSet", {
           column,
-          path: path23,
+          path: path28,
           value,
           alias
         });
       }
-      jsonInsert(column, path23, value, alias) {
+      jsonInsert(column, path28, value, alias) {
         return this._json("jsonInsert", {
           column,
-          path: path23,
+          path: path28,
           value,
           alias
         });
       }
-      jsonRemove(column, path23, alias) {
+      jsonRemove(column, path28, alias) {
         return this._json("jsonRemove", {
           column,
-          path: path23,
+          path: path28,
           alias
         });
       }
@@ -14648,12 +15119,12 @@ var require_querybuilder = __commonJS({
       orWhereNotJsonObject(column, value) {
         return this._bool("or").whereNotJsonObject(column, value);
       }
-      whereJsonPath(column, path23, operator, value) {
-        this._whereJsonWrappedValue("whereJsonPath", column, value, operator, path23);
+      whereJsonPath(column, path28, operator, value) {
+        this._whereJsonWrappedValue("whereJsonPath", column, value, operator, path28);
         return this;
       }
-      orWhereJsonPath(column, path23, operator, value) {
-        return this._bool("or").whereJsonPath(column, path23, operator, value);
+      orWhereJsonPath(column, path28, operator, value) {
+        return this._bool("or").whereJsonPath(column, path28, operator, value);
       }
       // Json superset wheres
       whereJsonSupersetOf(column, value) {
@@ -15548,8 +16019,8 @@ var require_has = __commonJS({
     "use strict";
     var baseHas = require_baseHas();
     var hasPath2 = require_hasPath();
-    function has(object4, path23) {
-      return object4 != null && hasPath2(object4, path23, baseHas);
+    function has(object4, path28) {
+      return object4 != null && hasPath2(object4, path28, baseHas);
     }
     module2.exports = has;
   }
@@ -15580,14 +16051,14 @@ var require_baseSet = __commonJS({
     var isIndex2 = require_isIndex();
     var isObject5 = require_isObject();
     var toKey2 = require_toKey();
-    function baseSet(object4, path23, value, customizer) {
+    function baseSet(object4, path28, value, customizer) {
       if (!isObject5(object4)) {
         return object4;
       }
-      path23 = castPath2(path23, object4);
-      var index = -1, length = path23.length, lastIndex = length - 1, nested = object4;
+      path28 = castPath2(path28, object4);
+      var index = -1, length = path28.length, lastIndex = length - 1, nested = object4;
       while (nested != null && ++index < length) {
-        var key = toKey2(path23[index]), newValue = value;
+        var key = toKey2(path28[index]), newValue = value;
         if (key === "__proto__" || key === "constructor" || key === "prototype") {
           return object4;
         }
@@ -15595,7 +16066,7 @@ var require_baseSet = __commonJS({
           var objValue = nested[key];
           newValue = customizer ? customizer(objValue, key, nested) : void 0;
           if (newValue === void 0) {
-            newValue = isObject5(objValue) ? objValue : isIndex2(path23[index + 1]) ? [] : {};
+            newValue = isObject5(objValue) ? objValue : isIndex2(path28[index + 1]) ? [] : {};
           }
         }
         assignValue(nested, key, newValue);
@@ -15617,9 +16088,9 @@ var require_basePickBy = __commonJS({
     function basePickBy(object4, paths, predicate) {
       var index = -1, length = paths.length, result = {};
       while (++index < length) {
-        var path23 = paths[index], value = baseGet2(object4, path23);
-        if (predicate(value, path23)) {
-          baseSet(result, castPath2(path23, object4), value);
+        var path28 = paths[index], value = baseGet2(object4, path28);
+        if (predicate(value, path28)) {
+          baseSet(result, castPath2(path28, object4), value);
         }
       }
       return result;
@@ -15644,8 +16115,8 @@ var require_pickBy = __commonJS({
         return [prop];
       });
       predicate = baseIteratee2(predicate);
-      return basePickBy(object4, props, function(value, path23) {
-        return predicate(value, path23[0]);
+      return basePickBy(object4, props, function(value, path28) {
+        return predicate(value, path28[0]);
       });
     }
     module2.exports = pickBy;
@@ -19097,15 +19568,15 @@ var require_pg_connection_string = __commonJS({
       if (config3.sslcert || config3.sslkey || config3.sslrootcert || config3.sslmode) {
         config3.ssl = {};
       }
-      const fs19 = config3.sslcert || config3.sslkey || config3.sslrootcert ? require("fs") : null;
+      const fs24 = config3.sslcert || config3.sslkey || config3.sslrootcert ? require("fs") : null;
       if (config3.sslcert) {
-        config3.ssl.cert = fs19.readFileSync(config3.sslcert).toString();
+        config3.ssl.cert = fs24.readFileSync(config3.sslcert).toString();
       }
       if (config3.sslkey) {
-        config3.ssl.key = fs19.readFileSync(config3.sslkey).toString();
+        config3.ssl.key = fs24.readFileSync(config3.sslkey).toString();
       }
       if (config3.sslrootcert) {
-        config3.ssl.ca = fs19.readFileSync(config3.sslrootcert).toString();
+        config3.ssl.ca = fs24.readFileSync(config3.sslrootcert).toString();
       }
       switch (config3.sslmode) {
         case "disable": {
@@ -20678,7 +21149,7 @@ var require_parser = __commonJS({
       return s(
         [
           t({ text: "CREATE" }, (v) => null),
-          unique,
+          unique2,
           t({ text: "INDEX" }, (v) => null),
           exists,
           schema,
@@ -20694,7 +21165,7 @@ var require_parser = __commonJS({
         (v) => Object.assign({}, ...v.filter((x) => x !== null))
       )(ctx);
     }
-    function unique(ctx) {
+    function unique2(ctx) {
       return o(t({ text: "UNIQUE" }), (v) => ({ unique: v !== null }))(ctx);
     }
     function exists(ctx) {
@@ -21030,7 +21501,7 @@ var require_compiler2 = __commonJS({
       return ast.name !== null ? `CONSTRAINT ${identifier(ast.name, wrap)} ` : "";
     }
     function createIndex(ast, wrap) {
-      return `CREATE${unique(ast, wrap)} INDEX${exists(ast, wrap)} ${schema(
+      return `CREATE${unique2(ast, wrap)} INDEX${exists(ast, wrap)} ${schema(
         ast,
         wrap
       )}${index(ast, wrap)} on ${table(ast, wrap)} (${indexedColumnList(
@@ -21038,7 +21509,7 @@ var require_compiler2 = __commonJS({
         wrap
       )})${where(ast, wrap)}`;
     }
-    function unique(ast, wrap) {
+    function unique2(ast, wrap) {
       return ast.unique ? " UNIQUE" : "";
     }
     function exists(ast, wrap) {
@@ -22760,26 +23231,26 @@ var require_postgres = __commonJS({
         });
       }
       setSchemaSearchPath(connection, searchPath) {
-        let path23 = searchPath || this.searchPath;
-        if (!path23) return Promise.resolve(true);
-        if (!Array.isArray(path23) && !isString2(path23)) {
+        let path28 = searchPath || this.searchPath;
+        if (!path28) return Promise.resolve(true);
+        if (!Array.isArray(path28) && !isString2(path28)) {
           throw new TypeError(
-            `knex: Expected searchPath to be Array/String, got: ${typeof path23}`
+            `knex: Expected searchPath to be Array/String, got: ${typeof path28}`
           );
         }
-        if (isString2(path23)) {
-          if (path23.includes(",")) {
-            const parts = path23.split(",");
+        if (isString2(path28)) {
+          if (path28.includes(",")) {
+            const parts = path28.split(",");
             const arraySyntax = `[${parts.map((searchPath2) => `'${searchPath2}'`).join(", ")}]`;
             this.logger.warn(
-              `Detected comma in searchPath "${path23}".If you are trying to specify multiple schemas, use Array syntax: ${arraySyntax}`
+              `Detected comma in searchPath "${path28}".If you are trying to specify multiple schemas, use Array syntax: ${arraySyntax}`
             );
           }
-          path23 = [path23];
+          path28 = [path28];
         }
-        path23 = path23.map((schemaName) => `"${schemaName}"`).join(",");
+        path28 = path28.map((schemaName) => `"${schemaName}"`).join(",");
         return new Promise(function(resolver, rejecter) {
-          connection.query(`set search_path to ${path23}`, function(err) {
+          connection.query(`set search_path to ${path28}`, function(err) {
             if (err) return rejecter(err);
             resolver(true);
           });
@@ -26061,17 +26532,17 @@ var require_utils3 = __commonJS({
           this.limit = 30;
         }
       }
-      generateCombinedName(logger2, postfix, name28, subNames) {
-        const crypto7 = require("crypto");
+      generateCombinedName(logger3, postfix, name28, subNames) {
+        const crypto9 = require("crypto");
         if (!Array.isArray(subNames)) subNames = subNames ? [subNames] : [];
         const table = name28.replace(/\.|-/g, "_");
         const subNamesPart = subNames.join("_");
         let result = `${table}_${subNamesPart.length ? subNamesPart + "_" : ""}${postfix}`.toLowerCase();
         if (result.length > this.limit) {
-          logger2.warn(
+          logger3.warn(
             `Automatically generated name "${result}" exceeds ${this.limit} character limit for Oracle Database ${this.oracleVersion}. Using base64 encoded sha1 of that name instead.`
           );
-          result = crypto7.createHash("sha1").update(result).digest("base64").replace("=", "");
+          result = crypto9.createHash("sha1").update(result).digest("base64").replace("=", "");
         }
         return result;
       }
@@ -26170,55 +26641,55 @@ var require_trigger = __commonJS({
       constructor(oracleVersion) {
         this.nameHelper = new NameHelper(oracleVersion);
       }
-      renameColumnTrigger(logger2, tableName, columnName, to) {
+      renameColumnTrigger(logger3, tableName, columnName, to) {
         const triggerName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "autoinc_trg",
           tableName
         );
         const sequenceName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "seq",
           tableName
         );
         return `DECLARE PK_NAME VARCHAR(200); IS_AUTOINC NUMBER := 0; BEGIN  EXECUTE IMMEDIATE ('ALTER TABLE "${tableName}" RENAME COLUMN "${columnName}" TO "${to}"');  SELECT COUNT(*) INTO IS_AUTOINC from "USER_TRIGGERS" where trigger_name = '${triggerName}';  IF (IS_AUTOINC > 0) THEN    SELECT cols.column_name INTO PK_NAME    FROM all_constraints cons, all_cons_columns cols    WHERE cons.constraint_type = 'P'    AND cons.constraint_name = cols.constraint_name    AND cons.owner = cols.owner    AND cols.table_name = '${tableName}';    IF ('${to}' = PK_NAME) THEN      EXECUTE IMMEDIATE ('DROP TRIGGER "${triggerName}"');      EXECUTE IMMEDIATE ('create or replace trigger "${triggerName}"      BEFORE INSERT on "${tableName}" for each row        declare        checking number := 1;        begin          if (:new."${to}" is null) then            while checking >= 1 loop              select "${sequenceName}".nextval into :new."${to}" from dual;              select count("${to}") into checking from "${tableName}"              where "${to}" = :new."${to}";            end loop;          end if;        end;');    end if;  end if;END;`;
       }
-      createAutoIncrementTrigger(logger2, tableName, schemaName) {
+      createAutoIncrementTrigger(logger3, tableName, schemaName) {
         const tableQuoted = `"${tableName}"`;
         const tableUnquoted = tableName;
         const schemaQuoted = schemaName ? `"${schemaName}".` : "";
         const constraintOwner = schemaName ? `'${schemaName}'` : "cols.owner";
         const triggerName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "autoinc_trg",
           tableName
         );
         const sequenceNameUnquoted = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "seq",
           tableName
         );
         const sequenceNameQuoted = `"${sequenceNameUnquoted}"`;
         return `DECLARE PK_NAME VARCHAR(200); BEGIN  EXECUTE IMMEDIATE ('CREATE SEQUENCE ${schemaQuoted}${sequenceNameQuoted}');  SELECT cols.column_name INTO PK_NAME  FROM all_constraints cons, all_cons_columns cols  WHERE cons.constraint_type = 'P'  AND cons.constraint_name = cols.constraint_name  AND cons.owner = ${constraintOwner}  AND cols.table_name = '${tableUnquoted}';  execute immediate ('create or replace trigger ${schemaQuoted}"${triggerName}"  BEFORE INSERT on ${schemaQuoted}${tableQuoted}  for each row  declare  checking number := 1;  begin    if (:new."' || PK_NAME || '" is null) then      while checking >= 1 loop        select ${schemaQuoted}${sequenceNameQuoted}.nextval into :new."' || PK_NAME || '" from dual;        select count("' || PK_NAME || '") into checking from ${schemaQuoted}${tableQuoted}        where "' || PK_NAME || '" = :new."' || PK_NAME || '";      end loop;    end if;  end;'); END;`;
       }
-      renameTableAndAutoIncrementTrigger(logger2, tableName, to) {
+      renameTableAndAutoIncrementTrigger(logger3, tableName, to) {
         const triggerName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "autoinc_trg",
           tableName
         );
         const sequenceName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "seq",
           tableName
         );
         const toTriggerName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "autoinc_trg",
           to
         );
         const toSequenceName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "seq",
           to
         );
@@ -28810,133 +29281,6 @@ var init_dist_node = __esm({
   }
 });
 
-// node_modules/is-path-inside/index.js
-function isPathInside(childPath, parentPath) {
-  const relation = import_node_path.default.relative(parentPath, childPath);
-  return Boolean(
-    relation && relation !== ".." && !relation.startsWith(`..${import_node_path.default.sep}`) && relation !== import_node_path.default.resolve(childPath)
-  );
-}
-var import_node_path;
-var init_is_path_inside = __esm({
-  "node_modules/is-path-inside/index.js"() {
-    "use strict";
-    import_node_path = __toESM(require("node:path"), 1);
-  }
-});
-
-// src/services/storagePaths.ts
-function absolute(value, fallback) {
-  return import_node_path2.default.resolve(value?.trim() || fallback);
-}
-function appDataRoot() {
-  return absolute(process.env.TOONFLOW_APP_DATA_DIR, import_node_path2.default.join(process.cwd(), "data"));
-}
-function storageMode() {
-  return process.env.TOONFLOW_STORAGE_MODE === "workspace" ? "workspace" : "legacy";
-}
-function legacyDataRoot() {
-  return absolute(
-    process.env.TOONFLOW_LEGACY_DATA_DIR || process.env.TOONFLOW_DATA_DIR,
-    import_node_path2.default.join(process.cwd(), "data")
-  );
-}
-function workspaceRoot() {
-  return absolute(process.env.TOONFLOW_WORKSPACE_DIR, legacyDataRoot());
-}
-function systemDataPath(...parts) {
-  return import_node_path2.default.join(
-    absolute(process.env.TOONFLOW_SYSTEM_DATA_DIR, import_node_path2.default.join(appDataRoot(), "system")),
-    ...parts
-  );
-}
-function userDataPath(...parts) {
-  return import_node_path2.default.join(appDataRoot(), "user", ...parts);
-}
-function cacheDataPath(...parts) {
-  return import_node_path2.default.join(appDataRoot(), "cache", ...parts);
-}
-function workspaceDataPath(...parts) {
-  return import_node_path2.default.join(workspaceRoot(), ...parts);
-}
-function profileDatabasePath() {
-  return import_node_path2.default.join(appDataRoot(), "profile.sqlite");
-}
-function workspaceDatabasePath() {
-  return storageMode() === "workspace" ? workspaceDataPath("workspace.sqlite") : import_node_path2.default.join(legacyDataRoot(), "db2.sqlite");
-}
-function projectDirectory(projectId) {
-  return workspaceDataPath("projects", String(projectId));
-}
-function projectMediaDirectory(projectId) {
-  return import_node_path2.default.join(projectDirectory(projectId), "media");
-}
-function resolveMediaFilePath(userPath) {
-  const normalized = userPath.replace(/^[/\\]+/, "").replace(/[\\/]+/g, import_node_path2.default.sep);
-  if (storageMode() !== "workspace") return import_node_path2.default.resolve(legacyDataRoot(), "oss", normalized);
-  const segments = normalized.split(import_node_path2.default.sep).filter(Boolean);
-  if (segments[0]?.toLowerCase() === "smallimage") {
-    return import_node_path2.default.resolve(cacheDataPath("thumbnails"), ...segments.slice(1));
-  }
-  if (/^\d+$/.test(segments[0] || "")) {
-    return import_node_path2.default.resolve(projectMediaDirectory(segments[0]), ...segments.slice(1));
-  }
-  return import_node_path2.default.resolve(workspaceDataPath("shared"), ...segments);
-}
-function isSafeMediaFilePath(filePath) {
-  const resolved = import_node_path2.default.resolve(filePath);
-  const roots = storageMode() === "workspace" ? [workspaceRoot(), cacheDataPath("thumbnails")] : [import_node_path2.default.join(legacyDataRoot(), "oss")];
-  return roots.some((root2) => resolved === import_node_path2.default.resolve(root2) || isPathInside(resolved, import_node_path2.default.resolve(root2)));
-}
-function getDataPath(fileName) {
-  if (storageMode() === "legacy") {
-    const base = legacyDataRoot();
-    return fileName == null ? base : import_node_path2.default.resolve(base, ...Array.isArray(fileName) ? fileName : [fileName]);
-  }
-  if (fileName == null) return appDataRoot();
-  const parts = Array.isArray(fileName) ? fileName : [fileName];
-  const [head, ...tail] = parts;
-  const mapping = {
-    "db2.sqlite": workspaceDatabasePath(),
-    "workspace.sqlite": workspaceDatabasePath(),
-    oss: workspaceRoot(),
-    backups: workspaceDataPath("backups"),
-    vendor: userDataPath("vendor"),
-    skills: userDataPath("skills"),
-    modelPrompt: userDataPath("modelPrompt"),
-    bin: userDataPath("bin"),
-    models: systemDataPath("models"),
-    serve: systemDataPath("serve"),
-    web: systemDataPath("web"),
-    assets: systemDataPath("assets"),
-    logs: import_node_path2.default.join(appDataRoot(), "logs"),
-    temp: import_node_path2.default.join(appDataRoot(), "temp"),
-    cache: import_node_path2.default.join(appDataRoot(), "cache"),
-    "version.txt": systemDataPath("version.txt")
-  };
-  const root2 = mapping[head] || userDataPath(head);
-  return import_node_path2.default.resolve(root2, ...tail);
-}
-var import_node_path2, PROFILE_TABLES;
-var init_storagePaths = __esm({
-  "src/services/storagePaths.ts"() {
-    "use strict";
-    import_node_path2 = __toESM(require("node:path"));
-    init_is_path_inside();
-    PROFILE_TABLES = /* @__PURE__ */ new Set([
-      "o_user",
-      "o_artStyle",
-      "o_agentDeploy",
-      "o_setting",
-      "o_prompt",
-      "o_modelPrompt",
-      "o_vendorConfig",
-      "o_skillList",
-      "o_skillAttribution"
-    ]);
-  }
-});
-
 // src/utils/getPath.ts
 var getPath_default;
 var init_getPath = __esm({
@@ -29572,564 +29916,14 @@ description: \u4E13\u6CE8\u4E8E\u4ECE\u5267\u672C\u5185\u5BB9\u4E2D\u63D0\u53D6\
               {
                 name: "\u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210",
                 type: "videoPromptGeneration",
-                data: `# \u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210 Skill
-
-\u4F60\u662F**\u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210 Agent**\uFF0C\u4E13\u95E8\u8D1F\u8D23\u6839\u636E\u6307\u5B9A\u7684 AI \u89C6\u9891\u6A21\u578B\uFF0C\u8BFB\u53D6\u5206\u955C\u4FE1\u606F\u5E76\u8F93\u51FA\u8BE5\u6A21\u578B\u5BF9\u5E94\u683C\u5F0F\u7684\u89C6\u9891\u63D0\u793A\u8BCD\u3002
-
----
-
-## \u8F93\u5165\u683C\u5F0F
-
-### 1. \u6A21\u578B\u4E0E\u6A21\u5F0F\uFF08\u5FC5\u9009\uFF09
-
-
-#### \u6A21\u5F0F\u8DEF\u7531\u89C4\u5219
-
-| \u6761\u4EF6 | \u5339\u914D\u6A21\u5F0F | \u8BF4\u660E |
-|------|----------|------|
-| \u6A21\u578B\u540D\u4E3A \`Seedance2.0\` / \`seedance 2.0\` / \`\u5373\u68A62.0\` | **Seedance 2.0** | \u56FA\u5B9A\u6A21\u5F0F\uFF0C\u65E0\u8BBA\u591A\u53C2\u6807\u5FD7\u5982\u4F55 |
-| \u6A21\u578B\u540D\u4E3A \`Wan2.6\` / \`wan 2.6\` / \`\u4E07\u8C612.6\` | **Wan 2.6** | \u56FA\u5B9A\u6A21\u5F0F\uFF0C\u5355\u56FE\uFF08\u9996\u5E27\uFF09+ \u53D9\u4E8B\u6587\u672C\uFF0C\u65E0\u5C3E\u5E27 |
-| \u5176\u4ED6\u4EFB\u4F55\u6A21\u578B + \`\u591A\u53C2:\u662F\` | **\u901A\u7528\u591A\u53C2\u6A21\u5F0F** | \u652F\u6301\u89D2\u8272/\u573A\u666F/\u5206\u955C\u56FE\u591A\u53C2\u5F15\u7528 |
-| \u5176\u4ED6\u4EFB\u4F55\u6A21\u578B + \`\u591A\u53C2:\u5426\` | **\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F** | \u9996\u5E27/\u9996\u5C3E\u5E27 + \u7EAF\u6587\u672C\u63CF\u8FF0 |
-
-> \u6A21\u578B\u540D\u4EC5\u7528\u4E8E\u8BB0\u5F55\uFF0C\u5B9E\u9645\u63D0\u793A\u8BCD\u683C\u5F0F\u7531\u5339\u914D\u5230\u7684\u6A21\u5F0F\u51B3\u5B9A\u3002Seedance 2.0 \u548C Wan 2.6 \u662F\u6307\u5B9A\u6A21\u578B\u540D\u5373\u786E\u5B9A\u6A21\u5F0F\u7684\u7279\u4F8B\u3002
-
-### 2. \u8D44\u4EA7\u4FE1\u606F
-
-\`\`\`
-\u8D44\u4EA7\u4FE1\u606F[id, type, name], [id, type, name], ...
-\`\`\`
-
-- \`id\`\uFF1A\u8D44\u4EA7\u552F\u4E00\u6807\u8BC6\uFF08\u5982 \`A001\`\uFF09
-- \`type\`\uFF1A\u8D44\u4EA7\u7C7B\u578B\uFF0C\u53D6\u503C \`character\`\uFF08\u89D2\u8272\uFF09/ \`scene\`\uFF08\u573A\u666F\uFF09/ \`prop\`\uFF08\u9053\u5177\uFF09
-- \`name\`\uFF1A\u8D44\u4EA7\u540D\u79F0\uFF08\u5982 \`\u6C88\u8F9E\`\u3001\`\u57CE\u697C\`\u3001\`\u957F\u5251\`\uFF09
-
-### 3. \u5206\u955C\u4FE1\u606F
-
-\u5206\u955C\u4EE5 \`<storyboardItem>\` XML \u6807\u7B7E\u5217\u8868\u7684\u5F62\u5F0F\u4F20\u5165\uFF0C\u6BCF\u6761\u5206\u955C\u7ED3\u6784\u5982\u4E0B\uFF1A
-
-\`\`\`xml
-<storyboardItem
-  videoDesc='\uFF08\u753B\u9762\u63CF\u8FF0\u3001\u573A\u666F\u3001\u5173\u8054\u8D44\u4EA7\u540D\u79F0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u3001\u5173\u8054\u8D44\u4EA7ID\uFF09'
-  prompt='\u5F85\u751F\u6210'
-  track='\u5206\u7EC4'
-  duration='\u89C6\u9891\u63A8\u8350\u65F6\u95F4'
-  associateAssetsIds="[\u8BE5\u5206\u955C\u6240\u9700\u7684\u8D44\u4EA7ID\u5217\u8868]"
-  shouldGenerateImage="true"
-></storyboardItem>
-\`\`\`
-
-#### \u8F93\u5165\u5B57\u6BB5\u8BF4\u660E
-
-| \u5C5E\u6027 | \u8BF4\u660E | \u6765\u6E90 |
-|------|------|------|
-| \`videoDesc\` | **\u6838\u5FC3\u8F93\u5165**\uFF1A\u5206\u955C\u7684\u7ED3\u6784\u5316\u753B\u9762\u63CF\u8FF0\uFF0C\u5305\u542B\u753B\u9762\u63CF\u8FF0\u3001\u573A\u666F\u3001\u5173\u8054\u8D44\u4EA7\u540D\u79F0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u3001\u5173\u8054\u8D44\u4EA7ID | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`prompt\` | **\u5DF2\u6709\u5B57\u6BB5**\uFF1A\u4E0A\u6E38\u751F\u6210\u7684\u5206\u955C\u56FE\u63D0\u793A\u8BCD\uFF0C\u4F5C\u4E3A\u8F85\u52A9\u53C2\u8003\u4E0A\u4E0B\u6587\uFF0C**\u4E0D\u4FEE\u6539** | \u4E0A\u6E38\u7CFB\u7EDF\u5DF2\u586B\u5199 |
-| \`track\` | \u5206\u955C\u5206\u7EC4\u6807\u8BC6 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`duration\` | \u89C6\u9891\u63A8\u8350\u65F6\u957F\uFF08\u79D2\uFF09 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`associateAssetsIds\` | \u8BE5\u5206\u955C\u5173\u8054\u7684\u8D44\u4EA7ID\u5217\u8868 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`shouldGenerateImage\` | \u662F\u5426\u9700\u8981\u751F\u6210\u5206\u955C\u56FE\u7247\uFF0C\u9ED8\u8BA4 \`true\` | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-
----
-
-## \u4EFB\u52A1\u76EE\u6807
-
-\u8BFB\u53D6\u6240\u6709 \`<storyboardItem>\` \u7684\u5C5E\u6027\uFF0C\u7ED3\u5408\u8D44\u4EA7\u4FE1\u606F\uFF0C\u6839\u636E\u6307\u5B9A\u6A21\u578B\u7684\u63D0\u793A\u8BCD\u683C\u5F0F\uFF0C\u5C06\u5168\u90E8\u5206\u955C\u6574\u5408\u4E3A\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD\u3002
-
----
-
-## \u8F93\u51FA\u683C\u5F0F
-
-\u5C06\u6240\u6709\u5206\u955C\u6574\u5408\u4E3A**\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD**\u8F93\u51FA\uFF08\u975E\u9010\u6761\u72EC\u7ACB\uFF09\uFF1A
-
-| \u6A21\u5F0F | \u6574\u5408\u65B9\u5F0F |
-|------|----------|
-| **\u901A\u7528\u591A\u53C2\u6A21\u5F0F** | \`[References]\` \u6C47\u603B\u6240\u6709 \`@\u56FEN \` \u5F15\u7528\uFF1B\`[Instruction]\` \u6309\u65F6\u95F4\u987A\u5E8F\u63CF\u8FF0\u5B8C\u6574\u53D9\u4E8B |
-| **\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F** | \u7EAF\u6587\u672C\u4E94\u7EF4\u5EA6\uFF08Visual / Motion / Camera / Audio / Narrative\uFF09\uFF0C\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528\uFF0C\u6309\u65F6\u95F4\u8F74\u8FDE\u7EED\u7F16\u6392\uFF08\`[Motion]\` 0s \u2192 \u603B\u65F6\u957F\uFF0C\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF09\uFF0C\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934\uFF0C\u4E0D\u5207\u955C |
-| **Seedance 2.0** | \`\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B N \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891\`\uFF0C\u6BCF\u6761\u5BF9\u5E94 \`\u5206\u955CN<duration-ms>\` \u6BB5\u843D |
-| **Wan 2.6** | \u5355\u56FE\u9996\u5E27\u6A21\u5F0F\uFF0C\u6BCF\u6B21\u4EC5\u8F93\u5165\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u53D9\u4E8B\u5F0F\u82F1\u6587\u63D0\u793A\u8BCD\uFF08\u4E09\u6BB5\u5F0F\uFF1A\u98CE\u683C\u57FA\u8C03 \u2192 \u4E3B\u4F53\u52A8\u4F5C+\u573A\u666F\u73AF\u5883+\u5149\u7EBF\u6C1B\u56F4 \u2192 \u955C\u5934\u6536\u5C3E\uFF09\uFF0C\u4E0D\u4F7F\u7528 \`@\u56FEN \` \u5F15\u7528 |
-
-- \u4EC5\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD\u6587\u672C\uFF0C\u4E0D\u8F93\u51FA XML \u6807\u7B7E\uFF0C\u4E0D\u9644\u52A0\u89E3\u91CA
-
----
-
-## videoDesc \u89E3\u6790\u89C4\u5219
-
-\u4ECE \`videoDesc\` \u62EC\u53F7\u5185\u6309\u987F\u53F7\u5206\u9694\u63D0\u53D6\u4EE5\u4E0B\u7ED3\u6784\u5316\u5B57\u6BB5\uFF1A
-
-\`\`\`
-\uFF08{\u753B\u9762\u63CF\u8FF0}\u3001{\u573A\u666F}\u3001{\u5173\u8054\u8D44\u4EA7\u540D\u79F0}\u3001{\u65F6\u957F}\u3001{\u666F\u522B}\u3001{\u8FD0\u955C}\u3001{\u89D2\u8272\u52A8\u4F5C}\u3001{\u60C5\u7EEA}\u3001{\u5149\u5F71\u6C1B\u56F4}\u3001{\u53F0\u8BCD}\u3001{\u97F3\u6548}\u3001{\u5173\u8054\u8D44\u4EA7ID}\uFF09
-\`\`\`
-
-| \u5E8F\u53F7 | \u5B57\u6BB5 | \u7528\u9014 | \u793A\u4F8B |
-|------|------|------|------|
-| 1 | \u753B\u9762\u63CF\u8FF0 | prompt \u7684\u53D9\u4E8B\u4E3B\u5E72 | \u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730 |
-| 2 | \u573A\u666F | \u5339\u914D\u573A\u666F\u8D44\u4EA7 | \u57CE\u697C |
-| 3 | \u5173\u8054\u8D44\u4EA7\u540D\u79F0 | \u5339\u914D\u89D2\u8272/\u9053\u5177\u8D44\u4EA7 | \u6C88\u8F9E/\u57CE\u697C |
-| 4 | \u65F6\u957F | \u63A7\u5236\u65F6\u957F\u53C2\u6570 | 4s |
-| 5 | \u666F\u522B | \u63A7\u5236\u955C\u5934\u666F\u522B | \u5168\u666F |
-| 6 | \u8FD0\u955C | \u63A7\u5236\u8FD0\u955C\u65B9\u5F0F | \u9759\u6B62 |
-| 7 | \u89D2\u8272\u52A8\u4F5C | prompt \u52A8\u4F5C\u63CF\u5199 | \u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C |
-| 8 | \u60C5\u7EEA | prompt \u60C5\u7EEA\u6C1B\u56F4 | \u575A\u5B9A\u51B3\u7EDD |
-| 9 | \u5149\u5F71\u6C1B\u56F4 | prompt \u5149\u5F71\u63CF\u5199 | \u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149 |
-| 10 | \u53F0\u8BCD | prompt \u53F0\u8BCD/\u97F3\u9891\u6BB5 | \u65E0\u53F0\u8BCD / \u5177\u4F53\u53F0\u8BCD\u5185\u5BB9 |
-| 11 | \u97F3\u6548 | prompt \u97F3\u6548\u63CF\u5199 | \u98CE\u58F0\u8863\u8882\u58F0 |
-| 12 | \u5173\u8054\u8D44\u4EA7ID | \u7528\u4E8E\u8D44\u4EA7ID\u2194\u89D2\u8272\u6807\u7B7E\u6620\u5C04 | A001/A002 |
-
----
-
-## \u8D44\u4EA7\u5F15\u7528\u7F16\u53F7\u89C4\u5219
-
-\u6240\u6709\u6A21\u578B\u7EDF\u4E00\u4F7F\u7528 \`@\u56FEN \` \u683C\u5F0F\u5F15\u7528\u8D44\u4EA7\u548C\u5206\u955C\u56FE\uFF0C\u7F16\u53F7\u6309\u8F93\u5165\u987A\u5E8F\u8FDE\u7EED\u9012\u589E\uFF1A
-
-1. **\u8D44\u4EA7**\uFF1A\u6309\u8D44\u4EA7\u4FE1\u606F\u4E2D \`[id, type, name]\` \u7684\u51FA\u73B0\u987A\u5E8F\uFF0C\u4ECE \`@\u56FE1 \` \u5F00\u59CB\u7F16\u53F7\uFF08\u4E0D\u533A\u5206 character / scene / prop\uFF09
-2. **\u5206\u955C\u56FE**\uFF1A\u6BCF\u6761 \`<storyboardItem>\` \u5BF9\u5E94\u4E00\u5F20\u5206\u955C\u56FE\uFF0C\u7F16\u53F7\u63A5\u7EED\u8D44\u4EA7\u4E4B\u540E
-3. **\u8DF3\u8FC7\u65E0\u5206\u955C\u56FE\u7684\u6761\u76EE**\uFF1A\u5F53 \`shouldGenerateImage="false"\` \u65F6\uFF0C\u8BE5\u5206\u955C\u672A\u751F\u6210\u56FE\u7247\uFF0C**\u4E0D\u5206\u914D**\u5206\u955C\u56FE\u7F16\u53F7\uFF0C\u540E\u7EED\u7F16\u53F7\u987A\u5EF6
-
-#### \u793A\u4F8B
-
-\u8F93\u5165 3 \u4E2A\u8D44\u4EA7 + 2 \u6761\u5206\u955C\uFF1A
-\`\`\`
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A002, character, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem ...>  <!-- \u5206\u955C1 -->
-<storyboardItem ...>  <!-- \u5206\u955C2 -->
-\`\`\`
-
-\u7F16\u53F7\u7ED3\u679C\uFF1A
-
-| \u8F93\u5165\u9879 | \u5F15\u7528\u6807\u7B7E | \u8BF4\u660E |
-|--------|----------|------|
-| [A001, character, \u6C88\u8F9E] | \`@\u56FE1 \` | \u89D2\u8272\xB7\u6C88\u8F9E \u53C2\u8003\u56FE |
-| [A002, character, \u82CF\u9526] | \`@\u56FE2 \` | \u89D2\u8272\xB7\u82CF\u9526 \u53C2\u8003\u56FE |
-| [A003, scene, \u57CE\u697C] | \`@\u56FE3 \` | \u573A\u666F\xB7\u57CE\u697C \u53C2\u8003\u56FE |
-| storyboardItem \u7B2C1\u6761 | \`@\u56FE4 \` | \u5206\u955C\u56FE1 |
-| storyboardItem \u7B2C2\u6761 | \`@\u56FE5 \` | \u5206\u955C\u56FE2 |
-
----
-
-## \u6A21\u578B\u63D0\u793A\u8BCD\u751F\u6210\u89C4\u5219
-
-### \u4E00\u3001\u901A\u7528\u591A\u53C2\u6A21\u5F0F
-
-#### \u6838\u5FC3\u539F\u5219
-- MVL \u591A\u6A21\u6001\u878D\u5408\uFF1A\u81EA\u7136\u8BED\u8A00 + \u56FE\u50CF\u5F15\u7528\u5728\u540C\u4E00\u8BED\u4E49\u7A7A\u95F4
-- \u5206\u955C\u56FE\u5E8F\u5217\u8D1F\u8D23\u52A8\u4F5C/\u65F6\u95F4\u8F74/\u6784\u56FE\uFF0C\u573A\u666F\u53C2\u8003\u56FE\u8D1F\u8D23\u73AF\u5883\u4E00\u81F4\u6027
-- \u6240\u6709\u8D44\u4EA7\u548C\u5206\u955C\u56FE\u7EDF\u4E00\u7528 \`@\u56FEN \` \u5F15\u7528
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 Instruction \u4E2D\u4F53\u73B0\u53F0\u8BCD\u76F8\u5173\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO\uFF09\uFF0C\u5728 Instruction \u4E2D\u7528\u62EC\u53F7\u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-\`\`\`
-[References]
-@\u56FE1 : [{\u89D2\u8272A\u540D}\u53C2\u8003\u56FE]
-@\u56FE2 : [{\u89D2\u8272B\u540D}\u53C2\u8003\u56FE]
-@\u56FE3 : [{\u573A\u666F\u540D}\u53C2\u8003\u56FE]
-@\u56FE4 : [\u5206\u955C\u56FE1]
-
-[Instruction]
-Based on the storyboard @\u56FE4 :
-@\u56FE1 {\u52A8\u4F5C/\u72B6\u6001\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09},
-@\u56FE2 {\u52A8\u4F5C/\u72B6\u6001\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09},
-set in the {\u573A\u666F\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09} of @\u56FE3 ,
-{\u955C\u5934/\u8FD0\u955C\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09},
-{\u60C5\u611F\u57FA\u8C03\uFF08\u82F1\u6587\uFF09},
-{\u53F0\u8BCD\u63CF\u8FF0\uFF08\u82F1\u6587\uFF0C\u542B dialogue/OS/VO \u6807\u6CE8\uFF09/ No dialogue},
-{\u97F3\u6548\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09}.
-\`\`\`
-
-#### \u751F\u6210\u7EA6\u675F
-1. **Instruction \u5FC5\u987B\u7528\u82F1\u6587**
-2. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-3. **\u89D2\u8272\u52A8\u4F5C**\u4ECE videoDesc \u7684\u300C\u89D2\u8272\u52A8\u4F5C\u300D\u5B57\u6BB5\u63D0\u53D6\uFF0C\u7FFB\u8BD1\u4E3A\u7B80\u6D01\u82F1\u6587\u52A8\u4F5C\u63CF\u8FF0
-4. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 Instruction \u4E2D\u4F53\u73B0\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-5. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`(dialogue)\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`(inner monologue, OS)\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`(voiceover, VO)\`
-6. **\u955C\u5934\u98CE\u683C**\u4F7F\u7528\u6807\u51C6\u6807\u7B7E\uFF1A\`cinematic\` / \`wide-angle\` / \`close-up\` / \`slow motion\` / \`surround shooting\` / \`handheld\`
-7. **\u7A7A\u95F4\u5173\u7CFB**\u4F7F\u7528\u6807\u51C6\u52A8\u8BCD\uFF1A\`wearing\` / \`holding\` / \`standing on\` / \`following behind\` / \`sitting in\`
-8. \u5355\u6761\u5206\u955C\u5BF9\u5E94\u5355\u4E2A \`@\u56FEN \`\uFF0C\u4E0D\u505A\u591A\u5E27\u8DE8\u955C\u63CF\u8FF0
-9. \u65E0\u9700\u63CF\u8FF0\u89D2\u8272\u5916\u89C2\uFF08\u7531\u53C2\u8003\u56FE\u8D1F\u8D23\uFF09
-10. \u65E0\u65F6\u957F\u6807\u6CE8\uFF08\u7531\u6A21\u578B\u63A8\u65AD\uFF09
-11. **\u65E0\u5206\u955C\u56FE\u65F6**\uFF1A\u5F53 \`shouldGenerateImage="false"\` \u65F6\uFF0C\u8BE5\u5206\u955C\u65E0\u5206\u955C\u56FE\uFF0C\`[References]\` \u4E2D\u4E0D\u5217\u51FA\u8BE5\u5206\u955C\u56FE\uFF0C\`[Instruction]\` \u4E2D\u4E0D\u4F7F\u7528 \`@\u56FEN \` \u5F15\u7528\u8BE5\u5206\u955C\u56FE\uFF0C\u6539\u4E3A\u7EAF\u6587\u672C\u63CF\u8FF0\u753B\u9762\u5185\u5BB9
-
-#### KlingOmni \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AKlingOmni
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A002, character, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u65E0\u53F0\u8BCD\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-[References]
-@\u56FE1 : [\u6C88\u8F9E\u53C2\u8003\u56FE]
-@\u56FE2 : [\u82CF\u9526\u53C2\u8003\u56FE]
-@\u56FE3 : [\u57CE\u697C\u53C2\u8003\u56FE]
-@\u56FE4 : [\u5206\u955C\u56FE1]
-@\u56FE5 : [\u5206\u955C\u56FE2]
-
-[Instruction]
-Based on the storyboard from @\u56FE4 to @\u56FE5 :
-@\u56FE1 standing alone atop the city wall, hands clasped behind back, robes billowing in the wind, gazing across the vast land,
-@\u56FE2 ascending the steps toward @\u56FE1 , expression worried,
-set in the ancient city wall environment of @\u56FE3 ,
-wide shot transitioning to medium tracking shot, cinematic,
-resolute determination shifting to concerned anticipation, dusk cold-toned side-backlit atmosphere fading,
-no dialogue,
-wind howling, fabric flapping, footsteps on stone.
-\`\`\`
-
----
-
-### \u4E8C\u3001\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u7EAF\u6587\u672C\u63D0\u793A\u8BCD**\uFF1A\u63D0\u793A\u8BCD\u5185**\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF08\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u4E5F\u4E0D\u5F15\u7528\u5206\u955C\u56FE\uFF09\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-- **\u4E94\u7EF4\u5EA6\u7ED3\u6784**\uFF1AVisual / Motion / Camera / Audio / Narrative
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 \`[Audio]\` \u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue, lip-sync active\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS, silent lips\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO, silent lips\uFF09\uFF0C\u5E76\u5728 \`[Audio]\` \u4E2D\u660E\u786E\u6807\u6CE8
-- **\u4E0D\u8BF4\u8BDD\u7684\u4E3B\u4F53\u6807\u6CE8 \`silent\`** \u2014 \u9632\u6B62\u8BEF\u751F\u53E3\u578B
-- **\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934**\uFF1A\u4ECE\u5934\u5230\u5C3E\u4E00\u4E2A\u955C\u5934\uFF0C\u4E0D\u5B58\u5728\u5207\u955C
-- **\u65F6\u95F4\u8F74\u5206\u6BB5**\uFF1A\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF0C\u7528 \`0s-Xs\` \u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-\`\`\`
-[Visual]
-{\u4E3B\u4F53A\u540D}: {\u5916\u89C2\u7B80\u8FF0}, {\u7AD9\u4F4D/\u59FF\u6001}, {\u8BF4\u8BDD\u72B6\u6001 speaking/silent}.
-{\u4E3B\u4F53B\u540D}: {\u5916\u89C2\u7B80\u8FF0}, {\u7AD9\u4F4D/\u59FF\u6001}, {\u8BF4\u8BDD\u72B6\u6001}.
-{\u573A\u666F\u63CF\u8FF0}, {\u9053\u5177\u63CF\u8FF0}.
-{\u89C6\u89C9\u98CE\u683C\u6807\u7B7E}.
-
-[Motion]
-0s-{X}s: {\u4E3B\u4F53A\u540D} {\u52A8\u4F5C\u63CF\u8FF0\u6BB51}.
-{X}s-{Y}s: {\u4E3B\u4F53B\u540D} {\u52A8\u4F5C\u63CF\u8FF0\u6BB52}.
-
-[Camera]
-{\u955C\u5934\u7C7B\u578B}, {\u8FD0\u955C\u65B9\u5F0F}, {\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934\u63CF\u8FF0}.
-
-[Audio]
-{Xs-Ys}: "{\u53F0\u8BCD\u5185\u5BB9}" \u2014 {\u8BF4\u8BDD\u8005\u540D} ({dialogue / inner monologue OS / voiceover VO}), {lip-sync active / silent lips}.
-{\u97F3\u6548\u63CF\u8FF0}.
-
-[Narrative]
-{\u60C5\u8282\u70B9\u6982\u8FF0}, {\u53D9\u4E8B\u4F4D\u7F6E}.
-\`\`\`
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u5168\u90E8\u7528\u82F1\u6587**
-2. **\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF1A\u63D0\u793A\u8BCD\u5185\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u5206\u955C\u56FE\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-3. **\u4E3B\u4F53\u7528\u6587\u5B57\u63CF\u8FF0**\uFF1A\u5728 [Visual] \u4E2D\u7B80\u8981\u63CF\u8FF0\u4E3B\u4F53\u5916\u89C2\u7279\u5F81\uFF08\u5982\u670D\u9970\u3001\u53D1\u578B\u7B49\u5173\u952E\u8FA8\u8BC6\u7279\u5F81\uFF09
-4. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-5. **\u6BCF\u4E2A\u4E3B\u4F53\u5FC5\u987B\u6807\u6CE8\u8BF4\u8BDD\u72B6\u6001**\uFF1A\`speaking\` / \`silent\` / \`speaking simultaneously\`
-6. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 \`[Audio]\` \u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-7. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`dialogue, lip-sync active\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`inner monologue (OS), silent lips\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`voiceover (VO), silent lips\`
-8. **Motion \u65F6\u95F4\u8F74**\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF0C\u4E0D\u8D85\u8FC7\u603B\u65F6\u957F
-9. **\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934**\uFF1ACamera \u6BB5\u843D\u63CF\u8FF0\u4ECE\u5934\u5230\u5C3E\u7684\u4E00\u4E2A\u955C\u5934\uFF0C\u7EDD\u4E0D\u5207\u955C
-10. **\u89C6\u89C9\u98CE\u683C**\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9
-11. **\u955C\u5934\u7C7B\u578B**\u4ECE\u4EE5\u4E0B\u9009\u53D6\uFF1A\`Wide establishing shot / Over-the-shoulder / Medium shot / Close-up / Wide shot / POV / Dutch angle / Crane up / Dolly right / Whip pan / Handheld / Slow motion\`
-
-#### Seedance 1.5 Pro \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1ASeedance1.5
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A002, character, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u65E0\u53F0\u8BCD\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-[Visual]
-Shen Ci: male, dark flowing robes, hair tied up, standing alone atop city wall, hands clasped behind back, robes billowing, silent.
-Su Jin: female, light-colored dress, hair partially down, ascending steps toward Shen Ci, expression worried, silent.
-Ancient city wall, vast open land beyond, dusk sky fading.
-Cinematic, photorealistic, 4K, high contrast, desaturated tones, shallow depth of field.
-
-[Motion]
-0s-4s: Shen Ci stands still on city wall edge, robes flutter in wind, hair sways gently. Gaze fixed on distant horizon.
-4s-8s: Su Jin climbs the last few steps onto the wall, walks toward Shen Ci. Shen Ci remains still, unaware. Su Jin slows as she approaches.
-
-[Camera]
-Wide establishing shot, static for first 4 seconds capturing the lone figure. Then smooth transition to medium tracking shot following the woman ascending steps, single continuous take throughout, no cuts.
-
-[Audio]
-0s-4s: Wind howling across wall, fabric flapping rhythmically. No dialogue.
-4s-8s: Footsteps on stone, robes rustling. No dialogue.
-Shen Ci \u2014 silent. Su Jin \u2014 silent.
-
-[Narrative]
-Lone figure on city wall, then arrival of a companion. Tension between determination and concern. Single continuous take.
-\`\`\`
-
----
-
-### \u4E09\u3001Seedance 2.0
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u7ED3\u6784\u531612\u7EF4\u7F16\u7801**\uFF1A\u7EDF\u4E00\u7528 \`@\u56FEN \` \u5F15\u7528\u8D44\u4EA7\u548C\u5206\u955C\u56FE\uFF0C\u65F6\u957F \`<duration-ms>\`
-- **\u97F3\u8272\u53C2\u65709\u7EF4\u5EA6\u7CBE\u7EC6\u63CF\u8FF0**\uFF08\u6709\u53F0\u8BCD\u65F6\u5FC5\u586B\uFF09
-- **\u6BEB\u79D2\u7EA7\u65F6\u957F\u63A7\u5236**\uFF1A\u5355\u5206\u955C\u65F6\u957F\u6700\u4F4E 1000ms\uFF081 \u79D2\uFF09
-- **\u4E2D\u6587\u63D0\u793A\u8BCD**
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u6BCF\u6761\u5206\u955C\u7684\u63CF\u8FF0\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u548C\u97F3\u8272\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08\u76F4\u63A5\u4F7F\u7528\u300C\u8BF4\uFF1A\u300D\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08\u4F7F\u7528\u300C\u5185\u5FC3OS\uFF1A\u300D\uFF09\u3001\u753B\u5916\u97F3\uFF08\u4F7F\u7528\u300C\u753B\u5916\u97F3VO\uFF1A\u300D\uFF09\uFF0C\u5E76\u5339\u914D\u5BF9\u5E94\u7684\u5634\u578B\u72B6\u6001\u63CF\u8FF0
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-**\u5355\u5206\u955C\u6A21\u677F\uFF1A**
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: {\u98CE\u683C}, {\u8272\u8C03}, {\u7C7B\u578B}
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B 1 \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: \u65E0
-
-\u5206\u955C1<duration-ms>{\u6BEB\u79D2\u6570}</duration-ms>: \u65F6\u95F4\uFF1A{\u65E5/\u591C/\u6668/\u9EC4\u660F}\uFF0C\u573A\u666F\u56FE\u7247\uFF1A@\u56FE{\u573A\u666F\u7F16\u53F7} \uFF0C\u955C\u5934\uFF1A{\u666F\u522B}\uFF0C{\u89D2\u5EA6}\uFF0C{\u8FD0\u955C}\uFF0C@\u56FE{\u89D2\u8272\u7F16\u53F7} {\u52A8\u4F5C/\u8868\u60C5/\u89C6\u7EBF\u671D\u5411/\u7AD9\u4F4D\u63CF\u8FF0}\u3002{\u53F0\u8BCD\u4E0E\u97F3\u8272\u63CF\u8FF0\uFF08\u5982\u6709\uFF09}\u3002{\u80CC\u666F\u73AF\u5883\u8865\u5145}\u3002{\u5149\u5F71\u6C1B\u56F4}\u3002{\u8FD0\u955C\u8865\u5145}\u3002
-\`\`\`
-
-**\u591A\u5206\u955C\u6A21\u677F\uFF1A**
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: {\u98CE\u683C}, {\u8272\u8C03}, {\u7C7B\u578B}
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B {N} \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: {\u5168\u5C40\u8FC7\u6E21\u63CF\u8FF0}
-
-\u5206\u955C1<duration-ms>{\u6BEB\u79D2\u6570}</duration-ms>: \u65F6\u95F4\uFF1A{...}\uFF0C\u573A\u666F\u56FE\u7247\uFF1A@\u56FE{\u573A\u666F\u7F16\u53F7} \uFF0C\u955C\u5934\uFF1A{...}\uFF0C@\u56FE{\u89D2\u8272\u7F16\u53F7} {...}\u3002{...}\u3002
-\u5206\u955C2<duration-ms>{\u6BEB\u79D2\u6570}</duration-ms>: ...
-...
-\`\`\`
-
-#### \u97F3\u8272\u751F\u6210\u89C4\u5219\uFF08\u6709\u53F0\u8BCD\u65F6\u5FC5\u586B\uFF09
-
-\u53F0\u8BCD\u683C\u5F0F\uFF1A\`@\u56FE{\u89D2\u8272\u7F16\u53F7} \u8BF4\uFF1A\u300C{\u53F0\u8BCD\u5185\u5BB9}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6\u63CF\u8FF0}\`
-
-9\u7EF4\u5EA6\u6309\u987A\u5E8F\u586B\u5199\uFF1A
-\`\`\`
-{\u6027\u522B}\uFF0C{\u5E74\u9F84\u97F3\u8272}\uFF0C{\u97F3\u8C03}\uFF0C{\u97F3\u8272\u8D28\u611F}\uFF0C{\u58F0\u97F3\u539A\u5EA6}\uFF0C{\u53D1\u97F3\u65B9\u5F0F}\uFF0C{\u6C14\u606F}\uFF0C{\u8BED\u901F}\uFF0C{\u7279\u6B8A\u8D28\u611F}
-\`\`\`
-
-> \u5F53 desc \u4E2D\u672A\u660E\u786E\u97F3\u8272\u4FE1\u606F\u65F6\uFF0C\u6839\u636E\u89D2\u8272\u7C7B\u578B\u4ECE\u4EE5\u4E0B\u53C2\u8003\u8868\u63A8\u65AD\uFF1A
-
-| \u89D2\u8272\u7C7B\u578B\u7279\u5F81 | \u9ED8\u8BA4\u97F3\u8272 |
-|------------|---------|
-| \u7537\u6027\u6743\u5A01/\u9738\u6C14\u89D2\u8272 | \u7537\u58F0\uFF0C\u4E2D\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4F4E\u6C89\uFF0C\u97F3\u8272\u6D51\u539A\u6709\u529B\uFF0C\u58F0\u97F3\u539A\u91CD\uFF0C\u53D1\u97F3\u6807\u51C6\uFF0C\u6C14\u606F\u6781\u5176\u6C89\u7A33\uFF0C\u8BED\u901F\u504F\u6162 |
-| \u5973\u6027\u6E29\u67D4/\u751C\u7F8E\u89D2\u8272 | \u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\u504F\u9AD8\uFF0C\u97F3\u8272\u8D28\u611F\u660E\u4EAE\u6E05\u8106\uFF0C\u58F0\u97F3\u6E05\u4EAE\u67D4\u548C\uFF0C\u6C14\u606F\u5145\u6C9B\u5E73\u7A33\uFF0C\u5E26\u6E29\u5A49\u771F\u8BDA\u611F |
-| \u7537\u6027\u5E74\u8F7B/\u666E\u901A\u89D2\u8272 | \u7537\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\uFF0C\u97F3\u8272\u5E72\u51C0\uFF0C\u58F0\u97F3\u539A\u5EA6\u9002\u4E2D\uFF0C\u53D1\u97F3\u6E05\u6670\uFF0C\u6C14\u606F\u5E73\u7A33\uFF0C\u8BED\u901F\u9002\u4E2D |
-| \u5973\u6027\u6D3B\u6CFC/\u5916\u5411\u89D2\u8272 | \u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u504F\u9AD8\uFF0C\u97F3\u8272\u6E05\u8106\u6D3B\u6CFC\uFF0C\u58F0\u97F3\u8F7B\u76C8\uFF0C\u6C14\u606F\u5145\u6C9B\uFF0C\u8BED\u901F\u504F\u5FEB\uFF0C\u5E26\u7B11\u610F\u548C\u611F\u67D3\u529B |
-| \u53CD\u6D3E/\u51B7\u9177\u89D2\u8272 | \u7537\u58F0\uFF0C\u4E2D\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4F4E\u6C89\uFF0C\u97F3\u8272\u8D28\u611F\u5E72\u71E5\u504F\u6697\uFF0C\u58F0\u97F3\u5E26\u6C99\u783E\u611F\uFF0C\u6C14\u606F\u5E73\u7A33\uFF0C\u8BED\u901F\u6781\u6162\uFF0C\u6709\u5A01\u80C1\u611F |
-
-#### \u65E0\u53F0\u8BCD\u5206\u955C\u5904\u7406
-- \u4E0D\u5199 \`\u8BF4\uFF1A\` \u548C\u97F3\u8272\u6BB5\u843D
-- \u5728\u52A8\u4F5C\u63CF\u8FF0\u540E\u6807\u6CE8 \`\u65E0\u53F0\u8BCD\`
-
-#### \u53F0\u8BCD\u7C7B\u578B\u683C\u5F0F
-
-| \u53F0\u8BCD\u7C7B\u578B | \u683C\u5F0F | \u5634\u578B\u63CF\u8FF0 |
-|----------|------|----------|
-| \u666E\u901A\u5BF9\u767D | \`@\u56FE{\u89D2\u8272\u7F16\u53F7} \u8BF4\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u5F00\u5408\u8BF4\u8BDD |
-| \u5185\u5FC3\u72EC\u767D | \`@\u56FE{\u89D2\u8272\u7F16\u53F7} \u5185\u5FC3OS\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u7D27\u95ED\u4E0D\u52A8 |
-| \u753B\u5916\u97F3 | \`@\u56FE{\u89D2\u8272\u7F16\u53F7} \u753B\u5916\u97F3VO\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u7D27\u95ED\u4E0D\u52A8\uFF08\u6216\u89D2\u8272\u4E0D\u5728\u753B\u9762\u4E2D\uFF09 |
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u4E2D\u6587\u63D0\u793A\u8BCD**
-2. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u6BCF\u6761\u5206\u955C\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-3. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u548C\u97F3\u8272
-4. **\u53F0\u8BCD\u7C7B\u578B\u6B63\u786E\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u7528\u300C\u8BF4\uFF1A\u300D\uFF0C\u5185\u5FC3\u72EC\u767D\u7528\u300C\u5185\u5FC3OS\uFF1A\u300D\uFF0C\u753B\u5916\u97F3\u7528\u300C\u753B\u5916\u97F3VO\uFF1A\u300D
-5. **\u5355\u5206\u955C\u65F6\u957F\u6700\u4F4E 1000ms\uFF081 \u79D2\uFF09**
-6. **\u65F6\u957F\u5355\u4F4D**\uFF1A\u5C06 videoDesc \u4E2D\u7684\u79D2 \xD7 1000 \u8F6C\u4E3A\u6BEB\u79D2\u586B\u5165 \`<duration-ms>\`
-
-#### Seedance 2.0 \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1ASeedance2.0
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A002, character, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u82CF\u9526\u8BF4\uFF1A\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: \u771F\u4EBA\u5199\u5B9E, \u7535\u5F71\u98CE\u683C, \u51B7\u8C03, \u53E4\u98CE
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B 2 \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: \u955C\u5934\u5E73\u6ED1\u5207\u6362\uFF0C\u4ECE\u5168\u666F\u8FC7\u6E21\u5230\u4E2D\u666F\u8DDF\u8E2A\uFF0C\u7126\u70B9\u4ECE\u6C88\u8F9E\u72EC\u5904\u8F6C\u5411\u82CF\u9526\u5230\u6765\u3002
-
-\u5206\u955C1<duration-ms>4000</duration-ms>: \u65F6\u95F4\uFF1A\u9EC4\u660F\uFF0C\u573A\u666F\u56FE\u7247\uFF1A@\u56FE3 \uFF0C\u955C\u5934\uFF1A\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u9759\u6B62\u955C\u5934\uFF0C@\u56FE1 \u72EC\u7ACB\u57CE\u697C\u4E4B\u4E0A\uFF0C\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u968F\u98CE\u98D8\u626C\uFF0C\u76EE\u5149\u8FDC\u773A\u82CD\u832B\u5927\u5730\uFF0C\u795E\u60C5\u8083\u7136\u9762\u5BB9\u6C89\u7740\uFF0C\u773C\u795E\u575A\u5B9A\u76EE\u5149\u6E05\u51BD\uFF0C\u7709\u773C\u6C89\u9759\u6C14\u8D28\u51DB\u7136\u3002\u65E0\u53F0\u8BCD\u3002\u80CC\u666F\u662F\u53E4\u57CE\u697C\u7816\u77F3\u7EB9\u7406\u6E05\u6670\uFF0C\u8FDC\u65B9\u5927\u5730\u82CD\u832B\u8FBD\u9614\uFF0C\u5929\u9645\u7EBF\u51B7\u6696\u4EA4\u66FF\u3002\u9EC4\u660F\u659C\u5C04\u4F59\u6656\u4FA7\u9006\u5149\uFF0C\u51B7\u8C03\u4E3A\u4E3B\uFF0C\u957F\u5F71\u62C9\u4F38\uFF0C\u8F6E\u5ED3\u5149\u5FAE\u52FE\u52D2\u4EBA\u7269\u8FB9\u7F18\uFF0C\u5149\u611F\u8BD7\u610F\u3002\u955C\u5934\u9759\u6B62\u3002
-
-\u5206\u955C2<duration-ms>4000</duration-ms>: \u65F6\u95F4\uFF1A\u9EC4\u660F\uFF0C\u573A\u666F\u56FE\u7247\uFF1A@\u56FE3 \uFF0C\u955C\u5934\uFF1A\u4E2D\u666F\uFF0C\u5E73\u89C6\uFF0C\u8DDF\u8E2A\u62CD\u6444\uFF0C@\u56FE2 \u62FE\u7EA7\u800C\u4E0A\uFF0C\u8D70\u5411\u57CE\u697C\u4E0A\u7684@\u56FE1 \uFF0C\u9762\u90E8\u671D\u5411@\u56FE1 \u65B9\u5411\uFF0C\u795E\u60C5\u5FAE\u6123\u9762\u8272\u5FAE\u53D8\uFF0C\u773C\u795E\u4E2D\u5E26\u7740\u62C5\u5FE7\uFF0C@\u56FE2 \u8BF4\uFF1A\u300C\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3002\u300D\u97F3\u8272\uFF1A\u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\u504F\u9AD8\uFF0C\u97F3\u8272\u8D28\u611F\u660E\u4EAE\u6E05\u8106\uFF0C\u58F0\u97F3\u6E05\u4EAE\u67D4\u548C\uFF0C\u53D1\u97F3\u65B9\u5F0F\u5E72\u51C0\uFF0C\u6C14\u606F\u5145\u6C9B\u5E73\u7A33\uFF0C\u8BED\u901F\u9002\u4E2D\uFF0C\u5E26\u6E29\u5A49\u771F\u8BDA\u611F\u3002\u80CC\u666F\u57CE\u697C\u53F0\u9636\u7EB9\u7406\u6E05\u6670\uFF0C\u4F59\u6656\u6E10\u6697\uFF0C\u5929\u9645\u7EBF\u51B7\u6696\u4EA4\u66FF\u52A0\u6DF1\u3002\u955C\u5934\u8DDF\u8E2A\u82CF\u9526\u79FB\u52A8\u3002
-\`\`\`
-
----
-
-### \u56DB\u3001Wan 2.6
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u5355\u56FE\u9996\u5E27\u6A21\u5F0F**\uFF1A\u5F52\u7C7B\u4E3A\u9996\u5C3E\u5E27\u6A21\u5F0F\uFF0C\u4F46\u4EC5\u6709\u9996\u5E27\uFF08\u5206\u955C\u56FE\uFF09\uFF0C\u65E0\u5C3E\u5E27
-- **\u5355\u6761\u5206\u955C\u8F93\u5165/\u8F93\u51FA**\uFF1A\u6BCF\u6B21\u4EC5\u8F93\u5165\u4E00\u6761 \`<storyboardItem>\` \u53CA\u5176\u5173\u8054\u8D44\u4EA7\u4FE1\u606F\uFF0C\u8F93\u51FA\u4E5F\u4EC5\u4E3A\u4E00\u6BB5\u5B8C\u6574\u7684\u53D9\u4E8B\u5F0F\u63D0\u793A\u8BCD
-- **\u53D9\u4E8B\u5F0F\u82F1\u6587\u63D0\u793A\u8BCD**\uFF1A\u50CF\u5199\u5C0F\u8BF4\u4E00\u6837\u63CF\u5199\u753B\u9762\uFF0C\u4E0D\u4F7F\u7528\u6807\u7B7E\u7F57\u5217\uFF08\u4E0D\u5199 \`4K, cinematic, high quality\` \u8FD9\u7C7B\u5806\u780C\uFF09
-- **\u4E09\u6BB5\u5F0F\u7ED3\u6784**\uFF1A\u98CE\u683C\u57FA\u8C03 \u2192 \u4E3B\u4F53\u52A8\u4F5C + \u573A\u666F\u73AF\u5883 + \u5149\u7EBF\u6C1B\u56F4 \u2192 \u955C\u5934\u6536\u5C3E
-- **\u7EAF\u6587\u672C\u63D0\u793A\u8BCD**\uFF1A\u63D0\u793A\u8BCD\u5185**\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u4F53\u73B0\u53F0\u8BCD\u76F8\u5173\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO\uFF09\uFF0C\u5728\u63D0\u793A\u8BCD\u4E2D\u7528\u62EC\u53F7\u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-\u6BCF\u6B21\u8F93\u5165\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u5B8C\u6574\u63D0\u793A\u8BCD\uFF08\u65E0\u7F16\u53F7\u524D\u7F00\uFF09\uFF0C\u683C\u5F0F\u5982\u4E0B\uFF1A
-
-\`\`\`
-{\u98CE\u683C\u57FA\u8C03\u4E00\u53E5\u8BDD\u5B9A\u6027},
-{\u4E3B\u4F53\u540D} {\u5916\u89C2\u7B80\u8FF0}, {\u5177\u4F53\u52A8\u4F5C/\u59FF\u6001\u63CF\u8FF0}, {\u60C5\u7EEA/\u8868\u60C5\u7528\u52A8\u4F5C\u6697\u793A}.
-{\u573A\u666F\u80CC\u666F\u4E3B\u4F53}, {\u5177\u4F53\u73AF\u5883\u7269\u4EF6}, {\u7A7A\u95F4\u611F}, {\u65F6\u95F4/\u5929\u6C14}.
-{\u5149\u7EBF\u65B9\u5411/\u8272\u6E29} {\u8D28\u611F\u63CF\u8FF0}, {\u60C5\u7EEA\u6697\u793A\u5149\u5F71}.
-{\u53F0\u8BCD\u63CF\u8FF0\uFF08\u5982\u6709\uFF0C\u542B dialogue/OS/VO \u6807\u6CE8\uFF09/ No dialogue}.
-{\u97F3\u6548\u63CF\u8FF0}.
-{\u62CD\u6444\u65B9\u5F0F}, {\u666F\u522B}, {\u89C6\u89D2}, {\u8FD0\u955C\u65B9\u5F0F}.
-\`\`\`
-
-#### \u53D9\u4E8B\u5F0F\u5199\u6CD5\u8981\u70B9
-
-| \u539F\u5219 | \u8BF4\u660E | \u793A\u4F8B |
-|------|------|------|
-| \u98CE\u683C\u57FA\u8C03\u653E\u6700\u524D | \u4E00\u53E5\u8BDD\u5B9A\u6027\u6574\u4F53\u6C14\u8D28 | \`A cinematic epic scene\` / \`A melancholic cinematic scene\` |
-| \u4E3B\u4F53+\u52A8\u4F5C\u7D27\u5BC6\u7ED1\u5B9A | \u4E3B\u4F53\u540E\u9762\u76F4\u63A5\u8DDF\u52A8\u4F5C\uFF0C\u5916\u89C2\u7EC6\u8282\u5D4C\u5165\u4E3B\u4F53\u63CF\u8FF0 | \`A young man in dark flowing robes stands alone atop the city wall, hands clasped behind back\` |
-| \u60C5\u7EEA\u7528\u52A8\u4F5C\u6697\u793A | \u4E0D\u76F4\u63A5\u9648\u8FF0\u300C\u4ED6\u5F88\u60B2\u4F24\u300D | \u274C \`He is sad.\` \u2192 \u2705 \`head drops slowly, shoulders slumped\` |
-| \u73AF\u5883\u878D\u5165\u53D9\u4E8B | \u4E0D\u7F57\u5217\u73AF\u5883\u5C5E\u6027 | \u274C \`The sky is blue. The grass is green.\` \u2192 \u2705 \`hazy blue sky stretches over the emerald valley\` |
-| \u5149\u7EBF\u5355\u72EC\u6210\u53E5 | \u5149\u7EBF\u65B9\u5411+\u8272\u6E29+\u8D28\u611F+\u60C5\u7EEA | \`Warm golden hour light streams from behind, casting long shadows across the stone floor\` |
-| \u955C\u5934\u8BED\u8A00\u6536\u5C3E | \u4E00\u53E5\u8BDD\u70B9\u775B | \`Captured in a wide establishing shot from a low-angle perspective, static camera\` |
-| \u7981\u6B62\u6807\u7B7E\u5806\u780C | \u4E0D\u5199 \`4K, cinematic, high quality\` | \`cinematic\` \u878D\u5165\u98CE\u683C\u57FA\u8C03\u5373\u53EF |
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u5168\u90E8\u7528\u82F1\u6587**
-2. **\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF1A\u63D0\u793A\u8BCD\u5185\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u5206\u955C\u56FE\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-3. **\u53D9\u4E8B\u5F0F\u63CF\u5199**\uFF1A\u50CF\u5199\u5C0F\u8BF4\u4E00\u6837\u6784\u5EFA\u753B\u9762\uFF0C\u7981\u6B62\u6807\u7B7E\u7F57\u5217\u548C\u914D\u7F6E\u6E05\u5355\u5F0F\u5199\u6CD5
-4. **\u4E3B\u4F53\u7528\u6587\u5B57\u63CF\u8FF0**\uFF1A\u7B80\u8981\u63CF\u8FF0\u4E3B\u4F53\u5916\u89C2\u7279\u5F81\uFF08\u5982\u670D\u9970\u3001\u53D1\u578B\u7B49\u5173\u952E\u8FA8\u8BC6\u7279\u5F81\uFF09\uFF0C\u5D4C\u5165\u4E3B\u4F53\u63CF\u8FF0\u4E2D
-5. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-6. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-7. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`(dialogue)\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`(inner monologue, OS)\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`(voiceover, VO)\`
-8. **\u5355\u6761\u8F93\u5165/\u8F93\u51FA**\uFF1A\u6BCF\u6B21\u4EC5\u5904\u7406\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u63D0\u793A\u8BCD\uFF0C\u65E0\u7F16\u53F7\u524D\u7F00
-9. **\u65E0\u9700\u6807\u6CE8\u65F6\u957F**\uFF1A\u65F6\u957F\u7531\u6A21\u578B\u4FA7\u63A7\u5236\uFF0C\u63D0\u793A\u8BCD\u4E2D\u4E0D\u5199\u65F6\u957F\u53C2\u6570
-10. **\u955C\u5934\u63CF\u8FF0\u878D\u5165\u53D9\u4E8B**\uFF1A\u4E0D\u7528\u65B9\u62EC\u53F7\u6807\u7B7E\uFF0C\u7528\u5B8C\u6574\u53E5\u5B50\u63CF\u8FF0\u955C\u5934
-11. **\u89C6\u89C9\u98CE\u683C**\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9
-
-#### Wan 2.6 \u5B8C\u6574\u793A\u4F8B
-
-**\u793A\u4F8B1\uFF1A\u65E0\u53F0\u8BCD\u5206\u955C**
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AWan2.6
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-A cinematic epic scene with a cold, desaturated palette,
-A lone man in dark flowing robes stands atop an ancient city wall, hands clasped behind his back, robes and hair billowing in the wind, gaze fixed on the vast land stretching to the horizon, jaw set firm, eyes unwavering.
-The weathered stone battlements frame the endless expanse below, rolling terrain fading into haze beneath a heavy dusk sky, clouds layered in muted golds and slate greys.
-Cold side-backlight from the setting sun carves a sharp silhouette, long shadows stretching across the stone floor, a faint warm rim outlining the figure against the cool atmosphere.
-No dialogue.
-Wind howling across the open wall, fabric flapping rhythmically.
-Captured in a wide establishing shot from a slightly low angle, static camera, single continuous take.
-\`\`\`
-
-**\u793A\u4F8B2\uFF1A\u6709\u53F0\u8BCD\u5206\u955C**
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AWan2.6
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A002, character, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u82CF\u9526\u8BF4\uFF1A\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-A melancholic cinematic scene, dusk tones deepening,
-A young woman in a light-colored dress ascends the final stone steps onto the city wall, her gaze locked on the lone figure ahead, brow slightly furrowed, pace slowing as she approaches, lips parting softly.
-The ancient city wall stretches behind her, weathered stairs leading up from below, the distant skyline dimming as the last traces of golden hour fade into twilight.
-Fading warm light mingles with rising cool blue tones, the contrast between the two figures softened by the diffused remnants of sunset.
-"\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3002" \u2014 Su Jin (dialogue).
-Footsteps on stone, wind sweeping across the battlements, fabric rustling.
-A medium tracking shot follows the woman from behind as she ascends and approaches, handheld camera with subtle movement, single continuous take.
-\`\`\`
-
----
-
-## \u666F\u522B \u2192 \u955C\u5934\u6807\u7B7E\u6620\u5C04
-
-| videoDesc \u4E2D\u7684\u666F\u522B | KlingOmni\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 1.5\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 2.0\uFF08\u4E2D\u6587\u63CF\u8FF0\uFF09 | Wan 2.6\uFF08\u82F1\u6587\u53D9\u4E8B\u5F0F\uFF09 |
-|------|------|------|------|------|
-| \u8FDC\u666F | extreme wide shot | Extreme wide shot | \u8FDC\u666F | an extreme wide shot capturing the vast expanse |
-| \u5168\u666F | wide shot | Wide establishing shot | \u5168\u666F | a wide establishing shot |
-| \u4E2D\u666F | medium shot | Medium shot | \u4E2D\u666F | a medium shot |
-| \u8FD1\u666F | close-up | Close-up | \u8FD1\u666F | a close-up shot |
-| \u7279\u5199 | close-up | Close-up | \u7279\u5199 | a close-up capturing fine detail |
-| \u5927\u7279\u5199 | extreme close-up | Extreme close-up | \u5927\u7279\u5199 | an extreme close-up |
-
-## \u8FD0\u955C \u2192 \u955C\u5934\u6807\u7B7E\u6620\u5C04
-
-| videoDesc \u4E2D\u7684\u8FD0\u955C | KlingOmni\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 1.5\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 2.0\uFF08\u4E2D\u6587\u63CF\u8FF0\uFF09 | Wan 2.6\uFF08\u82F1\u6587\u53D9\u4E8B\u5F0F\uFF09 |
-|------|------|------|------|------|
-| \u9759\u6B62 | static camera | Static, no camera movement | \u955C\u5934\u9759\u6B62 | static camera, locked off |
-| \u63A8\u8FDB | dolly in / push in | Slow dolly forward | \u955C\u5934\u7F13\u6162\u5411\u524D\u63A8\u8FDB | camera slowly pushing in |
-| \u62C9\u8FDC | dolly out / pull back | Slow dolly backward pull | \u955C\u5934\u7F13\u6162\u5411\u540E\u62C9\u8FDC | camera gently pulling back |
-| \u8DDF\u8E2A | tracking shot | Tracking shot, handheld | \u8DDF\u8E2A\u62CD\u6444 | tracking shot following the subject |
-| \u6447\u955C | pan left/right | Slow pan | \u955C\u5934\u7F13\u6162\u6447\u79FB | smooth pan across the scene |
-| \u7529\u955C | whip pan | Whip pan | \u5FEB\u901F\u7529\u955C | whip pan |
-| \u5347\u964D | crane up/down | Crane up/down | \u955C\u5934\u5347\u964D | crane rising / descending |
-| \u73AF\u7ED5 | surround shooting | Orbiting shot | \u73AF\u7ED5\u62CD\u6444 | orbiting around the subject |
-
----
-
-## \u6267\u884C\u6D41\u7A0B
-
-1. **\u89E3\u6790\u8F93\u5165**\uFF1A\u63D0\u53D6\u6A21\u578B\u540D\u548C\u591A\u53C2\u6807\u5FD7\uFF0C\u6309\u8DEF\u7531\u89C4\u5219\u5339\u914D\u6A21\u5F0F\uFF1B\u63D0\u53D6\u8D44\u4EA7\u5217\u8868
-2. **\u6784\u5EFA @\u56FEN \u7F16\u53F7\u8868**\uFF1A\u8D44\u4EA7\u6309\u8F93\u5165\u987A\u5E8F\u4ECE \`@\u56FE1 \` \u8D77\u7F16\u53F7\uFF0C\u5206\u955C\u56FE\u63A5\u7EED\u7F16\u53F7\uFF1B\`shouldGenerateImage="false"\` \u7684\u5206\u955C\u4E0D\u5206\u914D\u5206\u955C\u56FE\u7F16\u53F7
-3. **\u9010\u6761\u89E3\u6790 \`<storyboardItem>\`**\uFF1A\u6309 videoDesc \u89E3\u6790\u89C4\u5219\u63D0\u53D612\u4E2A\u5B57\u6BB5\uFF0C\u7ED3\u5408 \`duration\`\u3001\`associateAssetsIds\` \u5EFA\u7ACB\u6807\u7B7E\u6620\u5C04
-4. **\u6574\u5408\u4E3A\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD**\uFF1A\u6309\u76EE\u6807\u6A21\u578B\u683C\u5F0F\u7F16\u6392\u5168\u90E8\u5206\u955C
-5. **\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD**
-
----
-
-## \u7EA6\u675F
-
-- **\u4EC5\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD**\uFF1A\u4E0D\u9644\u52A0\u4EFB\u4F55\u89E3\u91CA\u3001\u6CE8\u91CA\u6216\u989D\u5916\u8BF4\u660E\uFF0C\u53EA\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD\u6587\u672C
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u5B8C\u6574\u4F53\u73B0\u53F0\u8BCD\u5185\u5BB9\uFF0C\u4E0D\u5F97\u9057\u6F0F
-- **\u53F0\u8BCD\u4FDD\u6301\u539F\u59CB\u8F93\u5165**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u53F0\u8BCD\u5185\u5BB9\u4E25\u7981\u7FFB\u8BD1\uFF0C\u5FC5\u987B\u4FDD\u6301 videoDesc \u4E2D\u7684\u539F\u59CB\u8BED\u8A00\u539F\u6837\u8F93\u51FA
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u5FC5\u987B\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue / \u8BF4\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08OS / \u5185\u5FC3OS\uFF09\u3001\u753B\u5916\u97F3\uFF08VO / \u753B\u5916\u97F3VO\uFF09\uFF0C\u5E76\u5728\u63D0\u793A\u8BCD\u4E2D\u6B63\u786E\u6807\u6CE8
-- **\u65F6\u95F4\u8DE8\u5EA6\u6700\u4F4E 1 \u79D2**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u6240\u6709\u6A21\u5F0F\u4E2D\u6D89\u53CA\u65F6\u95F4\u5206\u6BB5\uFF08Motion \u65F6\u95F4\u8F74 / duration-ms\uFF09\u7684\u6700\u5C0F\u7C92\u5EA6\u4E3A 1 \u79D2\uFF081000ms\uFF09\uFF0C\u7981\u6B62\u51FA\u73B0 0.5 \u79D2\u7B49\u4F4E\u4E8E 1 \u79D2\u7684\u95F4\u9694
-- **\u89C6\u89C9\u98CE\u683C**\uFF1A\u98CE\u683C\u76F8\u5173\u63CF\u8FF0\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9\uFF0C\u4E0D\u5728\u672C Skill \u5185\u81EA\u884C\u5B9A\u4E49\u98CE\u683C
-- **\u4E25\u683C\u6309\u5339\u914D\u5230\u7684\u6A21\u5F0F\u683C\u5F0F**\uFF0C\u4E0D\u6DF7\u7528\u4E0D\u540C\u6A21\u5F0F\u7684\u683C\u5F0F
-- **\u4E0D\u4FEE\u6539\u539F\u59CB\u8F93\u5165**\uFF1A\u4E0D\u6539\u5199 \`<storyboardItem>\` \u7684\u4EFB\u4F55\u5B57\u6BB5\uFF1B\`prompt\` \u5DF2\u6709\u7684\u5206\u955C\u56FE\u63D0\u793A\u8BCD\u4EC5\u4F5C\u753B\u9762\u53C2\u8003
-- **\u4E0D\u7F16\u9020\u8D44\u4EA7\u6216\u53F0\u8BCD**\uFF1A\u53EA\u4F7F\u7528\u8F93\u5165\u4E2D\u7684\u8D44\u4EA7\u4FE1\u606F\uFF1B\u65E0\u53F0\u8BCD\u5219\u6807\u6CE8\u300C\u65E0\u53F0\u8BCD\u300D/ \`No dialogue\`
-- **\u65F6\u957F\u5355\u4F4D\u8F6C\u6362**\uFF1ASeedance 2.0 \u7684 \`<duration-ms>\` \u9700\u5C06\u79D2 \xD7 1000 \u8F6C\u4E3A\u6BEB\u79D2
-`
+                data: [
+                  "# Video Prompt Generation Skill",
+                  "",
+                  "The backend provides structured <trackStoryboard ...> facts and visual references.",
+                  "Read only structured attributes: duration, location, timeOfDay, scene, picture, action, shotSize, cameraMove, dialogue, sound, visibleEmotion, groupKey, groupName, groupIntent, beatId, characters, requiredAssets.",
+                  "Do not parse or infer business facts from videoDesc, Markdown, XML text, image prompts, chat text, or any other prose.",
+                  "Generate the target model video prompt only. Dialogue, voice tone and diegetic sound effects must come from structured fields; BGM, score and OST are not valid video prompt content."
+                ].join("\\n")
               },
               {
                 name: "\u97F3\u8272\u7ED1\u5B9A",
@@ -30270,6 +30064,13 @@ A medium tracking shot follows the woman from behind as she ascends and approach
             table.text("reason");
             table.text("track");
             table.text("videoDesc");
+            table.text("location");
+            table.text("timeOfDay");
+            table.text("sceneContinuityId");
+            table.text("tableRowJson");
+            table.string("factStatus").notNullable().defaultTo("legacy");
+            table.integer("factVersion").notNullable().defaultTo(1);
+            table.integer("factRevision").notNullable().defaultTo(1);
             table.integer("shouldGenerateImage");
             table.integer("projectId");
             table.integer("flowId");
@@ -30278,6 +30079,42 @@ A medium tracking shot follows the woman from behind as she ascends and approach
             table.text("referenceImages").notNullable().defaultTo("[]");
             table.primary(["id"]);
             table.unique(["id"]);
+            table.index(["projectId", "scriptId", "index"], "idx_storyboard_project_script_index");
+            table.index(["trackId"], "idx_storyboard_track_id");
+          }
+        },
+        {
+          name: "o_storyboardGeneration",
+          builder: (table) => {
+            table.integer("id").primary();
+            table.string("generationId").notNullable().unique();
+            table.integer("projectId").notNullable();
+            table.integer("scriptId").notNullable();
+            table.integer("expectedRowCount").notNullable();
+            table.text("groupPlanJson").notNullable();
+            table.string("state").notNullable();
+            table.integer("revision");
+            table.text("errorJson");
+            table.integer("createdAt").notNullable();
+            table.integer("updatedAt").notNullable();
+            table.index(["projectId", "scriptId", "state"], "idx_storyboard_generation_owner_state");
+            table.index(["updatedAt"], "idx_storyboard_generation_updated");
+          }
+        },
+        {
+          name: "o_storyboardGenerationRow",
+          builder: (table) => {
+            table.integer("id").primary();
+            table.string("generationId").notNullable();
+            table.integer("rowIndex").notNullable();
+            table.text("rowJson").notNullable();
+            table.string("rowHash").notNullable();
+            table.integer("createdAt").notNullable();
+            table.integer("updatedAt").notNullable();
+            table.unique(["generationId", "rowIndex"], {
+              indexName: "uq_storyboard_generation_row"
+            });
+            table.index(["generationId"], "idx_storyboard_generation_row_generation");
           }
         },
         //flowData-剧本
@@ -30385,8 +30222,11 @@ A medium tracking shot follows the woman from behind as she ascends and approach
             table.text("prompt");
             table.integer("selectVideoId");
             table.integer("duration");
+            table.text("groupPlanJson");
+            table.integer("archived").notNullable().defaultTo(0);
             table.primary(["id"]);
             table.unique(["id"]);
+            table.index(["projectId", "scriptId", "archived"], "idx_video_track_owner_archived");
           }
         },
         {
@@ -42707,8 +42547,8 @@ var require_JSXTransformer = __commonJS({
         }
         if (this.isAutomaticRuntime) {
           if (this.importProcessor) {
-            for (const [path23, resolvedName] of Object.entries(this.cjsAutomaticModuleNameResolutions)) {
-              prefix += `var ${resolvedName} = require("${path23}");`;
+            for (const [path28, resolvedName] of Object.entries(this.cjsAutomaticModuleNameResolutions)) {
+              prefix += `var ${resolvedName} = require("${path28}");`;
             }
           } else {
             const { createElement: createElementResolution, ...otherResolutions } = this.esmAutomaticImportNameResolutions;
@@ -42901,11 +42741,11 @@ var require_JSXTransformer = __commonJS({
       }
       claimAutoImportedName(funcName, importPathSuffix) {
         if (this.importProcessor) {
-          const path23 = this.jsxImportSource + importPathSuffix;
-          if (!this.cjsAutomaticModuleNameResolutions[path23]) {
-            this.cjsAutomaticModuleNameResolutions[path23] = this.importProcessor.getFreeIdentifierForPath(path23);
+          const path28 = this.jsxImportSource + importPathSuffix;
+          if (!this.cjsAutomaticModuleNameResolutions[path28]) {
+            this.cjsAutomaticModuleNameResolutions[path28] = this.importProcessor.getFreeIdentifierForPath(path28);
           }
-          return `${this.cjsAutomaticModuleNameResolutions[path23]}.${funcName}`;
+          return `${this.cjsAutomaticModuleNameResolutions[path28]}.${funcName}`;
         } else {
           if (!this.esmAutomaticImportNameResolutions[funcName]) {
             this.esmAutomaticImportNameResolutions[funcName] = this.nameManager.claimFreeName(
@@ -43341,7 +43181,7 @@ var require_CJSImportProcessor = __commonJS({
        */
       pruneTypeOnlyImports() {
         this.nonTypeIdentifiers = _getNonTypeIdentifiers.getNonTypeIdentifiers.call(void 0, this.tokens, this.options);
-        for (const [path23, importInfo] of this.importInfoByPath.entries()) {
+        for (const [path28, importInfo] of this.importInfoByPath.entries()) {
           if (importInfo.hasBareImport || importInfo.hasStarExport || importInfo.exportStarNames.length > 0 || importInfo.namedExports.length > 0) {
             continue;
           }
@@ -43351,7 +43191,7 @@ var require_CJSImportProcessor = __commonJS({
             ...importInfo.namedImports.map(({ localName }) => localName)
           ];
           if (names.every((name28) => this.shouldAutomaticallyElideImportedName(name28))) {
-            this.importsToReplace.set(path23, "");
+            this.importsToReplace.set(path28, "");
           }
         }
       }
@@ -43359,7 +43199,7 @@ var require_CJSImportProcessor = __commonJS({
         return this.isTypeScriptTransformEnabled && !this.keepUnusedImports && !this.nonTypeIdentifiers.has(name28);
       }
       generateImportReplacements() {
-        for (const [path23, importInfo] of this.importInfoByPath.entries()) {
+        for (const [path28, importInfo] of this.importInfoByPath.entries()) {
           const {
             defaultNames,
             wildcardNames,
@@ -43369,17 +43209,17 @@ var require_CJSImportProcessor = __commonJS({
             hasStarExport
           } = importInfo;
           if (defaultNames.length === 0 && wildcardNames.length === 0 && namedImports.length === 0 && namedExports.length === 0 && exportStarNames.length === 0 && !hasStarExport) {
-            this.importsToReplace.set(path23, `require('${path23}');`);
+            this.importsToReplace.set(path28, `require('${path28}');`);
             continue;
           }
-          const primaryImportName = this.getFreeIdentifierForPath(path23);
+          const primaryImportName = this.getFreeIdentifierForPath(path28);
           let secondaryImportName;
           if (this.enableLegacyTypeScriptModuleInterop) {
             secondaryImportName = primaryImportName;
           } else {
-            secondaryImportName = wildcardNames.length > 0 ? wildcardNames[0] : this.getFreeIdentifierForPath(path23);
+            secondaryImportName = wildcardNames.length > 0 ? wildcardNames[0] : this.getFreeIdentifierForPath(path28);
           }
-          let requireCode = `var ${primaryImportName} = require('${path23}');`;
+          let requireCode = `var ${primaryImportName} = require('${path28}');`;
           if (wildcardNames.length > 0) {
             for (const wildcardName of wildcardNames) {
               const moduleExpr = this.enableLegacyTypeScriptModuleInterop ? primaryImportName : `${this.helperManager.getHelperName("interopRequireWildcard")}(${primaryImportName})`;
@@ -43407,7 +43247,7 @@ var require_CJSImportProcessor = __commonJS({
               "createStarExport"
             )}(${primaryImportName});`;
           }
-          this.importsToReplace.set(path23, requireCode);
+          this.importsToReplace.set(path28, requireCode);
           for (const defaultName of defaultNames) {
             this.identifierReplacements.set(defaultName, `${secondaryImportName}.default`);
           }
@@ -43416,8 +43256,8 @@ var require_CJSImportProcessor = __commonJS({
           }
         }
       }
-      getFreeIdentifierForPath(path23) {
-        const components = path23.split("/");
+      getFreeIdentifierForPath(path28) {
+        const components = path28.split("/");
         const lastComponent = components[components.length - 1];
         const baseName = lastComponent.replace(/\W/g, "");
         return this.nameManager.claimFreeName(`_${baseName}`);
@@ -43462,8 +43302,8 @@ var require_CJSImportProcessor = __commonJS({
         if (!this.tokens.matches1AtIndex(index, _types.TokenType.string)) {
           throw new Error("Expected string token at the end of import statement.");
         }
-        const path23 = this.tokens.stringValueAtIndex(index);
-        const importInfo = this.getImportInfo(path23);
+        const path28 = this.tokens.stringValueAtIndex(index);
+        const importInfo = this.getImportInfo(path28);
         importInfo.defaultNames.push(...defaultNames);
         importInfo.wildcardNames.push(...wildcardNames);
         importInfo.namedImports.push(...namedImports);
@@ -43530,8 +43370,8 @@ var require_CJSImportProcessor = __commonJS({
         if (!this.tokens.matches1AtIndex(index, _types.TokenType.string)) {
           throw new Error("Expected string token at the end of import statement.");
         }
-        const path23 = this.tokens.stringValueAtIndex(index);
-        const importInfo = this.getImportInfo(path23);
+        const path28 = this.tokens.stringValueAtIndex(index);
+        const importInfo = this.getImportInfo(path28);
         importInfo.namedExports.push(...namedImports);
       }
       preprocessExportStarAtIndex(index) {
@@ -43546,8 +43386,8 @@ var require_CJSImportProcessor = __commonJS({
         if (!this.tokens.matches1AtIndex(index, _types.TokenType.string)) {
           throw new Error("Expected string token at the end of star export statement.");
         }
-        const path23 = this.tokens.stringValueAtIndex(index);
-        const importInfo = this.getImportInfo(path23);
+        const path28 = this.tokens.stringValueAtIndex(index);
+        const importInfo = this.getImportInfo(path28);
         if (exportedName !== null) {
           importInfo.exportStarNames.push(exportedName);
         } else {
@@ -43587,8 +43427,8 @@ var require_CJSImportProcessor = __commonJS({
        * Get a mutable import info object for this path, creating one if it doesn't
        * exist yet.
        */
-      getImportInfo(path23) {
-        const existingInfo = this.importInfoByPath.get(path23);
+      getImportInfo(path28) {
+        const existingInfo = this.importInfoByPath.get(path28);
         if (existingInfo) {
           return existingInfo;
         }
@@ -43601,7 +43441,7 @@ var require_CJSImportProcessor = __commonJS({
           exportStarNames: [],
           hasStarExport: false
         };
-        this.importInfoByPath.set(path23, newInfo);
+        this.importInfoByPath.set(path28, newInfo);
         return newInfo;
       }
       addExportBinding(localName, exportedName) {
@@ -44141,16 +43981,16 @@ var require_resolve_uri_umd = __commonJS({
       }
       function parseFileUrl(input) {
         const match = fileRegex.exec(input);
-        const path23 = match[2];
-        return makeUrl("file:", "", match[1] || "", "", isAbsolutePath(path23) ? path23 : "/" + path23, match[3] || "", match[4] || "");
+        const path28 = match[2];
+        return makeUrl("file:", "", match[1] || "", "", isAbsolutePath(path28) ? path28 : "/" + path28, match[3] || "", match[4] || "");
       }
-      function makeUrl(scheme, user, host, port, path23, query, hash3) {
+      function makeUrl(scheme, user, host, port, path28, query, hash3) {
         return {
           scheme,
           user,
           host,
           port,
-          path: path23,
+          path: path28,
           query,
           hash: hash3,
           type: 7
@@ -44180,11 +44020,11 @@ var require_resolve_uri_umd = __commonJS({
         url4.type = input ? input.startsWith("?") ? 3 : input.startsWith("#") ? 2 : 4 : 1;
         return url4;
       }
-      function stripPathFilename(path23) {
-        if (path23.endsWith("/.."))
-          return path23;
-        const index = path23.lastIndexOf("/");
-        return path23.slice(0, index + 1);
+      function stripPathFilename(path28) {
+        if (path28.endsWith("/.."))
+          return path28;
+        const index = path28.lastIndexOf("/");
+        return path28.slice(0, index + 1);
       }
       function mergePaths(url4, base) {
         normalizePath3(base, base.type);
@@ -44222,14 +44062,14 @@ var require_resolve_uri_umd = __commonJS({
           pieces[pointer++] = piece;
           positive++;
         }
-        let path23 = "";
+        let path28 = "";
         for (let i = 1; i < pointer; i++) {
-          path23 += "/" + pieces[i];
+          path28 += "/" + pieces[i];
         }
-        if (!path23 || addTrailingSlash && !path23.endsWith("/..")) {
-          path23 += "/";
+        if (!path28 || addTrailingSlash && !path28.endsWith("/..")) {
+          path28 += "/";
         }
-        url4.path = path23;
+        url4.path = path28;
       }
       function resolve3(input, base) {
         if (!input && !base)
@@ -44270,13 +44110,13 @@ var require_resolve_uri_umd = __commonJS({
           case 3:
             return queryHash;
           case 4: {
-            const path23 = url4.path.slice(1);
-            if (!path23)
+            const path28 = url4.path.slice(1);
+            if (!path28)
               return queryHash || ".";
-            if (isRelative(base || input) && !isRelative(path23)) {
-              return "./" + path23 + queryHash;
+            if (isRelative(base || input) && !isRelative(path28)) {
+              return "./" + path28 + queryHash;
             }
-            return path23 + queryHash;
+            return path28 + queryHash;
           }
           case 5:
             return url4.path + queryHash;
@@ -44376,10 +44216,10 @@ var require_trace_mapping_umd = __commonJS({
       module3.exports = __toCommonJS2(trace_mapping_exports);
       var import_sourcemap_codec = __toESM2(require_sourcemap_codec());
       var import_resolve_uri = __toESM2(require_resolve_uri());
-      function stripFilename(path23) {
-        if (!path23) return "";
-        const index = path23.lastIndexOf("/");
-        return path23.slice(0, index + 1);
+      function stripFilename(path28) {
+        if (!path28) return "";
+        const index = path28.lastIndexOf("/");
+        return path28.slice(0, index + 1);
       }
       function resolver(mapUrl, sourceRoot) {
         const from = stripFilename(mapUrl);
@@ -45588,9 +45428,9 @@ var require_util2 = __commonJS({
       /** @class */
       (function(_super) {
         __extends(VError2, _super);
-        function VError2(path23, message) {
+        function VError2(path28, message) {
           var _this = _super.call(this, message) || this;
-          _this.path = path23;
+          _this.path = path28;
           Object.setPrototypeOf(_this, VError2.prototype);
           return _this;
         }
@@ -45650,26 +45490,26 @@ var require_util2 = __commonJS({
             (_b27 = this._messages).push.apply(_b27, best._messages);
           }
         };
-        DetailContext2.prototype.getError = function(path23) {
+        DetailContext2.prototype.getError = function(path28) {
           var msgParts = [];
           for (var i = this._propNames.length - 1; i >= 0; i--) {
             var p = this._propNames[i];
-            path23 += typeof p === "number" ? "[" + p + "]" : p ? "." + p : "";
+            path28 += typeof p === "number" ? "[" + p + "]" : p ? "." + p : "";
             var m = this._messages[i];
             if (m) {
-              msgParts.push(path23 + " " + m);
+              msgParts.push(path28 + " " + m);
             }
           }
-          return new VError(path23, msgParts.join("; "));
+          return new VError(path28, msgParts.join("; "));
         };
-        DetailContext2.prototype.getErrorDetail = function(path23) {
+        DetailContext2.prototype.getErrorDetail = function(path28) {
           var details = [];
           for (var i = this._propNames.length - 1; i >= 0; i--) {
             var p = this._propNames[i];
-            path23 += typeof p === "number" ? "[" + p + "]" : p ? "." + p : "";
+            path28 += typeof p === "number" ? "[" + p + "]" : p ? "." + p : "";
             var message = this._messages[i];
             if (message) {
-              details.push({ path: path23, message });
+              details.push({ path: path28, message });
             }
           }
           var detail = null;
@@ -46482,8 +46322,8 @@ var require_dist = __commonJS({
           this.checkerPlain = this.ttype.getChecker(suite, false);
           this.checkerStrict = this.ttype.getChecker(suite, true);
         }
-        Checker2.prototype.setReportedPath = function(path23) {
-          this._path = path23;
+        Checker2.prototype.setReportedPath = function(path28) {
+          this._path = path28;
         };
         Checker2.prototype.check = function(value) {
           return this._doCheck(this.checkerPlain, value);
@@ -51916,9 +51756,9 @@ var require_CJSImportTransformer = __commonJS({
         if (shouldElideImport) {
           this.tokens.removeToken();
         } else {
-          const path23 = this.tokens.stringValue();
-          this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path23));
-          this.tokens.appendCode(this.importProcessor.claimImportCode(path23));
+          const path28 = this.tokens.stringValue();
+          this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path28));
+          this.tokens.appendCode(this.importProcessor.claimImportCode(path28));
         }
         _removeMaybeImportAttributes.removeMaybeImportAttributes.call(void 0, this.tokens);
         if (this.tokens.matches1(_types.TokenType.semi)) {
@@ -52498,8 +52338,8 @@ var require_CJSImportTransformer = __commonJS({
         }
         if (this.tokens.matchesContextual(_keywords.ContextualKeyword._from)) {
           this.tokens.removeToken();
-          const path23 = this.tokens.stringValue();
-          this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path23));
+          const path28 = this.tokens.stringValue();
+          this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path28));
           _removeMaybeImportAttributes.removeMaybeImportAttributes.call(void 0, this.tokens);
         } else {
           this.tokens.appendCode(exportStatements.join(" "));
@@ -52513,8 +52353,8 @@ var require_CJSImportTransformer = __commonJS({
         while (!this.tokens.matches1(_types.TokenType.string)) {
           this.tokens.removeToken();
         }
-        const path23 = this.tokens.stringValue();
-        this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path23));
+        const path28 = this.tokens.stringValue();
+        this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path28));
         _removeMaybeImportAttributes.removeMaybeImportAttributes.call(void 0, this.tokens);
         if (this.tokens.matches1(_types.TokenType.semi)) {
           this.tokens.removeToken();
@@ -54764,10 +54604,10 @@ function buildRecoveredFlow(flowId, target, latestTask) {
 async function createSqliteBackup(knex3) {
   const filename = knex3.client.config.connection?.filename;
   if (!filename || filename === ":memory:") return "";
-  const backupDir = import_node_path3.default.join(import_node_path3.default.dirname(filename), "backups");
+  const backupDir = import_node_path4.default.join(import_node_path4.default.dirname(filename), "backups");
   await import_promises.default.mkdir(backupDir, { recursive: true });
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = import_node_path3.default.join(backupDir, `db2-before-image-flow-v2-${timestamp}.sqlite`);
+  const backupPath = import_node_path4.default.join(backupDir, `db2-before-image-flow-v2-${timestamp}.sqlite`);
   const connection = await knex3.client.acquireConnection();
   try {
     await connection.backup(backupPath);
@@ -54892,12 +54732,12 @@ async function failInterruptedImageFlowTasks(knex3) {
   });
   return tasks.length;
 }
-var import_promises, import_node_path3, MIGRATION_KEY, ACTIVE_STATUSES, TERMINAL_STATUSES, ORPHAN_REASON, MISSING_TASK_REASON;
+var import_promises, import_node_path4, MIGRATION_KEY, ACTIVE_STATUSES, TERMINAL_STATUSES, ORPHAN_REASON, MISSING_TASK_REASON;
 var init_imageFlowContractV2 = __esm({
   "src/lib/migrations/imageFlowContractV2.ts"() {
     "use strict";
     import_promises = __toESM(require("node:fs/promises"));
-    import_node_path3 = __toESM(require("node:path"));
+    import_node_path4 = __toESM(require("node:path"));
     init_taskStatus();
     MIGRATION_KEY = "migration:image-flow-contract-v2";
     ACTIVE_STATUSES = /* @__PURE__ */ new Set(["queued", "submitting", "processing"]);
@@ -54957,10 +54797,10 @@ function parseRequest(value) {
 async function createSqliteBackup2(knex3) {
   const filename = knex3.client.config.connection?.filename;
   if (!filename || filename === ":memory:") return "";
-  const backupDir = import_node_path4.default.join(import_node_path4.default.dirname(filename), "backups");
+  const backupDir = import_node_path5.default.join(import_node_path5.default.dirname(filename), "backups");
   await import_promises2.default.mkdir(backupDir, { recursive: true });
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = import_node_path4.default.join(backupDir, `db2-before-video-queue-v2-${timestamp}.sqlite`);
+  const backupPath = import_node_path5.default.join(backupDir, `db2-before-video-queue-v2-${timestamp}.sqlite`);
   const connection = await knex3.client.acquireConnection();
   try {
     await connection.backup(backupPath);
@@ -54979,7 +54819,7 @@ async function migrateQueuedReferences(task, request) {
     const reference = oldReferences[index];
     if (!reference?.base64 || typeof reference.base64 !== "string") continue;
     const type = ["image", "video", "audio"].includes(reference.type) ? reference.type : "image";
-    const filePath = import_node_path4.default.join(taskDir, `${index}${extensionFromDataUrl(reference.base64, type)}`);
+    const filePath = import_node_path5.default.join(taskDir, `${index}${extensionFromDataUrl(reference.base64, type)}`);
     const buffer = Buffer.from(reference.base64.replace(/^data:[^;]+;base64,/, ""), "base64");
     await import_promises2.default.writeFile(filePath, buffer);
     legacyReferences.push({ type, filePath });
@@ -55113,7 +54953,7 @@ async function recoverInterruptedQueuedTasksFromBackup(knex3) {
   const recoveryCopy = getPath_default(["temp", `video-queue-recovery-${Date.now()}.sqlite`]);
   let sourceDb = null;
   try {
-    await import_promises2.default.mkdir(import_node_path4.default.dirname(recoveryCopy), { recursive: true });
+    await import_promises2.default.mkdir(import_node_path5.default.dirname(recoveryCopy), { recursive: true });
     await import_promises2.default.copyFile(backupPath, recoveryCopy);
     sourceDb = (0, import_knex.default)({
       client: "better-sqlite3",
@@ -55234,12 +55074,12 @@ async function recoverVideoQueueAfterRestart(knex3) {
   }
   console.info(`[video-queue-recovery] ${JSON.stringify({ event: "restart.completed", ...summary })}`);
 }
-var import_promises2, import_node_path4, import_knex, MIGRATION_KEY2, RECOVERY_KEY, RAW_OUTPUT_LIMIT, ACTIVE_STATUSES2;
+var import_promises2, import_node_path5, import_knex, MIGRATION_KEY2, RECOVERY_KEY, RAW_OUTPUT_LIMIT, ACTIVE_STATUSES2;
 var init_videoQueueV2 = __esm({
   "src/lib/migrations/videoQueueV2.ts"() {
     "use strict";
     import_promises2 = __toESM(require("node:fs/promises"));
-    import_node_path4 = __toESM(require("node:path"));
+    import_node_path5 = __toESM(require("node:path"));
     import_knex = __toESM(require_knex());
     init_getPath();
     MIGRATION_KEY2 = "migration:video-queue-v2";
@@ -55618,10 +55458,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path23) {
-  if (!path23)
+function getElementAtPath(obj, path28) {
+  if (!path28)
     return obj;
-  return path23.reduce((acc, key) => acc?.[key], obj);
+  return path28.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -55933,11 +55773,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path23, issues) {
+function prefixIssues(path28, issues) {
   return issues.map((iss) => {
     var _a31;
     (_a31 = iss).path ?? (_a31.path = []);
-    iss.path.unshift(path23);
+    iss.path.unshift(path28);
     return iss;
   });
 }
@@ -56180,7 +56020,7 @@ function formatError(error50, mapper = (issue3) => issue3.message) {
 }
 function treeifyError(error50, mapper = (issue3) => issue3.message) {
   const result = { errors: [] };
-  const processError = (error51, path23 = []) => {
+  const processError = (error51, path28 = []) => {
     var _a31, _b27;
     for (const issue3 of error51.issues) {
       if (issue3.code === "invalid_union" && issue3.errors.length) {
@@ -56190,7 +56030,7 @@ function treeifyError(error50, mapper = (issue3) => issue3.message) {
       } else if (issue3.code === "invalid_element") {
         processError({ issues: issue3.issues }, issue3.path);
       } else {
-        const fullpath = [...path23, ...issue3.path];
+        const fullpath = [...path28, ...issue3.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue3));
           continue;
@@ -56222,8 +56062,8 @@ function treeifyError(error50, mapper = (issue3) => issue3.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path23 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path23) {
+  const path28 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path28) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -68987,13 +68827,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path23 = ref.slice(1).split("/").filter(Boolean);
-  if (path23.length === 0) {
+  const path28 = ref.slice(1).split("/").filter(Boolean);
+  if (path28.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path23[0] === defsKey) {
-    const key = path23[1];
+  if (path28[0] === defsKey) {
+    const key = path28[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -69919,10 +69759,10 @@ function imageCandidates(node) {
 async function createBackup(knex3) {
   const filename = knex3.client.config.connection?.filename;
   if (!filename || filename === ":memory:") return "";
-  const backupDir = import_node_path5.default.join(import_node_path5.default.dirname(filename), "backups");
+  const backupDir = import_node_path6.default.join(import_node_path6.default.dirname(filename), "backups");
   await import_promises3.default.mkdir(backupDir, { recursive: true });
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = import_node_path5.default.join(backupDir, `db2-before-storyboard-editor-v1-${timestamp}.sqlite`);
+  const backupPath = import_node_path6.default.join(backupDir, `db2-before-storyboard-editor-v1-${timestamp}.sqlite`);
   const connection = await knex3.client.acquireConnection();
   try {
     await connection.backup(backupPath);
@@ -70043,7 +69883,7 @@ async function migrateStoryboardEditorContractV1(knex3, options = {}) {
       if (!data.source) {
         data.source = "local";
         data.sourceId = `migration:${flowId}:${nodeId}:${index}`;
-        data.label ||= import_node_path5.default.posix.basename(filePath);
+        data.label ||= import_node_path6.default.posix.basename(filePath);
         data.group ||= "\u672C\u5730\u4E0A\u4F20";
         data.type ||= "image";
       }
@@ -70103,12 +69943,12 @@ async function migrateStoryboardEditorContractV1(knex3, options = {}) {
     backupPath
   };
 }
-var import_promises3, import_node_path5, MIGRATION_KEY5;
+var import_promises3, import_node_path6, MIGRATION_KEY5;
 var init_storyboardEditorContractV1 = __esm({
   "src/lib/migrations/storyboardEditorContractV1.ts"() {
     "use strict";
     import_promises3 = __toESM(require("node:fs/promises"));
-    import_node_path5 = __toESM(require("node:path"));
+    import_node_path6 = __toESM(require("node:path"));
     MIGRATION_KEY5 = "migration:storyboard-editor-contract-v1";
   }
 });
@@ -70126,7 +69966,7 @@ function inferTaskType(taskClass) {
 async function createBackup2(knex3) {
   const backupDir = getPath_default("backups");
   await import_promises4.default.mkdir(backupDir, { recursive: true });
-  const backupPath = import_node_path6.default.join(backupDir, `db2-before-unified-task-v1-${Date.now()}.sqlite`);
+  const backupPath = import_node_path7.default.join(backupDir, `db2-before-unified-task-v1-${Date.now()}.sqlite`);
   await knex3.raw(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
   return backupPath;
 }
@@ -70244,12 +70084,12 @@ async function recoverInterruptedEphemeralTasks(knex3) {
   console.warn(`[unified-task] recovered ${rows.length} interrupted non-recoverable tasks`);
   return rows.length;
 }
-var import_promises4, import_node_path6, import_node_crypto3, MIGRATION_KEY6, TERMINAL;
+var import_promises4, import_node_path7, import_node_crypto3, MIGRATION_KEY6, TERMINAL;
 var init_unifiedTaskV1 = __esm({
   "src/lib/migrations/unifiedTaskV1.ts"() {
     "use strict";
     import_promises4 = __toESM(require("node:fs/promises"));
-    import_node_path6 = __toESM(require("node:path"));
+    import_node_path7 = __toESM(require("node:path"));
     import_node_crypto3 = require("node:crypto");
     init_getPath();
     init_taskStatus();
@@ -70301,10 +70141,10 @@ function cleanNode(node) {
 async function backup(knex3) {
   const filename = knex3.client.config.connection?.filename;
   if (!filename || filename === ":memory:") return "";
-  const backupDir = import_node_path7.default.join(import_node_path7.default.dirname(filename), "backups");
+  const backupDir = import_node_path8.default.join(import_node_path8.default.dirname(filename), "backups");
   await import_promises5.default.mkdir(backupDir, { recursive: true });
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = import_node_path7.default.join(backupDir, `db2-before-media-path-v1-${timestamp}.sqlite`);
+  const backupPath = import_node_path8.default.join(backupDir, `db2-before-media-path-v1-${timestamp}.sqlite`);
   const connection = await knex3.client.acquireConnection();
   try {
     await connection.backup(backupPath);
@@ -70355,12 +70195,12 @@ async function migrateMediaPathContractV1(knex3, options = {}) {
   await knex3("o_setting").insert({ key: MIGRATION_KEY7, value: JSON.stringify({ changed, backupPath, time: Date.now() }) });
   return { skipped: false, changed, backupPath };
 }
-var import_promises5, import_node_path7, MIGRATION_KEY7;
+var import_promises5, import_node_path8, MIGRATION_KEY7;
 var init_mediaPathContractV1 = __esm({
   "src/lib/migrations/mediaPathContractV1.ts"() {
     "use strict";
     import_promises5 = __toESM(require("node:fs/promises"));
-    import_node_path7 = __toESM(require("node:path"));
+    import_node_path8 = __toESM(require("node:path"));
     MIGRATION_KEY7 = "migration:media-path-contract-v1";
   }
 });
@@ -70552,7 +70392,19 @@ var init_fixDB = __esm({
           value: notValModelData.length ? "0" : "1"
         });
       }
+      if (!await knex3("o_agentDeploy").where("key", "storyAgent").first()) {
+        await knex3("o_agentDeploy").insert({
+          model: "",
+          modelName: "",
+          vendorId: null,
+          key: "storyAgent",
+          name: "Story Agent",
+          desc: "Story ideation, outline, script writing, and annotation-based revision",
+          disabled: false
+        });
+      }
       const advancedAgentList = [
+        { key: "storyAgent:decisionAgent", name: "Story Agent: Decision", desc: "Story creation and annotation revision" },
         { key: "scriptAgent:decisionAgent", name: "\u5267\u672CAgent:\u51B3\u7B56\u5C42", desc: "\u51B3\u7B56\u5C42" },
         { key: "scriptAgent:supervisionAgent", name: "\u5267\u672CAgent:\u76D1\u7763\u5C42", desc: "\u76D1\u7763\u5C42" },
         { key: "scriptAgent:storySkeletonAgent", name: "\u5267\u672CAgent:\u6545\u4E8B\u9AA8\u67B6", desc: "\u6545\u4E8B\u9AA8\u67B6\u751F\u6210" },
@@ -70675,612 +70527,14 @@ description: \u4E13\u6CE8\u4E8E\u4ECE\u5267\u672C\u5185\u5BB9\u4E2D\u63D0\u53D6\
 - \u573A\u666F\u4E2D\u7684\u56FA\u5B9A\u9648\u8BBE\u4E0D\u9700\u8981\u5355\u72EC\u63D0\u53D6\u4E3A\u9053\u5177\uFF0C\u9664\u975E\u8BE5\u7269\u4EF6\u6709\u72EC\u7ACB\u5267\u60C5\u4F5C\u7528`
       });
       await knex3("o_prompt").where("type", "videoPromptGeneration").update({
-        data: `# \u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210 Skill
-
-\u4F60\u662F**\u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210 Agent**\uFF0C\u4E13\u95E8\u8D1F\u8D23\u6839\u636E\u6307\u5B9A\u7684 AI \u89C6\u9891\u6A21\u578B\uFF0C\u8BFB\u53D6\u5206\u955C\u4FE1\u606F\u5E76\u8F93\u51FA\u8BE5\u6A21\u578B\u5BF9\u5E94\u683C\u5F0F\u7684\u89C6\u9891\u63D0\u793A\u8BCD\u3002
-
----
-
-## \u8F93\u5165\u683C\u5F0F
-
-### 1. \u6A21\u578B\u4E0E\u6A21\u5F0F\uFF08\u5FC5\u9009\uFF09
-
-
-#### \u6A21\u5F0F\u8DEF\u7531\u89C4\u5219
-
-| \u6761\u4EF6 | \u5339\u914D\u6A21\u5F0F | \u8BF4\u660E |
-|------|----------|------|
-| \u6A21\u578B\u540D\u4E3A \`seedance-2-0\` + \`\u591A\u53C2:\u662F\` / \`seedance 2.0\` + \`\u591A\u53C2:\u662F\` / \`\u5373\u68A62.0\` + \`\u591A\u53C2:\u662F\` | **seedance-2-0*\uFF0C\u4E0D\u5305\u542B\u5176\u4ED6\u7248\u672C\u6BD4\u5982seedance-1-5/seedance-1-0 | \u652F\u6301\u89D2\u8272/\u573A\u666F/\u5206\u955C\u56FE\u591A\u53C2\u5F15\u7528 |
-| \u6A21\u578B\u540D\u4E3A \`Wan2.6\` / \`wan 2.6\` / \`\u4E07\u8C612.6\` | **Wan 2.6** | \u56FA\u5B9A\u6A21\u5F0F\uFF0C\u5355\u56FE\uFF08\u9996\u5E27\uFF09+ \u53D9\u4E8B\u6587\u672C\uFF0C\u65E0\u5C3E\u5E27 |
-| \u5176\u4ED6\u4EFB\u4F55\u6A21\u578B + \`\u591A\u53C2:\u662F\` | **\u901A\u7528\u591A\u53C2\u6A21\u5F0F** | \u652F\u6301\u89D2\u8272/\u573A\u666F/\u5206\u955C\u56FE\u591A\u53C2\u5F15\u7528 |
-| \u5176\u4ED6\u4EFB\u4F55\u6A21\u578B/seedance-1-5/seedance-1-0 + \`\u591A\u53C2:\u5426\` | **\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F** | \u9996\u5E27/\u9996\u5C3E\u5E27 + \u7EAF\u6587\u672C\u63CF\u8FF0 |
-
-> \u6A21\u578B\u540D\u4EC5\u7528\u4E8E\u8BB0\u5F55\uFF0C\u5B9E\u9645\u63D0\u793A\u8BCD\u683C\u5F0F\u7531\u5339\u914D\u5230\u7684\u6A21\u5F0F\u51B3\u5B9A\u3002Seedance 2.0 \u548C Wan 2.6 \u662F\u6307\u5B9A\u6A21\u578B\u540D\u5373\u786E\u5B9A\u6A21\u5F0F\u7684\u7279\u4F8B\u3002
-
-### 2. \u8D44\u4EA7\u4FE1\u606F
-
-\`\`\`
-\u8D44\u4EA7\u4FE1\u606F[id, type, name], [id, type, name], ...
-\`\`\`
-
-- \`id\`\uFF1A\u8D44\u4EA7\u552F\u4E00\u6807\u8BC6\uFF08\u5982 \`A001\`\uFF09
-- \`type\`\uFF1A\u8D44\u4EA7\u7C7B\u578B\uFF0C\u53D6\u503C \`role\`\uFF08\u89D2\u8272\uFF09/ \`scene\`\uFF08\u573A\u666F\uFF09/ \`prop\`\uFF08\u9053\u5177\uFF09
-- \`name\`\uFF1A\u8D44\u4EA7\u540D\u79F0\uFF08\u5982 \`\u6C88\u8F9E\`\u3001\`\u57CE\u697C\`\u3001\`\u957F\u5251\`\uFF09
-
-### 3. \u5206\u955C\u4FE1\u606F
-
-\u5206\u955C\u4EE5 \`<storyboardItem>\` XML \u6807\u7B7E\u5217\u8868\u7684\u5F62\u5F0F\u4F20\u5165\uFF0C\u6BCF\u6761\u5206\u955C\u7ED3\u6784\u5982\u4E0B\uFF1A
-
-\`\`\`xml
-<storyboardItem
-  videoDesc='\uFF08\u753B\u9762\u63CF\u8FF0\u3001\u573A\u666F\u3001\u5173\u8054\u8D44\u4EA7\u540D\u79F0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u3001\u5173\u8054\u8D44\u4EA7ID\uFF09'
-  prompt='\u5F85\u751F\u6210'
-  track='\u5206\u7EC4'
-  duration='\u89C6\u9891\u63A8\u8350\u65F6\u95F4'
-  associateAssetsIds="[\u8BE5\u5206\u955C\u6240\u9700\u7684\u8D44\u4EA7ID\u5217\u8868]"
-  shouldGenerateImage="true"
-></storyboardItem>
-\`\`\`
-
-#### \u8F93\u5165\u5B57\u6BB5\u8BF4\u660E
-
-| \u5C5E\u6027 | \u8BF4\u660E | \u6765\u6E90 |
-|------|------|------|
-| \`videoDesc\` | **\u6838\u5FC3\u8F93\u5165**\uFF1A\u5206\u955C\u7684\u7ED3\u6784\u5316\u753B\u9762\u63CF\u8FF0\uFF0C\u5305\u542B\u753B\u9762\u63CF\u8FF0\u3001\u573A\u666F\u3001\u5173\u8054\u8D44\u4EA7\u540D\u79F0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u3001\u5173\u8054\u8D44\u4EA7ID | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`prompt\` | **\u5DF2\u6709\u5B57\u6BB5**\uFF1A\u4E0A\u6E38\u751F\u6210\u7684\u5206\u955C\u56FE\u63D0\u793A\u8BCD\uFF0C\u4F5C\u4E3A\u8F85\u52A9\u53C2\u8003\u4E0A\u4E0B\u6587\uFF0C**\u4E0D\u4FEE\u6539** | \u4E0A\u6E38\u7CFB\u7EDF\u5DF2\u586B\u5199 |
-| \`track\` | \u5206\u955C\u5206\u7EC4\u6807\u8BC6 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`duration\` | \u89C6\u9891\u63A8\u8350\u65F6\u957F\uFF08\u79D2\uFF09 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`associateAssetsIds\` | \u8BE5\u5206\u955C\u5173\u8054\u7684\u8D44\u4EA7ID\u5217\u8868 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`shouldGenerateImage\` | \u662F\u5426\u9700\u8981\u751F\u6210\u5206\u955C\u56FE\u7247\uFF0C\u9ED8\u8BA4 \`true\` | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-
----
-
-## \u4EFB\u52A1\u76EE\u6807
-
-\u8BFB\u53D6\u6240\u6709 \`<storyboardItem>\` \u7684\u5C5E\u6027\uFF0C\u7ED3\u5408\u8D44\u4EA7\u4FE1\u606F\uFF0C\u6839\u636E\u6307\u5B9A\u6A21\u578B\u7684\u63D0\u793A\u8BCD\u683C\u5F0F\uFF0C\u5C06\u5168\u90E8\u5206\u955C\u6574\u5408\u4E3A\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD\u3002
-
----
-
-## \u8F93\u51FA\u683C\u5F0F
-
-\u5C06\u6240\u6709\u5206\u955C\u6574\u5408\u4E3A**\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD**\u8F93\u51FA\uFF08\u975E\u9010\u6761\u72EC\u7ACB\uFF09\uFF1A
-
-| \u6A21\u5F0F | \u6574\u5408\u65B9\u5F0F |
-|------|----------|
-| **\u901A\u7528\u591A\u53C2\u6A21\u5F0F** | \`[References]\` \u6C47\u603B\u6240\u6709 \`@\u56FEN \` \u5F15\u7528\uFF1B\`[Instruction]\` \u6309\u65F6\u95F4\u987A\u5E8F\u63CF\u8FF0\u5B8C\u6574\u53D9\u4E8B |
-| **\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F** | \u7EAF\u6587\u672C\u4E94\u7EF4\u5EA6\uFF08Visual / Motion / Camera / Audio / Narrative\uFF09\uFF0C\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528\uFF0C\u6309\u65F6\u95F4\u8F74\u8FDE\u7EED\u7F16\u6392\uFF08\`[Motion]\` 0s \u2192 \u603B\u65F6\u957F\uFF0C\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF09\uFF0C\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934\uFF0C\u4E0D\u5207\u955C |
-| **Seedance 2.0** | \`\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B N \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891\`\uFF0C\u6BCF\u6761\u5BF9\u5E94 \`\u5206\u955CN{N}s\` \u6BB5\u843D |
-| **Wan 2.6** | \u5355\u56FE\u9996\u5E27\u6A21\u5F0F\uFF0C\u6BCF\u6B21\u4EC5\u8F93\u5165\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u53D9\u4E8B\u5F0F\u82F1\u6587\u63D0\u793A\u8BCD\uFF08\u4E09\u6BB5\u5F0F\uFF1A\u98CE\u683C\u57FA\u8C03 \u2192 \u4E3B\u4F53\u52A8\u4F5C+\u573A\u666F\u73AF\u5883+\u5149\u7EBF\u6C1B\u56F4 \u2192 \u955C\u5934\u6536\u5C3E\uFF09\uFF0C\u4E0D\u4F7F\u7528 \`@\u56FEN \` \u5F15\u7528 |
-
-- \u4EC5\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD\u6587\u672C\uFF0C\u4E0D\u8F93\u51FA XML \u6807\u7B7E\uFF0C\u4E0D\u9644\u52A0\u89E3\u91CA
-
----
-
-## videoDesc \u89E3\u6790\u89C4\u5219
-
-\u4ECE \`videoDesc\` \u62EC\u53F7\u5185\u6309\u987F\u53F7\u5206\u9694\u63D0\u53D6\u4EE5\u4E0B\u7ED3\u6784\u5316\u5B57\u6BB5\uFF1A
-
-\`\`\`
-\uFF08{\u753B\u9762\u63CF\u8FF0}\u3001{\u573A\u666F}\u3001{\u5173\u8054\u8D44\u4EA7\u540D\u79F0}\u3001{\u65F6\u957F}\u3001{\u666F\u522B}\u3001{\u8FD0\u955C}\u3001{\u89D2\u8272\u52A8\u4F5C}\u3001{\u60C5\u7EEA}\u3001{\u5149\u5F71\u6C1B\u56F4}\u3001{\u53F0\u8BCD}\u3001{\u97F3\u6548}\u3001{\u5173\u8054\u8D44\u4EA7ID}\uFF09
-\`\`\`
-
-| \u5E8F\u53F7 | \u5B57\u6BB5 | \u7528\u9014 | \u793A\u4F8B |
-|------|------|------|------|
-| 1 | \u753B\u9762\u63CF\u8FF0 | prompt \u7684\u53D9\u4E8B\u4E3B\u5E72 | \u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730 |
-| 2 | \u573A\u666F | \u5339\u914D\u573A\u666F\u8D44\u4EA7 | \u57CE\u697C |
-| 3 | \u5173\u8054\u8D44\u4EA7\u540D\u79F0 | \u5339\u914D\u89D2\u8272/\u9053\u5177\u8D44\u4EA7 | \u6C88\u8F9E/\u57CE\u697C |
-| 4 | \u65F6\u957F | \u63A7\u5236\u65F6\u957F\u53C2\u6570 | 4s |
-| 5 | \u666F\u522B | \u63A7\u5236\u955C\u5934\u666F\u522B | \u5168\u666F |
-| 6 | \u8FD0\u955C | \u63A7\u5236\u8FD0\u955C\u65B9\u5F0F | \u9759\u6B62 |
-| 7 | \u89D2\u8272\u52A8\u4F5C | prompt \u52A8\u4F5C\u63CF\u5199 | \u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C |
-| 8 | \u60C5\u7EEA | prompt \u60C5\u7EEA\u6C1B\u56F4 | \u575A\u5B9A\u51B3\u7EDD |
-| 9 | \u5149\u5F71\u6C1B\u56F4 | prompt \u5149\u5F71\u63CF\u5199 | \u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149 |
-| 10 | \u53F0\u8BCD | prompt \u53F0\u8BCD/\u97F3\u9891\u6BB5 | \u65E0\u53F0\u8BCD / \u5177\u4F53\u53F0\u8BCD\u5185\u5BB9 |
-| 11 | \u97F3\u6548 | prompt \u97F3\u6548\u63CF\u5199 | \u98CE\u58F0\u8863\u8882\u58F0 |
-| 12 | \u5173\u8054\u8D44\u4EA7ID | \u7528\u4E8E\u8D44\u4EA7ID\u2194\u89D2\u8272\u6807\u7B7E\u6620\u5C04 | A001/A002 |
-
----
-
-## \u8D44\u4EA7\u5F15\u7528\u7F16\u53F7\u89C4\u5219
-
-\u6240\u6709\u6A21\u578B\u7EDF\u4E00\u4F7F\u7528 \`@\u56FEN \` \u683C\u5F0F\u5F15\u7528\u8D44\u4EA7\u548C\u5206\u955C\u56FE\uFF0C\u7F16\u53F7\u6309\u8F93\u5165\u987A\u5E8F\u8FDE\u7EED\u9012\u589E\uFF1A
-
-1. **\u8D44\u4EA7**\uFF1A\u6309\u8D44\u4EA7\u4FE1\u606F\u4E2D \`[id, type, name]\` \u7684\u51FA\u73B0\u987A\u5E8F\uFF0C\u4ECE \`@\u56FE1 \` \u5F00\u59CB\u7F16\u53F7\uFF08\u4E0D\u533A\u5206 role / scene / prop\uFF09\u3002**\u8D44\u4EA7\u7C7B\u578B\u7684\u51FA\u73B0\u987A\u5E8F\u4E0D\u56FA\u5B9A**\u2014\u2014\u53EF\u80FD\u5148 scene \u540E character\uFF0C\u4E5F\u53EF\u80FD prop \u5728\u524D\u3001character \u5728\u540E\uFF0C\u6216\u4EFB\u610F\u4EA4\u66FF\u51FA\u73B0\uFF0C\u7F16\u53F7\u4E25\u683C\u6309\u8F93\u5165\u4F4D\u7F6E\u5206\u914D\uFF0C\u4E0D\u6309\u7C7B\u578B\u5F52\u7EC4
-2. **\u5206\u955C\u56FE**\uFF1A\u6BCF\u6761 \`<storyboardItem>\` \u5BF9\u5E94\u4E00\u5F20\u5206\u955C\u56FE\uFF0C\u7F16\u53F7\u63A5\u7EED\u8D44\u4EA7\u4E4B\u540E
-3. **\u8DF3\u8FC7\u65E0\u5206\u955C\u56FE\u7684\u6761\u76EE**\uFF1A\u5F53 \`shouldGenerateImage="false"\` \u65F6\uFF0C\u8BE5\u5206\u955C\u672A\u751F\u6210\u56FE\u7247\uFF0C**\u4E0D\u5206\u914D**\u5206\u955C\u56FE\u7F16\u53F7\uFF0C\u540E\u7EED\u7F16\u53F7\u987A\u5EF6
-
-#### \u793A\u4F8B
-
-\u8F93\u5165 3 \u4E2A\u8D44\u4EA7 + 2 \u6761\u5206\u955C\uFF1A
-\`\`\`
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem ...>  <!-- \u5206\u955C1 -->
-<storyboardItem ...>  <!-- \u5206\u955C2 -->
-\`\`\`
-
-\u7F16\u53F7\u7ED3\u679C\uFF1A
-
-| \u8F93\u5165\u9879 | \u5F15\u7528\u6807\u7B7E | \u8BF4\u660E |
-|--------|----------|------|
-| [A001, role, \u6C88\u8F9E] | \`@\u56FE1 \` | \u89D2\u8272\xB7\u6C88\u8F9E \u53C2\u8003\u56FE |
-| [A002, role, \u82CF\u9526] | \`@\u56FE2 \` | \u89D2\u8272\xB7\u82CF\u9526 \u53C2\u8003\u56FE |
-| [A003, scene, \u57CE\u697C] | \`@\u56FE3 \` | \u573A\u666F\xB7\u57CE\u697C \u53C2\u8003\u56FE |
-| storyboardItem \u7B2C1\u6761 | \`@\u56FE4 \` | \u5206\u955C\u56FE1 |
-| storyboardItem \u7B2C2\u6761 | \`@\u56FE5 \` | \u5206\u955C\u56FE2 |
-
-**\u6DF7\u5408\u987A\u5E8F\u793A\u4F8B**
-
-\u8F93\u5165 3 \u4E2A\u8D44\u4EA7\uFF08\u573A\u666F\u5728\u524D\uFF09+ 2 \u6761\u5206\u955C\uFF1A
-\`\`\`
-\u8D44\u4EA7\u4FE1\u606F[A003, scene, \u57CE\u697C], [A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526]
-\`\`\`
-\`\`\`xml
-<storyboardItem ...>  <!-- \u5206\u955C1 -->
-<storyboardItem ...>  <!-- \u5206\u955C2 -->
-\`\`\`
-
-\u7F16\u53F7\u7ED3\u679C\uFF1A
-
-| \u8F93\u5165\u9879 | \u5F15\u7528\u6807\u7B7E | \u8BF4\u660E |
-|--------|----------|------|
-| [A003, scene, \u57CE\u697C] | \`@\u56FE1 \` | \u573A\u666F\xB7\u57CE\u697C \u53C2\u8003\u56FE |
-| [A001, role, \u6C88\u8F9E] | \`@\u56FE2 \` | \u89D2\u8272\xB7\u6C88\u8F9E \u53C2\u8003\u56FE |
-| [A002, role, \u82CF\u9526] | \`@\u56FE3 \` | \u89D2\u8272\xB7\u82CF\u9526 \u53C2\u8003\u56FE |
-| storyboardItem \u7B2C1\u6761 | \`@\u56FE4 \` | \u5206\u955C\u56FE1 |
-| storyboardItem \u7B2C2\u6761 | \`@\u56FE5 \` | \u5206\u955C\u56FE2 |
-
-> **\u5173\u952E**\uFF1A\u6B64\u4F8B\u4E2D \`@\u56FE1 \` \u662F\u573A\u666F\u800C\u975E\u89D2\u8272\uFF0C\`@\u56FE2 \` \`@\u56FE3 \` \u624D\u662F\u89D2\u8272\u3002\u751F\u6210\u63D0\u793A\u8BCD\u65F6\uFF0C\u5FC5\u987B\u6839\u636E\u8D44\u4EA7\u7684\u5B9E\u9645 \`type\` \u5B57\u6BB5\u786E\u5B9A\u5F15\u7528\u65B9\u5F0F\uFF0C\u800C\u975E\u6839\u636E\u7F16\u53F7\u5927\u5C0F\u5047\u5B9A\u7C7B\u578B\u3002
-
----
-
-## \u6A21\u578B\u63D0\u793A\u8BCD\u751F\u6210\u89C4\u5219
-
-### \u4E00\u3001\u901A\u7528\u591A\u53C2\u6A21\u5F0F
-
-#### \u6838\u5FC3\u539F\u5219
-- MVL \u591A\u6A21\u6001\u878D\u5408\uFF1A\u81EA\u7136\u8BED\u8A00 + \u56FE\u50CF\u5F15\u7528\u5728\u540C\u4E00\u8BED\u4E49\u7A7A\u95F4
-- \u5206\u955C\u56FE\u5E8F\u5217\u8D1F\u8D23\u52A8\u4F5C/\u65F6\u95F4\u8F74/\u6784\u56FE\uFF0C\u573A\u666F\u53C2\u8003\u56FE\u8D1F\u8D23\u73AF\u5883\u4E00\u81F4\u6027
-- \u6240\u6709\u8D44\u4EA7\u548C\u5206\u955C\u56FE\u7EDF\u4E00\u7528 \`@\u56FEN \` \u5F15\u7528
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 Instruction \u4E2D\u4F53\u73B0\u53F0\u8BCD\u76F8\u5173\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO\uFF09\uFF0C\u5728 Instruction \u4E2D\u7528\u62EC\u53F7\u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-> **\u6CE8\u610F**\uFF1A\`[References]\` \u4E2D\u7684 \`@\u56FEN\` \u7F16\u53F7\u4E25\u683C\u6309\u8D44\u4EA7\u8F93\u5165\u987A\u5E8F\u5206\u914D\uFF0C\u89D2\u8272/\u573A\u666F/\u9053\u5177\u53EF\u80FD\u51FA\u73B0\u5728\u4EFB\u610F\u7F16\u53F7\u4F4D\u7F6E\u3002\u751F\u6210\u65F6\u9700\u6839\u636E\u6BCF\u4E2A\u8D44\u4EA7\u7684 \`type\` \u5B57\u6BB5\u786E\u5B9A\u5176\u5F15\u7528\u65B9\u5F0F\uFF0C\u4E0D\u53EF\u5047\u5B9A\u56FA\u5B9A\u7684\u7C7B\u578B-\u7F16\u53F7\u5BF9\u5E94\u5173\u7CFB\u3002
-
-\`\`\`
-[References]
-@\u56FE{\u8D44\u4EA71\u7F16\u53F7} : [{\u8D44\u4EA71\u540D\u79F0}\u53C2\u8003\u56FE]   \u2190 \u53EF\u80FD\u662F role/scene/prop \u4E2D\u7684\u4EFB\u610F\u7C7B\u578B
-@\u56FE{\u8D44\u4EA72\u7F16\u53F7} : [{\u8D44\u4EA72\u540D\u79F0}\u53C2\u8003\u56FE]
-@\u56FE{\u8D44\u4EA73\u7F16\u53F7} : [{\u8D44\u4EA73\u540D\u79F0}\u53C2\u8003\u56FE]
-...
-@\u56FE{\u5206\u955C\u56FE\u7F16\u53F7} : [\u5206\u955C\u56FE1]            \u2190 \u5206\u955C\u56FE\u7F16\u53F7\u63A5\u7EED\u8D44\u4EA7\u4E4B\u540E
-
-[Instruction]
-Based on the storyboard @\u56FE{\u5206\u955C\u56FE\u7F16\u53F7} :
-@\u56FE{\u89D2\u8272\u8D44\u4EA7\u7F16\u53F7} {\u52A8\u4F5C/\u72B6\u6001\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09},
-set in the {\u573A\u666F\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09} of @\u56FE{\u573A\u666F\u8D44\u4EA7\u7F16\u53F7} ,
-{\u955C\u5934/\u8FD0\u955C\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09},
-{\u60C5\u611F\u57FA\u8C03\uFF08\u82F1\u6587\uFF09},
-{\u53F0\u8BCD\u63CF\u8FF0\uFF08\u82F1\u6587\uFF0C\u542B dialogue/OS/VO \u6807\u6CE8\uFF09/ No dialogue},
-{\u97F3\u6548\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09}.
-\`\`\`
-
-#### \u751F\u6210\u7EA6\u675F
-1. **Instruction \u5FC5\u987B\u7528\u82F1\u6587**
-2. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-3. **\u89D2\u8272\u52A8\u4F5C**\u4ECE videoDesc \u7684\u300C\u89D2\u8272\u52A8\u4F5C\u300D\u5B57\u6BB5\u63D0\u53D6\uFF0C\u7FFB\u8BD1\u4E3A\u7B80\u6D01\u82F1\u6587\u52A8\u4F5C\u63CF\u8FF0
-4. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 Instruction \u4E2D\u4F53\u73B0\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-5. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`(dialogue)\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`(inner monologue, OS)\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`(voiceover, VO)\`
-6. **\u955C\u5934\u98CE\u683C**\u4F7F\u7528\u6807\u51C6\u6807\u7B7E\uFF1A\`cinematic\` / \`wide-angle\` / \`close-up\` / \`slow motion\` / \`surround shooting\` / \`handheld\`
-7. **\u7A7A\u95F4\u5173\u7CFB**\u4F7F\u7528\u6807\u51C6\u52A8\u8BCD\uFF1A\`wearing\` / \`holding\` / \`standing on\` / \`following behind\` / \`sitting in\`
-8. \u5355\u6761\u5206\u955C\u5BF9\u5E94\u5355\u4E2A \`@\u56FEN \`\uFF0C\u4E0D\u505A\u591A\u5E27\u8DE8\u955C\u63CF\u8FF0
-9. \u65E0\u9700\u63CF\u8FF0\u89D2\u8272\u5916\u89C2\uFF08\u7531\u53C2\u8003\u56FE\u8D1F\u8D23\uFF09
-10. \u65E0\u65F6\u957F\u6807\u6CE8\uFF08\u7531\u6A21\u578B\u63A8\u65AD\uFF09
-11. **\u65E0\u5206\u955C\u56FE\u65F6**\uFF1A\u5F53 \`shouldGenerateImage="false"\` \u65F6\uFF0C\u8BE5\u5206\u955C\u65E0\u5206\u955C\u56FE\uFF0C\`[References]\` \u4E2D\u4E0D\u5217\u51FA\u8BE5\u5206\u955C\u56FE\uFF0C\`[Instruction]\` \u4E2D\u4E0D\u4F7F\u7528 \`@\u56FEN \` \u5F15\u7528\u8BE5\u5206\u955C\u56FE\uFF0C\u6539\u4E3A\u7EAF\u6587\u672C\u63CF\u8FF0\u753B\u9762\u5185\u5BB9
-
-#### KlingOmni \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AKlingOmni
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u65E0\u53F0\u8BCD\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-[References]
-@\u56FE1 : [\u6C88\u8F9E\u53C2\u8003\u56FE]
-@\u56FE2 : [\u82CF\u9526\u53C2\u8003\u56FE]
-@\u56FE3 : [\u57CE\u697C\u53C2\u8003\u56FE]
-@\u56FE4 : [\u5206\u955C\u56FE1]
-@\u56FE5 : [\u5206\u955C\u56FE2]
-
-[Instruction]
-Based on the storyboard from @\u56FE4 to @\u56FE5 :
-@\u56FE1 standing alone atop the city wall, hands clasped behind back, robes billowing in the wind, gazing across the vast land,
-@\u56FE2 ascending the steps toward @\u56FE1 , expression worried,
-set in the ancient city wall environment of @\u56FE3 ,
-wide shot transitioning to medium tracking shot, cinematic,
-resolute determination shifting to concerned anticipation, dusk cold-toned side-backlit atmosphere fading,
-no dialogue,
-wind howling, fabric flapping, footsteps on stone.
-\`\`\`
-
----
-
-### \u4E8C\u3001\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u7EAF\u6587\u672C\u63D0\u793A\u8BCD**\uFF1A\u63D0\u793A\u8BCD\u5185**\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF08\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u4E5F\u4E0D\u5F15\u7528\u5206\u955C\u56FE\uFF09\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-- **\u4E94\u7EF4\u5EA6\u7ED3\u6784**\uFF1AVisual / Motion / Camera / Audio / Narrative
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 \`[Audio]\` \u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue, lip-sync active\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS, silent lips\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO, silent lips\uFF09\uFF0C\u5E76\u5728 \`[Audio]\` \u4E2D\u660E\u786E\u6807\u6CE8
-- **\u4E0D\u8BF4\u8BDD\u7684\u4E3B\u4F53\u6807\u6CE8 \`silent\`** \u2014 \u9632\u6B62\u8BEF\u751F\u53E3\u578B
-- **\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934**\uFF1A\u4ECE\u5934\u5230\u5C3E\u4E00\u4E2A\u955C\u5934\uFF0C\u4E0D\u5B58\u5728\u5207\u955C
-- **\u65F6\u95F4\u8F74\u5206\u6BB5**\uFF1A\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF0C\u7528 \`0s-Xs\` \u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-\`\`\`
-[Visual]
-{\u4E3B\u4F53A\u540D}: {\u5916\u89C2\u7B80\u8FF0}, {\u7AD9\u4F4D/\u59FF\u6001}, {\u8BF4\u8BDD\u72B6\u6001 speaking/silent}.
-{\u4E3B\u4F53B\u540D}: {\u5916\u89C2\u7B80\u8FF0}, {\u7AD9\u4F4D/\u59FF\u6001}, {\u8BF4\u8BDD\u72B6\u6001}.
-{\u573A\u666F\u63CF\u8FF0}, {\u9053\u5177\u63CF\u8FF0}.
-{\u89C6\u89C9\u98CE\u683C\u6807\u7B7E}.
-
-[Motion]
-0s-{X}s: {\u4E3B\u4F53A\u540D} {\u52A8\u4F5C\u63CF\u8FF0\u6BB51}.
-{X}s-{Y}s: {\u4E3B\u4F53B\u540D} {\u52A8\u4F5C\u63CF\u8FF0\u6BB52}.
-
-[Camera]
-{\u955C\u5934\u7C7B\u578B}, {\u8FD0\u955C\u65B9\u5F0F}, {\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934\u63CF\u8FF0}.
-
-[Audio]
-{Xs-Ys}: "{\u53F0\u8BCD\u5185\u5BB9}" \u2014 {\u8BF4\u8BDD\u8005\u540D} ({dialogue / inner monologue OS / voiceover VO}), {lip-sync active / silent lips}.
-{\u97F3\u6548\u63CF\u8FF0}.
-
-[Narrative]
-{\u60C5\u8282\u70B9\u6982\u8FF0}, {\u53D9\u4E8B\u4F4D\u7F6E}.
-\`\`\`
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u5168\u90E8\u7528\u82F1\u6587**
-2. **\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF1A\u63D0\u793A\u8BCD\u5185\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u5206\u955C\u56FE\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-3. **\u4E3B\u4F53\u7528\u6587\u5B57\u63CF\u8FF0**\uFF1A\u5728 [Visual] \u4E2D\u7B80\u8981\u63CF\u8FF0\u4E3B\u4F53\u5916\u89C2\u7279\u5F81\uFF08\u5982\u670D\u9970\u3001\u53D1\u578B\u7B49\u5173\u952E\u8FA8\u8BC6\u7279\u5F81\uFF09
-4. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-5. **\u6BCF\u4E2A\u4E3B\u4F53\u5FC5\u987B\u6807\u6CE8\u8BF4\u8BDD\u72B6\u6001**\uFF1A\`speaking\` / \`silent\` / \`speaking simultaneously\`
-6. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 \`[Audio]\` \u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-7. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`dialogue, lip-sync active\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`inner monologue (OS), silent lips\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`voiceover (VO), silent lips\`
-8. **Motion \u65F6\u95F4\u8F74**\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF0C\u4E0D\u8D85\u8FC7\u603B\u65F6\u957F
-9. **\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934**\uFF1ACamera \u6BB5\u843D\u63CF\u8FF0\u4ECE\u5934\u5230\u5C3E\u7684\u4E00\u4E2A\u955C\u5934\uFF0C\u7EDD\u4E0D\u5207\u955C
-10. **\u89C6\u89C9\u98CE\u683C**\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9
-11. **\u955C\u5934\u7C7B\u578B**\u4ECE\u4EE5\u4E0B\u9009\u53D6\uFF1A\`Wide establishing shot / Over-the-shoulder / Medium shot / Close-up / Wide shot / POV / Dutch angle / Crane up / Dolly right / Whip pan / Handheld / Slow motion\`
-
-#### Seedance 1.5 Pro \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1ASeedance1.5
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u65E0\u53F0\u8BCD\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-[Visual]
-Shen Ci: male, dark flowing robes, hair tied up, standing alone atop city wall, hands clasped behind back, robes billowing, silent.
-Su Jin: female, light-colored dress, hair partially down, ascending steps toward Shen Ci, expression worried, silent.
-Ancient city wall, vast open land beyond, dusk sky fading.
-Cinematic, photorealistic, 4K, high contrast, desaturated tones, shallow depth of field.
-
-[Motion]
-0s-4s: Shen Ci stands still on city wall edge, robes flutter in wind, hair sways gently. Gaze fixed on distant horizon.
-4s-8s: Su Jin climbs the last few steps onto the wall, walks toward Shen Ci. Shen Ci remains still, unaware. Su Jin slows as she approaches.
-
-[Camera]
-Wide establishing shot, static for first 4 seconds capturing the lone figure. Then smooth transition to medium tracking shot following the woman ascending steps, single continuous take throughout, no cuts.
-
-[Audio]
-0s-4s: Wind howling across wall, fabric flapping rhythmically. No dialogue.
-4s-8s: Footsteps on stone, robes rustling. No dialogue.
-Shen Ci \u2014 silent. Su Jin \u2014 silent.
-
-[Narrative]
-Lone figure on city wall, then arrival of a companion. Tension between determination and concern. Single continuous take.
-\`\`\`
-
----
-
-### \u4E09\u3001Seedance 2.0
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u7ED3\u6784\u531612\u7EF4\u7F16\u7801**\uFF1A\u7EDF\u4E00\u7528 \`@\u56FEN \` \u5F15\u7528\u8D44\u4EA7\u548C\u5206\u955C\u56FE\uFF0C\u65F6\u957F \`{N}s\`
-- **\u6700\u524D\u9762\u5148\u5B9A\u4E49\u56FE\u7247\u6620\u5C04**\uFF1A\u5148\u8F93\u51FA\u201C\u56FE\u7247\u5B9A\u4E49\u201D\u6BB5\uFF0C\u96C6\u4E2D\u58F0\u660E \`@\u56FEN : \u4E3B\u4F53\u540D\u5B57/\u573A\u666F\u540D\u5B57\uFF0C\u7B80\u8FF0\`\uFF1B\u540E\u7EED\u5206\u955C\u6B63\u6587\u53EA\u4F7F\u7528\u4E3B\u4F53\u540D\u5B57\uFF0C\u4E0D\u518D\u5199 \`@\u56FEN \`
-- **\u97F3\u8272\u53C2\u65709\u7EF4\u5EA6\u7CBE\u7EC6\u63CF\u8FF0**\uFF08\u6709\u53F0\u8BCD\u65F6\u5FC5\u586B\uFF09
-- **\u79D2\u7EA7\u65F6\u957F\u63A7\u5236**\uFF1A\u5355\u5206\u955C\u65F6\u957F\u6700\u4F4E 1s
-- **\u4E2D\u6587\u63D0\u793A\u8BCD**
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u6BCF\u6761\u5206\u955C\u7684\u63CF\u8FF0\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u548C\u97F3\u8272\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08\u76F4\u63A5\u4F7F\u7528\u300C\u8BF4\uFF1A\u300D\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08\u4F7F\u7528\u300C\u5185\u5FC3OS\uFF1A\u300D\uFF09\u3001\u753B\u5916\u97F3\uFF08\u4F7F\u7528\u300C\u753B\u5916\u97F3VO\uFF1A\u300D\uFF09\uFF0C\u5E76\u5339\u914D\u5BF9\u5E94\u7684\u5634\u578B\u72B6\u6001\u63CF\u8FF0
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-> **\u6CE8\u610F**\uFF1A\`@\u56FE{\u7F16\u53F7}\` \u4EC5\u7528\u4E8E\u6700\u524D\u9762\u7684\u201C\u56FE\u7247\u5B9A\u4E49\u201D\u6BB5\u3002\u5206\u955C\u6B63\u6587\u4E2D\u7981\u6B62\u518D\u5199 \`@\u56FE{\u7F16\u53F7}\`\uFF0C\u7EDF\u4E00\u6539\u7528\u4E3B\u4F53\u540D\u5B57/\u573A\u666F\u540D\u5B57\u3002
-
-**\u5355\u5206\u955C\u6A21\u677F\uFF1A**
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: {\u98CE\u683C}, {\u8272\u8C03}, {\u7C7B\u578B}
-
-\u56FE\u7247\u5B9A\u4E49:
-@\u56FE1: {\u8D44\u4EA71\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-@\u56FE2: {\u8D44\u4EA72\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-@\u56FEN: {\u8D44\u4EA7N\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-...
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B 1 \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: \u65E0
-
-\u5206\u955C1 {N}s: \u65F6\u95F4\uFF1A{\u65E5/\u591C/\u6668/\u9EC4\u660F}\uFF0C\u573A\u666F\uFF1A{\u573A\u666F\u540D\u5B57}\uFF0C\u955C\u5934\uFF1A{\u666F\u522B}\uFF0C{\u89D2\u5EA6}\uFF0C{\u8FD0\u955C}\uFF0C{\u89D2\u8272\u540D\u5B57} {\u52A8\u4F5C/\u8868\u60C5/\u89C6\u7EBF\u671D\u5411/\u7AD9\u4F4D\u63CF\u8FF0}\u3002{\u53F0\u8BCD\u4E0E\u97F3\u8272\u63CF\u8FF0\uFF08\u5982\u6709\uFF09}\u3002{\u80CC\u666F\u73AF\u5883\u8865\u5145}\u3002{\u5149\u5F71\u6C1B\u56F4}\u3002{\u8FD0\u955C\u8865\u5145}\u3002
-\`\`\`
-
-**\u591A\u5206\u955C\u6A21\u677F\uFF1A**
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: {\u98CE\u683C}, {\u8272\u8C03}, {\u7C7B\u578B}
-
-\u56FE\u7247\u5B9A\u4E49:
-@\u56FE1: {\u8D44\u4EA71\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-@\u56FE2: {\u8D44\u4EA72\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-@\u56FEN: {\u8D44\u4EA7N\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-...
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B {N} \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: {\u5168\u5C40\u8FC7\u6E21\u63CF\u8FF0}
-
-\u5206\u955C1 {N}s: \u65F6\u95F4\uFF1A{...}\uFF0C\u573A\u666F\uFF1A{\u573A\u666F\u540D\u5B57}\uFF0C\u955C\u5934\uFF1A{...}\uFF0C{\u89D2\u8272\u540D\u5B57} {...}\u3002{...}\u3002
-\u5206\u955C2{N}s: ...
-...
-\`\`\`
-
-#### \u97F3\u8272\u751F\u6210\u89C4\u5219\uFF08\u6709\u53F0\u8BCD\u65F6\u5FC5\u586B\uFF09
-
-\u53F0\u8BCD\u683C\u5F0F\uFF1A\`{\u89D2\u8272\u540D\u5B57} \u8BF4\uFF1A\u300C{\u53F0\u8BCD\u5185\u5BB9}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6\u63CF\u8FF0}\`
-
-9\u7EF4\u5EA6\u6309\u987A\u5E8F\u586B\u5199\uFF1A
-\`\`\`
-{\u6027\u522B}\uFF0C{\u5E74\u9F84\u97F3\u8272}\uFF0C{\u97F3\u8C03}\uFF0C{\u97F3\u8272\u8D28\u611F}\uFF0C{\u58F0\u97F3\u539A\u5EA6}\uFF0C{\u53D1\u97F3\u65B9\u5F0F}\uFF0C{\u6C14\u606F}\uFF0C{\u8BED\u901F}\uFF0C{\u7279\u6B8A\u8D28\u611F}
-\`\`\`
-
-> \u5F53 desc \u4E2D\u672A\u660E\u786E\u97F3\u8272\u4FE1\u606F\u65F6\uFF0C\u6839\u636E\u89D2\u8272\u7C7B\u578B\u4ECE\u4EE5\u4E0B\u53C2\u8003\u8868\u63A8\u65AD\uFF1A
-
-| \u89D2\u8272\u7C7B\u578B\u7279\u5F81 | \u9ED8\u8BA4\u97F3\u8272 |
-|------------|---------|
-| \u7537\u6027\u6743\u5A01/\u9738\u6C14\u89D2\u8272 | \u7537\u58F0\uFF0C\u4E2D\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4F4E\u6C89\uFF0C\u97F3\u8272\u6D51\u539A\u6709\u529B\uFF0C\u58F0\u97F3\u539A\u91CD\uFF0C\u53D1\u97F3\u6807\u51C6\uFF0C\u6C14\u606F\u6781\u5176\u6C89\u7A33\uFF0C\u8BED\u901F\u504F\u6162 |
-| \u5973\u6027\u6E29\u67D4/\u751C\u7F8E\u89D2\u8272 | \u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\u504F\u9AD8\uFF0C\u97F3\u8272\u8D28\u611F\u660E\u4EAE\u6E05\u8106\uFF0C\u58F0\u97F3\u6E05\u4EAE\u67D4\u548C\uFF0C\u6C14\u606F\u5145\u6C9B\u5E73\u7A33\uFF0C\u5E26\u6E29\u5A49\u771F\u8BDA\u611F |
-| \u7537\u6027\u5E74\u8F7B/\u666E\u901A\u89D2\u8272 | \u7537\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\uFF0C\u97F3\u8272\u5E72\u51C0\uFF0C\u58F0\u97F3\u539A\u5EA6\u9002\u4E2D\uFF0C\u53D1\u97F3\u6E05\u6670\uFF0C\u6C14\u606F\u5E73\u7A33\uFF0C\u8BED\u901F\u9002\u4E2D |
-| \u5973\u6027\u6D3B\u6CFC/\u5916\u5411\u89D2\u8272 | \u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u504F\u9AD8\uFF0C\u97F3\u8272\u6E05\u8106\u6D3B\u6CFC\uFF0C\u58F0\u97F3\u8F7B\u76C8\uFF0C\u6C14\u606F\u5145\u6C9B\uFF0C\u8BED\u901F\u504F\u5FEB\uFF0C\u5E26\u7B11\u610F\u548C\u611F\u67D3\u529B |
-| \u53CD\u6D3E/\u51B7\u9177\u89D2\u8272 | \u7537\u58F0\uFF0C\u4E2D\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4F4E\u6C89\uFF0C\u97F3\u8272\u8D28\u611F\u5E72\u71E5\u504F\u6697\uFF0C\u58F0\u97F3\u5E26\u6C99\u783E\u611F\uFF0C\u6C14\u606F\u5E73\u7A33\uFF0C\u8BED\u901F\u6781\u6162\uFF0C\u6709\u5A01\u80C1\u611F |
-
-#### \u65E0\u53F0\u8BCD\u5206\u955C\u5904\u7406
-- \u4E0D\u5199 \`\u8BF4\uFF1A\` \u548C\u97F3\u8272\u6BB5\u843D
-- \u5728\u52A8\u4F5C\u63CF\u8FF0\u540E\u6807\u6CE8 \`\u65E0\u53F0\u8BCD\`
-
-#### \u53F0\u8BCD\u7C7B\u578B\u683C\u5F0F
-
-| \u53F0\u8BCD\u7C7B\u578B | \u683C\u5F0F | \u5634\u578B\u63CF\u8FF0 |
-|----------|------|----------|
-| \u666E\u901A\u5BF9\u767D | \`{\u89D2\u8272\u540D\u5B57} \u8BF4\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u5F00\u5408\u8BF4\u8BDD |
-| \u5185\u5FC3\u72EC\u767D | \`{\u89D2\u8272\u540D\u5B57} \u5185\u5FC3OS\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u7D27\u95ED\u4E0D\u52A8 |
-| \u753B\u5916\u97F3 | \`{\u89D2\u8272\u540D\u5B57} \u753B\u5916\u97F3VO\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u7D27\u95ED\u4E0D\u52A8\uFF08\u6216\u89D2\u8272\u4E0D\u5728\u753B\u9762\u4E2D\uFF09 |
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u4E2D\u6587\u63D0\u793A\u8BCD**
-2. **\u76F4\u63A5\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD**\uFF1A\u7981\u6B62\u8F93\u51FA\u4EFB\u4F55\u5206\u6790\u8FC7\u7A0B\u3001\u63A8\u7406\u6B65\u9AA4\u3001\u6A21\u578B\u5339\u914D\u8BF4\u660E\u3001\u8D44\u4EA7\u7F16\u53F7\u8868\u3001\u5206\u9694\u7EBF\u7B49\u975E\u63D0\u793A\u8BCD\u5185\u5BB9\u3002\u7B2C\u4E00\u884C\u5FC5\u987B\u662F \`\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B:\`
-3. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u6BCF\u6761\u5206\u955C\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-4. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u548C\u97F3\u8272
-5. **\u53F0\u8BCD\u7C7B\u578B\u6B63\u786E\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u7528\u300C\u8BF4\uFF1A\u300D\uFF0C\u5185\u5FC3\u72EC\u767D\u7528\u300C\u5185\u5FC3OS\uFF1A\u300D\uFF0C\u753B\u5916\u97F3\u7528\u300C\u753B\u5916\u97F3VO\uFF1A\u300D
-6. **\u5148\u56FE\u7247\u5B9A\u4E49\uFF0C\u540E\u5199\u5206\u955C**\uFF1A\u6700\u524D\u9762\u5FC5\u987B\u5148\u8F93\u51FA"\u56FE\u7247\u5B9A\u4E49"\u6BB5\uFF0C\u5217\u51FA \`@\u56FEN : \u540D\u5B57\uFF0C\u63CF\u8FF0\`
-7. **\u5206\u955C\u6B63\u6587\u7981\u7528 \`@\u56FEN \`**\uFF1A\u6B63\u6587\u7EDF\u4E00\u4F7F\u7528\u89D2\u8272\u540D/\u573A\u666F\u540D\uFF0C\u4E0D\u5199 \`@\u56FE1/@\u56FE2\` \u7B49\u7F16\u53F7
-8. **\u5355\u5206\u955C\u65F6\u957F\u6700\u4F4E 1s**
-9. **\u65F6\u957F\u5355\u4F4D**\uFF1A\u76F4\u63A5\u4F7F\u7528 videoDesc \u4E2D\u7684\u79D2\u6570\uFF0C\u683C\u5F0F\u4E3A \`{N}s\`\uFF08\u5982 \`4s\`\uFF09\uFF0C\u6700\u4F4E 1s
-
-#### Seedance 2.0 \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1ASeedance2.0
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u82CF\u9526\u8BF4\uFF1A\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: \u771F\u4EBA\u5199\u5B9E, \u7535\u5F71\u98CE\u683C, \u51B7\u8C03, \u53E4\u98CE
-
-\u53C2\u8003\u5B9A\u4E49:
-@\u56FE1: \u6C88\u8F9E\uFF0C\u9ED1\u8272\u957F\u888D\uFF0C\u6C14\u8D28\u51B7\u5CFB\u7684\u9752\u5E74\u7537\u6027
-@\u56FE2: \u82CF\u9526\uFF0C\u6D45\u8272\u8863\u88D9\uFF0C\u795E\u60C5\u7EC6\u817B\u7684\u9752\u5E74\u5973\u6027
-@\u56FE3: \u57CE\u697C\uFF0C\u53E4\u4EE3\u7816\u77F3\u57CE\u697C\u4E0E\u53F0\u9636\u573A\u666F
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B 2 \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: \u955C\u5934\u5E73\u6ED1\u5207\u6362\uFF0C\u4ECE\u5168\u666F\u8FC7\u6E21\u5230\u4E2D\u666F\u8DDF\u8E2A\uFF0C\u7126\u70B9\u4ECE\u6C88\u8F9E\u72EC\u5904\u8F6C\u5411\u82CF\u9526\u5230\u6765\u3002
-
-\u5206\u955C1 4s: \u65F6\u95F4\uFF1A\u9EC4\u660F\uFF0C\u573A\u666F\uFF1A\u57CE\u697C\uFF0C\u955C\u5934\uFF1A\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u9759\u6B62\u955C\u5934\uFF0C\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u4E4B\u4E0A\uFF0C\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u968F\u98CE\u98D8\u626C\uFF0C\u76EE\u5149\u8FDC\u773A\u82CD\u832B\u5927\u5730\uFF0C\u795E\u60C5\u8083\u7136\u9762\u5BB9\u6C89\u7740\uFF0C\u773C\u795E\u575A\u5B9A\u76EE\u5149\u6E05\u51BD\uFF0C\u7709\u773C\u6C89\u9759\u6C14\u8D28\u51DB\u7136\u3002\u65E0\u53F0\u8BCD\u3002\u80CC\u666F\u662F\u53E4\u57CE\u697C\u7816\u77F3\u7EB9\u7406\u6E05\u6670\uFF0C\u8FDC\u65B9\u5927\u5730\u82CD\u832B\u8FBD\u9614\uFF0C\u5929\u9645\u7EBF\u51B7\u6696\u4EA4\u66FF\u3002\u9EC4\u660F\u659C\u5C04\u4F59\u6656\u4FA7\u9006\u5149\uFF0C\u51B7\u8C03\u4E3A\u4E3B\uFF0C\u957F\u5F71\u62C9\u4F38\uFF0C\u8F6E\u5ED3\u5149\u5FAE\u52FE\u52D2\u4EBA\u7269\u8FB9\u7F18\uFF0C\u5149\u611F\u8BD7\u610F\u3002\u955C\u5934\u9759\u6B62\u3002
-
-\u5206\u955C2 4s: \u65F6\u95F4\uFF1A\u9EC4\u660F\uFF0C\u573A\u666F\uFF1A\u57CE\u697C\uFF0C\u955C\u5934\uFF1A\u4E2D\u666F\uFF0C\u5E73\u89C6\uFF0C\u8DDF\u8E2A\u62CD\u6444\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\uFF0C\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E\uFF0C\u9762\u90E8\u671D\u5411\u6C88\u8F9E\u65B9\u5411\uFF0C\u795E\u60C5\u5FAE\u6123\u9762\u8272\u5FAE\u53D8\uFF0C\u773C\u795E\u4E2D\u5E26\u7740\u62C5\u5FE7\uFF0C\u82CF\u9526\u8BF4\uFF1A\u300C\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3002\u300D\u97F3\u8272\uFF1A\u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\u504F\u9AD8\uFF0C\u97F3\u8272\u8D28\u611F\u660E\u4EAE\u6E05\u8106\uFF0C\u58F0\u97F3\u6E05\u4EAE\u67D4\u548C\uFF0C\u53D1\u97F3\u65B9\u5F0F\u5E72\u51C0\uFF0C\u6C14\u606F\u5145\u6C9B\u5E73\u7A33\uFF0C\u8BED\u901F\u9002\u4E2D\uFF0C\u5E26\u6E29\u5A49\u771F\u8BDA\u611F\u3002\u80CC\u666F\u57CE\u697C\u53F0\u9636\u7EB9\u7406\u6E05\u6670\uFF0C\u4F59\u6656\u6E10\u6697\uFF0C\u5929\u9645\u7EBF\u51B7\u6696\u4EA4\u66FF\u52A0\u6DF1\u3002\u955C\u5934\u8DDF\u8E2A\u82CF\u9526\u79FB\u52A8\u3002
-\`\`\`
-
----
-
-### \u56DB\u3001Wan 2.6
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u5355\u56FE\u9996\u5E27\u6A21\u5F0F**\uFF1A\u5F52\u7C7B\u4E3A\u9996\u5C3E\u5E27\u6A21\u5F0F\uFF0C\u4F46\u4EC5\u6709\u9996\u5E27\uFF08\u5206\u955C\u56FE\uFF09\uFF0C\u65E0\u5C3E\u5E27
-- **\u5355\u6761\u5206\u955C\u8F93\u5165/\u8F93\u51FA**\uFF1A\u6BCF\u6B21\u4EC5\u8F93\u5165\u4E00\u6761 \`<storyboardItem>\` \u53CA\u5176\u5173\u8054\u8D44\u4EA7\u4FE1\u606F\uFF0C\u8F93\u51FA\u4E5F\u4EC5\u4E3A\u4E00\u6BB5\u5B8C\u6574\u7684\u53D9\u4E8B\u5F0F\u63D0\u793A\u8BCD
-- **\u53D9\u4E8B\u5F0F\u82F1\u6587\u63D0\u793A\u8BCD**\uFF1A\u50CF\u5199\u5C0F\u8BF4\u4E00\u6837\u63CF\u5199\u753B\u9762\uFF0C\u4E0D\u4F7F\u7528\u6807\u7B7E\u7F57\u5217\uFF08\u4E0D\u5199 \`4K, cinematic, high quality\` \u8FD9\u7C7B\u5806\u780C\uFF09
-- **\u4E09\u6BB5\u5F0F\u7ED3\u6784**\uFF1A\u98CE\u683C\u57FA\u8C03 \u2192 \u4E3B\u4F53\u52A8\u4F5C + \u573A\u666F\u73AF\u5883 + \u5149\u7EBF\u6C1B\u56F4 \u2192 \u955C\u5934\u6536\u5C3E
-- **\u7EAF\u6587\u672C\u63D0\u793A\u8BCD**\uFF1A\u63D0\u793A\u8BCD\u5185**\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u4F53\u73B0\u53F0\u8BCD\u76F8\u5173\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO\uFF09\uFF0C\u5728\u63D0\u793A\u8BCD\u4E2D\u7528\u62EC\u53F7\u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-\u6BCF\u6B21\u8F93\u5165\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u5B8C\u6574\u63D0\u793A\u8BCD\uFF08\u65E0\u7F16\u53F7\u524D\u7F00\uFF09\uFF0C\u683C\u5F0F\u5982\u4E0B\uFF1A
-
-\`\`\`
-{\u98CE\u683C\u57FA\u8C03\u4E00\u53E5\u8BDD\u5B9A\u6027},
-{\u4E3B\u4F53\u540D} {\u5916\u89C2\u7B80\u8FF0}, {\u5177\u4F53\u52A8\u4F5C/\u59FF\u6001\u63CF\u8FF0}, {\u60C5\u7EEA/\u8868\u60C5\u7528\u52A8\u4F5C\u6697\u793A}.
-{\u573A\u666F\u80CC\u666F\u4E3B\u4F53}, {\u5177\u4F53\u73AF\u5883\u7269\u4EF6}, {\u7A7A\u95F4\u611F}, {\u65F6\u95F4/\u5929\u6C14}.
-{\u5149\u7EBF\u65B9\u5411/\u8272\u6E29} {\u8D28\u611F\u63CF\u8FF0}, {\u60C5\u7EEA\u6697\u793A\u5149\u5F71}.
-{\u53F0\u8BCD\u63CF\u8FF0\uFF08\u5982\u6709\uFF0C\u542B dialogue/OS/VO \u6807\u6CE8\uFF09/ No dialogue}.
-{\u97F3\u6548\u63CF\u8FF0}.
-{\u62CD\u6444\u65B9\u5F0F}, {\u666F\u522B}, {\u89C6\u89D2}, {\u8FD0\u955C\u65B9\u5F0F}.
-\`\`\`
-
-#### \u53D9\u4E8B\u5F0F\u5199\u6CD5\u8981\u70B9
-
-| \u539F\u5219 | \u8BF4\u660E | \u793A\u4F8B |
-|------|------|------|
-| \u98CE\u683C\u57FA\u8C03\u653E\u6700\u524D | \u4E00\u53E5\u8BDD\u5B9A\u6027\u6574\u4F53\u6C14\u8D28 | \`A cinematic epic scene\` / \`A melancholic cinematic scene\` |
-| \u4E3B\u4F53+\u52A8\u4F5C\u7D27\u5BC6\u7ED1\u5B9A | \u4E3B\u4F53\u540E\u9762\u76F4\u63A5\u8DDF\u52A8\u4F5C\uFF0C\u5916\u89C2\u7EC6\u8282\u5D4C\u5165\u4E3B\u4F53\u63CF\u8FF0 | \`A young man in dark flowing robes stands alone atop the city wall, hands clasped behind back\` |
-| \u60C5\u7EEA\u7528\u52A8\u4F5C\u6697\u793A | \u4E0D\u76F4\u63A5\u9648\u8FF0\u300C\u4ED6\u5F88\u60B2\u4F24\u300D | \u274C \`He is sad.\` \u2192 \u2705 \`head drops slowly, shoulders slumped\` |
-| \u73AF\u5883\u878D\u5165\u53D9\u4E8B | \u4E0D\u7F57\u5217\u73AF\u5883\u5C5E\u6027 | \u274C \`The sky is blue. The grass is green.\` \u2192 \u2705 \`hazy blue sky stretches over the emerald valley\` |
-| \u5149\u7EBF\u5355\u72EC\u6210\u53E5 | \u5149\u7EBF\u65B9\u5411+\u8272\u6E29+\u8D28\u611F+\u60C5\u7EEA | \`Warm golden hour light streams from behind, casting long shadows across the stone floor\` |
-| \u955C\u5934\u8BED\u8A00\u6536\u5C3E | \u4E00\u53E5\u8BDD\u70B9\u775B | \`Captured in a wide establishing shot from a low-angle perspective, static camera\` |
-| \u7981\u6B62\u6807\u7B7E\u5806\u780C | \u4E0D\u5199 \`4K, cinematic, high quality\` | \`cinematic\` \u878D\u5165\u98CE\u683C\u57FA\u8C03\u5373\u53EF |
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u5168\u90E8\u7528\u82F1\u6587**
-2. **\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF1A\u63D0\u793A\u8BCD\u5185\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u5206\u955C\u56FE\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-3. **\u53D9\u4E8B\u5F0F\u63CF\u5199**\uFF1A\u50CF\u5199\u5C0F\u8BF4\u4E00\u6837\u6784\u5EFA\u753B\u9762\uFF0C\u7981\u6B62\u6807\u7B7E\u7F57\u5217\u548C\u914D\u7F6E\u6E05\u5355\u5F0F\u5199\u6CD5
-4. **\u4E3B\u4F53\u7528\u6587\u5B57\u63CF\u8FF0**\uFF1A\u7B80\u8981\u63CF\u8FF0\u4E3B\u4F53\u5916\u89C2\u7279\u5F81\uFF08\u5982\u670D\u9970\u3001\u53D1\u578B\u7B49\u5173\u952E\u8FA8\u8BC6\u7279\u5F81\uFF09\uFF0C\u5D4C\u5165\u4E3B\u4F53\u63CF\u8FF0\u4E2D
-5. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-6. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-7. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`(dialogue)\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`(inner monologue, OS)\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`(voiceover, VO)\`
-8. **\u5355\u6761\u8F93\u5165/\u8F93\u51FA**\uFF1A\u6BCF\u6B21\u4EC5\u5904\u7406\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u63D0\u793A\u8BCD\uFF0C\u65E0\u7F16\u53F7\u524D\u7F00
-9. **\u65E0\u9700\u6807\u6CE8\u65F6\u957F**\uFF1A\u65F6\u957F\u7531\u6A21\u578B\u4FA7\u63A7\u5236\uFF0C\u63D0\u793A\u8BCD\u4E2D\u4E0D\u5199\u65F6\u957F\u53C2\u6570
-10. **\u955C\u5934\u63CF\u8FF0\u878D\u5165\u53D9\u4E8B**\uFF1A\u4E0D\u7528\u65B9\u62EC\u53F7\u6807\u7B7E\uFF0C\u7528\u5B8C\u6574\u53E5\u5B50\u63CF\u8FF0\u955C\u5934
-11. **\u89C6\u89C9\u98CE\u683C**\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9
-
-#### Wan 2.6 \u5B8C\u6574\u793A\u4F8B
-
-**\u793A\u4F8B1\uFF1A\u65E0\u53F0\u8BCD\u5206\u955C**
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AWan2.6
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-A cinematic epic scene with a cold, desaturn\`ated palette,
-A lone man in dark flowing robes stands atop an ancient city wall, hands clasped behind his back, robes and hair billowing in the wind, gaze fixed on the vast land stretching to the horizon, jaw set firm, eyes unwavering.
-The weathered stone battlements frame the endless expanse below, rolling terrain fading into haze beneath a heavy dusk sky, clouds layered in muted golds and slate greys.
-Cold side-backlight from the setting sun carves a sharp silhouette, long shadows stretching across the stone floor, a faint warm rim outlining the figure against the cool atmosphere.
-No dialogue.
-Wind howling across the open wall, fabric flapping rhythmically.
-Captured in a wide establishing shot from a slightly low angle, static camera, single continuous take.
-\`\`\`
-
-**\u793A\u4F8B2\uFF1A\u6709\u53F0\u8BCD\u5206\u955C**
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AWan2.6
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u82CF\u9526\u8BF4\uFF1A\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-A melancholic cinematic scene, dusk tones deepening,
-A young woman in a light-colored dress ascends the final stone steps onto the city wall, her gaze locked on the lone figure ahead, brow slightly furrowed, pace slowing as she approaches, lips parting softly.
-The ancient city wall stretches behind her, weathered stairs leading up from below, the distant skyline dimming as the last traces of golden hour fade into twilight.
-Fading warm light mingles with rising cool blue tones, the contrast between the two figures softened by the diffused remnants of sunset.
-"\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3002" \u2014 Su Jin (dialogue).
-Footsteps on stone, wind sweeping across the battlements, fabric rustling.
-A medium tracking shot follows the woman from behind as she ascends and approaches, handheld camera with subtle movement, single continuous take.
-\`\`\`
-
----
-
-## \u666F\u522B \u2192 \u955C\u5934\u6807\u7B7E\u6620\u5C04
-
-| videoDesc \u4E2D\u7684\u666F\u522B | KlingOmni\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 1.5\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 2.0\uFF08\u4E2D\u6587\u63CF\u8FF0\uFF09 | Wan 2.6\uFF08\u82F1\u6587\u53D9\u4E8B\u5F0F\uFF09 |
-|------|------|------|------|------|
-| \u8FDC\u666F | extreme wide shot | Extreme wide shot | \u8FDC\u666F | an extreme wide shot capturing the vast expanse |
-| \u5168\u666F | wide shot | Wide establishing shot | \u5168\u666F | a wide establishing shot |
-| \u4E2D\u666F | medium shot | Medium shot | \u4E2D\u666F | a medium shot |
-| \u8FD1\u666F | close-up | Close-up | \u8FD1\u666F | a close-up shot |
-| \u7279\u5199 | close-up | Close-up | \u7279\u5199 | a close-up capturing fine detail |
-| \u5927\u7279\u5199 | extreme close-up | Extreme close-up | \u5927\u7279\u5199 | an extreme close-up |
-
-## \u8FD0\u955C \u2192 \u955C\u5934\u6807\u7B7E\u6620\u5C04
-
-| videoDesc \u4E2D\u7684\u8FD0\u955C | KlingOmni\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 1.5\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 2.0\uFF08\u4E2D\u6587\u63CF\u8FF0\uFF09 | Wan 2.6\uFF08\u82F1\u6587\u53D9\u4E8B\u5F0F\uFF09 |
-|------|------|------|------|------|
-| \u9759\u6B62 | static camera | Static, no camera movement | \u955C\u5934\u9759\u6B62 | static camera, locked off |
-| \u63A8\u8FDB | dolly in / push in | Slow dolly forward | \u955C\u5934\u7F13\u6162\u5411\u524D\u63A8\u8FDB | camera slowly pushing in |
-| \u62C9\u8FDC | dolly out / pull back | Slow dolly backward pull | \u955C\u5934\u7F13\u6162\u5411\u540E\u62C9\u8FDC | camera gently pulling back |
-| \u8DDF\u8E2A | tracking shot | Tracking shot, handheld | \u8DDF\u8E2A\u62CD\u6444 | tracking shot following the subject |
-| \u6447\u955C | pan left/right | Slow pan | \u955C\u5934\u7F13\u6162\u6447\u79FB | smooth pan across the scene |
-| \u7529\u955C | whip pan | Whip pan | \u5FEB\u901F\u7529\u955C | whip pan |
-| \u5347\u964D | crane up/down | Crane up/down | \u955C\u5934\u5347\u964D | crane rising / descending |
-| \u73AF\u7ED5 | surround shooting | Orbiting shot | \u73AF\u7ED5\u62CD\u6444 | orbiting around the subject |
-
----
-
-## \u6267\u884C\u6D41\u7A0B
-
-1. **\u89E3\u6790\u8F93\u5165**\uFF1A\u63D0\u53D6\u6A21\u578B\u540D\u548C\u591A\u53C2\u6807\u5FD7\uFF0C\u6309\u8DEF\u7531\u89C4\u5219\u5339\u914D\u6A21\u5F0F\uFF1B\u63D0\u53D6\u8D44\u4EA7\u5217\u8868
-2. **\u6784\u5EFA @\u56FEN \u7F16\u53F7\u8868**\uFF1A\u8D44\u4EA7\u6309\u8F93\u5165\u987A\u5E8F\u4ECE \`@\u56FE1 \` \u8D77\u7F16\u53F7\uFF0C\u5206\u955C\u56FE\u63A5\u7EED\u7F16\u53F7\uFF1B\`shouldGenerateImage="false"\` \u7684\u5206\u955C\u4E0D\u5206\u914D\u5206\u955C\u56FE\u7F16\u53F7
-3. **\u9010\u6761\u89E3\u6790 \`<storyboardItem>\`**\uFF1A\u6309 videoDesc \u89E3\u6790\u89C4\u5219\u63D0\u53D612\u4E2A\u5B57\u6BB5\uFF0C\u7ED3\u5408 \`duration\`\u3001\`associateAssetsIds\` \u5EFA\u7ACB\u6807\u7B7E\u6620\u5C04
-4. **\u6574\u5408\u4E3A\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD**\uFF1A\u6309\u76EE\u6807\u6A21\u578B\u683C\u5F0F\u7F16\u6392\u5168\u90E8\u5206\u955C
-5. **\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD**
-
----
-
-## \u7EA6\u675F
-
-- **\u4EC5\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD**\uFF1A\u4E0D\u9644\u52A0\u4EFB\u4F55\u89E3\u91CA\u3001\u6CE8\u91CA\u3001\u5206\u6790\u8FC7\u7A0B\u3001\u63A8\u7406\u6B65\u9AA4\u3001\u6A21\u578B\u5339\u914D\u8BF4\u660E\u3001\u8D44\u4EA7\u7F16\u53F7\u8868\u3001\u5206\u9694\u7EBF\uFF08\`---\`\uFF09\u6216\u989D\u5916\u8BF4\u660E\uFF0C\u53EA\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD\u6587\u672C\u3002\u7981\u6B62\u5728\u63D0\u793A\u8BCD\u524D\u540E\u8F93\u51FA\u4EFB\u4F55\u975E\u63D0\u793A\u8BCD\u5185\u5BB9
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u5B8C\u6574\u4F53\u73B0\u53F0\u8BCD\u5185\u5BB9\uFF0C\u4E0D\u5F97\u9057\u6F0F
-- **\u53F0\u8BCD\u4FDD\u6301\u539F\u59CB\u8F93\u5165**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u53F0\u8BCD\u5185\u5BB9\u4E25\u7981\u7FFB\u8BD1\uFF0C\u5FC5\u987B\u4FDD\u6301 videoDesc \u4E2D\u7684\u539F\u59CB\u8BED\u8A00\u539F\u6837\u8F93\u51FA
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u5FC5\u987B\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue / \u8BF4\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08OS / \u5185\u5FC3OS\uFF09\u3001\u753B\u5916\u97F3\uFF08VO / \u753B\u5916\u97F3VO\uFF09\uFF0C\u5E76\u5728\u63D0\u793A\u8BCD\u4E2D\u6B63\u786E\u6807\u6CE8
-- **\u65F6\u95F4\u8DE8\u5EA6\u6700\u4F4E 1 \u79D2**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u6240\u6709\u6A21\u5F0F\u4E2D\u6D89\u53CA\u65F6\u95F4\u5206\u6BB5\uFF08Motion \u65F6\u95F4\u8F74 / Seedance 2.0 \u5206\u955C\u65F6\u957F {N}s\uFF09\u7684\u6700\u5C0F\u7C92\u5EA6\u4E3A 1 \u79D2\uFF081s\uFF09\uFF0C\u7981\u6B62\u51FA\u73B0 0.5 \u79D2\u7B49\u4F4E\u4E8E 1 \u79D2\u7684\u95F4\u9694
-- **\u89C6\u89C9\u98CE\u683C**\uFF1A\u98CE\u683C\u76F8\u5173\u63CF\u8FF0\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9\uFF0C\u4E0D\u5728\u672C Skill \u5185\u81EA\u884C\u5B9A\u4E49\u98CE\u683C
-- **\u4E25\u683C\u6309\u5339\u914D\u5230\u7684\u6A21\u5F0F\u683C\u5F0F**\uFF0C\u4E0D\u6DF7\u7528\u4E0D\u540C\u6A21\u5F0F\u7684\u683C\u5F0F
-- **\u4E0D\u4FEE\u6539\u539F\u59CB\u8F93\u5165**\uFF1A\u4E0D\u6539\u5199 \`<storyboardItem>\` \u7684\u4EFB\u4F55\u5B57\u6BB5\uFF1B\`prompt\` \u5DF2\u6709\u7684\u5206\u955C\u56FE\u63D0\u793A\u8BCD\u4EC5\u4F5C\u753B\u9762\u53C2\u8003
-- **\u4E0D\u7F16\u9020\u8D44\u4EA7\u6216\u53F0\u8BCD**\uFF1A\u53EA\u4F7F\u7528\u8F93\u5165\u4E2D\u7684\u8D44\u4EA7\u4FE1\u606F\uFF1B\u65E0\u53F0\u8BCD\u5219\u6807\u6CE8\u300C\u65E0\u53F0\u8BCD\u300D/ \`No dialogue\`
-- **\u65F6\u957F\u5355\u4F4D**\uFF1ASeedance 2.0 \u7684\u5206\u955C\u65F6\u957F\u76F4\u63A5\u4F7F\u7528\u79D2\uFF0C\u683C\u5F0F\u4E3A \`{N}s\`\uFF08\u5982 \`4s\`\uFF09\uFF0C\u6700\u4F4E 1s
-`
+        data: [
+          "# Video Prompt Generation Skill",
+          "",
+          "The backend provides structured <trackStoryboard ...> facts and visual references.",
+          "Read only structured attributes: duration, location, timeOfDay, scene, picture, action, shotSize, cameraMove, dialogue, sound, visibleEmotion, groupKey, groupName, groupIntent, beatId, characters, requiredAssets.",
+          "Do not parse or infer business facts from videoDesc, Markdown, XML text, image prompts, chat text, or any other prose.",
+          "Generate the target model video prompt only. Dialogue, voice tone and diegetic sound effects must come from structured fields; BGM, score and OST are not valid video prompt content."
+        ].join("\\n")
       });
       const data = await knex3("o_vendorConfig").select("*");
       for (const item of data) {
@@ -71465,6 +70719,51 @@ A medium tracking shot follows the woman from behind as she ascends and approach
       await knex3.raw("CREATE INDEX IF NOT EXISTS idx_director_asset_flow_node ON o_directorAsset(flowId, nodeId)");
       await knex3.raw("CREATE INDEX IF NOT EXISTS idx_director_asset_target ON o_directorAsset(targetType, targetId)");
       await knex3.raw("CREATE INDEX IF NOT EXISTS idx_director_asset_type ON o_directorAsset(assetType)");
+      if (!await knex3.schema.hasTable("o_storyArtifact")) {
+        await knex3.schema.createTable("o_storyArtifact", (table) => {
+          table.increments("id").primary();
+          table.integer("projectId").notNullable();
+          table.string("type").notNullable();
+          table.text("title").notNullable();
+          table.text("content").notNullable();
+          table.text("contentJson");
+          table.integer("version").notNullable().defaultTo(1);
+          table.integer("parentId");
+          table.string("status").notNullable().defaultTo("draft");
+          table.integer("createTime");
+          table.integer("updateTime");
+        });
+      }
+      if (!await knex3.schema.hasTable("o_storyAnnotation")) {
+        await knex3.schema.createTable("o_storyAnnotation", (table) => {
+          table.increments("id").primary();
+          table.integer("projectId").notNullable();
+          table.integer("artifactId").notNullable();
+          table.integer("artifactVersion").notNullable().defaultTo(1);
+          table.string("blockId");
+          table.integer("startOffset");
+          table.integer("endOffset");
+          table.text("selectedText").notNullable();
+          table.text("comment").notNullable();
+          table.string("status").notNullable().defaultTo("open");
+          table.integer("createTime");
+          table.integer("updateTime");
+        });
+      }
+      if (!await knex3.schema.hasTable("o_storyRevisionMap")) {
+        await knex3.schema.createTable("o_storyRevisionMap", (table) => {
+          table.increments("id").primary();
+          table.integer("projectId").notNullable();
+          table.integer("sourceArtifactId").notNullable();
+          table.integer("newArtifactId").notNullable();
+          table.text("annotationIds");
+          table.text("changeSummary");
+          table.integer("createTime");
+        });
+      }
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_story_artifact_project_type ON o_storyArtifact(projectId, type, status)");
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_story_annotation_artifact_status ON o_storyAnnotation(artifactId, status)");
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_story_revision_project_source ON o_storyRevisionMap(projectId, sourceArtifactId)");
       await knex3.raw(`
     UPDATE o_editImageTask
     SET targetType = 'deriveAsset', targetId = deriveAssetId
@@ -71557,6 +70856,142 @@ A medium tracking shot follows the woman from behind as she ascends and approach
       await knex3.raw("CREATE INDEX IF NOT EXISTS idx_task_event_task_version ON o_taskEvent(taskId, version)");
       await knex3.raw("CREATE INDEX IF NOT EXISTS idx_task_event_scope ON o_taskEvent(projectId, scriptId, id)");
       await knex3.raw("CREATE INDEX IF NOT EXISTS idx_task_event_created ON o_taskEvent(createdAt)");
+      if (!await knex3.schema.hasTable("o_textAsset")) {
+        await knex3.schema.createTable("o_textAsset", (table) => {
+          table.integer("id").notNullable();
+          table.integer("projectId").notNullable();
+          table.integer("scriptId");
+          table.string("targetType").notNullable();
+          table.string("targetId");
+          table.text("filePath").notNullable();
+          table.text("summary");
+          table.integer("size").notNullable().defaultTo(0);
+          table.string("hash").notNullable();
+          table.integer("version").notNullable().defaultTo(1);
+          table.string("state").notNullable().defaultTo("complete");
+          table.integer("createTime").notNullable();
+          table.integer("updateTime").notNullable();
+          table.primary(["id"]);
+          table.unique(["id"]);
+        });
+      }
+      await addColumn("o_textAsset", "scriptId", "integer");
+      await addColumn("o_textAsset", "targetId", "string");
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_text_asset_target ON o_textAsset(projectId, scriptId, targetType, targetId)");
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_text_asset_state ON o_textAsset(state, updateTime)");
+      await addColumn("o_storyboard", "groupKey", "text");
+      await addColumn("o_storyboard", "groupName", "text");
+      await addColumn("o_storyboard", "groupIntent", "text");
+      await addColumn("o_storyboard", "beatId", "text");
+      await addColumn("o_storyboard", "scene", "text");
+      await addColumn("o_storyboard", "picture", "text");
+      await addColumn("o_storyboard", "action", "text");
+      await addColumn("o_storyboard", "shotSize", "text");
+      await addColumn("o_storyboard", "cameraMove", "text");
+      await addColumn("o_storyboard", "dialogue", "text");
+      await addColumn("o_storyboard", "sound", "text");
+      await addColumn("o_storyboard", "visibleEmotion", "text");
+      await addColumn("o_storyboard", "location", "text");
+      await addColumn("o_storyboard", "timeOfDay", "text");
+      await addColumn("o_storyboard", "sceneContinuityId", "text");
+      await addColumn("o_storyboard", "tableRowJson", "text");
+      await addColumn("o_storyboard", "factStatus", "text");
+      await addColumn("o_storyboard", "factVersion", "integer");
+      await addColumn("o_storyboard", "factRevision", "integer");
+      await knex3("o_storyboard").whereNull("factStatus").update({
+        factStatus: knex3.raw("CASE WHEN tableRowJson IS NULL OR TRIM(tableRowJson) = '' THEN 'legacy' ELSE 'draft' END")
+      });
+      await knex3("o_storyboard").whereNull("factVersion").update({ factVersion: 1 });
+      await knex3("o_storyboard").whereNull("factRevision").update({ factRevision: 0 });
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_storyboard_scope_index ON o_storyboard(projectId, scriptId, [index])");
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_storyboard_track ON o_storyboard(trackId)");
+      await addColumn("o_videoTrack", "groupKey", "text");
+      await addColumn("o_videoTrack", "groupName", "text");
+      await addColumn("o_videoTrack", "groupIntent", "text");
+      await addColumn("o_videoTrack", "musicPlanJson", "text");
+      await addColumn("o_videoTrack", "groupPlanJson", "text");
+      await addColumn("o_videoTrack", "reviewState", "text");
+      await addColumn("o_videoTrack", "reviewIssuesJson", "text");
+      await addColumn("o_videoTrack", "archived", "integer");
+      await knex3("o_videoTrack").whereNull("reviewState").update({ reviewState: "pending" });
+      await knex3("o_videoTrack").whereNull("reviewIssuesJson").update({ reviewIssuesJson: "[]" });
+      await knex3("o_videoTrack").whereNull("archived").update({ archived: 0 });
+      if (!await knex3.schema.hasTable("o_storyboardGeneration")) {
+        await knex3.schema.createTable("o_storyboardGeneration", (table) => {
+          table.increments("id").primary();
+          table.string("generationId").notNullable().unique();
+          table.integer("projectId").notNullable();
+          table.integer("scriptId").notNullable();
+          table.integer("expectedRowCount").notNullable();
+          table.text("groupPlanJson").notNullable();
+          table.string("state").notNullable().defaultTo("writing");
+          table.integer("revision");
+          table.integer("createdAt").notNullable();
+          table.integer("updatedAt").notNullable();
+        });
+      }
+      await addColumn("o_storyboardGeneration", "errorJson", "text");
+      await knex3.raw(
+        "CREATE INDEX IF NOT EXISTS idx_storyboard_generation_scope ON o_storyboardGeneration(projectId, scriptId, state)"
+      );
+      await knex3.raw(
+        "CREATE INDEX IF NOT EXISTS idx_storyboard_generation_expiry ON o_storyboardGeneration(state, updatedAt)"
+      );
+      if (!await knex3.schema.hasTable("o_storyboardGenerationRow")) {
+        await knex3.schema.createTable("o_storyboardGenerationRow", (table) => {
+          table.increments("id").primary();
+          table.string("generationId").notNullable();
+          table.integer("rowIndex").notNullable();
+          table.text("rowJson").notNullable();
+          table.string("rowHash").notNullable();
+          table.integer("createdAt").notNullable();
+          table.integer("updatedAt").notNullable();
+          table.unique(["generationId", "rowIndex"], {
+            indexName: "uq_storyboard_generation_row"
+          });
+        });
+      }
+      await knex3.raw(
+        "CREATE INDEX IF NOT EXISTS idx_storyboard_generation_row_order ON o_storyboardGenerationRow(generationId, rowIndex)"
+      );
+      await knex3.raw(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_storyboard_generation_row ON o_storyboardGenerationRow(generationId, rowIndex)"
+      );
+      if (!await knex3.schema.hasTable("o_productionReviewSuggestion")) {
+        await knex3.schema.createTable("o_productionReviewSuggestion", (table) => {
+          table.increments("id").primary();
+          table.integer("projectId").notNullable();
+          table.integer("scriptId");
+          table.string("targetType").notNullable();
+          table.string("targetId").notNullable();
+          table.integer("parentId");
+          table.integer("version").notNullable().defaultTo(1);
+          table.string("issueType").notNullable();
+          table.string("severity").notNullable();
+          table.text("message").notNullable();
+          table.text("reason");
+          table.text("proposedAction");
+          table.text("proposedPatch");
+          table.string("status").notNullable().defaultTo("open");
+          table.integer("createTime").notNullable();
+          table.integer("updateTime").notNullable();
+        });
+      }
+      if (!await knex3.schema.hasTable("o_productionReviewFeedback")) {
+        await knex3.schema.createTable("o_productionReviewFeedback", (table) => {
+          table.increments("id").primary();
+          table.integer("suggestionId").notNullable();
+          table.integer("projectId").notNullable();
+          table.integer("scriptId");
+          table.text("comment").notNullable();
+          table.string("mode").notNullable();
+          table.integer("createTime").notNullable();
+        });
+      }
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_review_suggestion_target ON o_productionReviewSuggestion(projectId, scriptId, targetType, targetId)");
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_review_suggestion_status ON o_productionReviewSuggestion(status, severity)");
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_review_feedback_suggestion ON o_productionReviewFeedback(suggestionId)");
+      await knex3.raw("CREATE INDEX IF NOT EXISTS idx_review_feedback_scope ON o_productionReviewFeedback(projectId, scriptId)");
       if (!await knex3.schema.hasTable("o_projectStorage")) {
         await knex3.schema.createTable("o_projectStorage", (table) => {
           table.integer("projectId").notNullable().primary();
@@ -71584,6 +71019,12 @@ A medium tracking shot follows the woman from behind as she ascends and approach
         "o_script",
         "o_assets",
         "o_storyboard",
+        "o_storyArtifact",
+        "o_storyAnnotation",
+        "o_storyRevisionMap",
+        "o_productionReviewSuggestion",
+        "o_productionReviewFeedback",
+        "o_textAsset",
         "o_agentWorkData",
         "o_video",
         "o_videoTrack",
@@ -71613,6 +71054,12 @@ A medium tracking shot follows the woman from behind as she ascends and approach
         ["o_script", "COALESCE(NEW.projectId, OLD.projectId)"],
         ["o_assets", "COALESCE(NEW.projectId, OLD.projectId)"],
         ["o_storyboard", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_storyArtifact", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_storyAnnotation", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_storyRevisionMap", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_productionReviewSuggestion", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_productionReviewFeedback", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_textAsset", "COALESCE(NEW.projectId, OLD.projectId)"],
         ["o_video", "COALESCE(NEW.projectId, OLD.projectId)"],
         ["o_videoTrack", "COALESCE(NEW.projectId, OLD.projectId)"],
         ["o_workbenchMergedReference", "COALESCE(NEW.projectId, OLD.projectId)"],
@@ -71739,16 +71186,16 @@ function applyConfigDefaults(config3) {
     schemaAsNamespace: false,
     typeOverrides: {},
     typeMap: {},
-    template: path10.join(path10.dirname((0, import_url.fileURLToPath)(import_meta.url)), "./template.handlebars"),
+    template: path11.join(path11.dirname((0, import_url.fileURLToPath)(import_meta.url)), "./template.handlebars"),
     custom: {}
   };
   return Object.assign(defaultConfig, config3);
 }
-var path10, import_url, import_meta;
+var path11, import_url, import_meta;
 var init_ConfigTasks = __esm({
   "node_modules/@rmp135/sql-ts/dist/ConfigTasks.js"() {
     "use strict";
-    path10 = __toESM(require("path"), 1);
+    path11 = __toESM(require("path"), 1);
     import_url = require("url");
     import_meta = {};
   }
@@ -73356,11 +72803,11 @@ var init_toKey = __esm({
 });
 
 // node_modules/lodash-es/_baseGet.js
-function baseGet(object4, path23) {
-  path23 = castPath_default(path23, object4);
-  var index = 0, length = path23.length;
+function baseGet(object4, path28) {
+  path28 = castPath_default(path28, object4);
+  var index = 0, length = path28.length;
   while (object4 != null && index < length) {
-    object4 = object4[toKey_default(path23[index++])];
+    object4 = object4[toKey_default(path28[index++])];
   }
   return index && index == length ? object4 : void 0;
 }
@@ -73375,8 +72822,8 @@ var init_baseGet = __esm({
 });
 
 // node_modules/lodash-es/get.js
-function get(object4, path23, defaultValue) {
-  var result = object4 == null ? void 0 : baseGet_default(object4, path23);
+function get(object4, path28, defaultValue) {
+  var result = object4 == null ? void 0 : baseGet_default(object4, path28);
   return result === void 0 ? defaultValue : result;
 }
 var get_default;
@@ -74185,11 +73632,11 @@ var init_baseHasIn = __esm({
 });
 
 // node_modules/lodash-es/_hasPath.js
-function hasPath(object4, path23, hasFunc) {
-  path23 = castPath_default(path23, object4);
-  var index = -1, length = path23.length, result = false;
+function hasPath(object4, path28, hasFunc) {
+  path28 = castPath_default(path28, object4);
+  var index = -1, length = path28.length, result = false;
   while (++index < length) {
-    var key = toKey_default(path23[index]);
+    var key = toKey_default(path28[index]);
     if (!(result = object4 != null && hasFunc(object4, key))) {
       break;
     }
@@ -74216,8 +73663,8 @@ var init_hasPath = __esm({
 });
 
 // node_modules/lodash-es/hasIn.js
-function hasIn(object4, path23) {
-  return object4 != null && hasPath_default(object4, path23, baseHasIn_default);
+function hasIn(object4, path28) {
+  return object4 != null && hasPath_default(object4, path28, baseHasIn_default);
 }
 var hasIn_default;
 var init_hasIn = __esm({
@@ -74230,13 +73677,13 @@ var init_hasIn = __esm({
 });
 
 // node_modules/lodash-es/_baseMatchesProperty.js
-function baseMatchesProperty(path23, srcValue) {
-  if (isKey_default(path23) && isStrictComparable_default(srcValue)) {
-    return matchesStrictComparable_default(toKey_default(path23), srcValue);
+function baseMatchesProperty(path28, srcValue) {
+  if (isKey_default(path28) && isStrictComparable_default(srcValue)) {
+    return matchesStrictComparable_default(toKey_default(path28), srcValue);
   }
   return function(object4) {
-    var objValue = get_default(object4, path23);
-    return objValue === void 0 && objValue === srcValue ? hasIn_default(object4, path23) : baseIsEqual_default(srcValue, objValue, COMPARE_PARTIAL_FLAG6 | COMPARE_UNORDERED_FLAG4);
+    var objValue = get_default(object4, path28);
+    return objValue === void 0 && objValue === srcValue ? hasIn_default(object4, path28) : baseIsEqual_default(srcValue, objValue, COMPARE_PARTIAL_FLAG6 | COMPARE_UNORDERED_FLAG4);
   };
 }
 var COMPARE_PARTIAL_FLAG6, COMPARE_UNORDERED_FLAG4, baseMatchesProperty_default;
@@ -74271,9 +73718,9 @@ var init_baseProperty = __esm({
 });
 
 // node_modules/lodash-es/_basePropertyDeep.js
-function basePropertyDeep(path23) {
+function basePropertyDeep(path28) {
   return function(object4) {
-    return baseGet_default(object4, path23);
+    return baseGet_default(object4, path28);
   };
 }
 var basePropertyDeep_default;
@@ -74286,8 +73733,8 @@ var init_basePropertyDeep = __esm({
 });
 
 // node_modules/lodash-es/property.js
-function property(path23) {
-  return isKey_default(path23) ? baseProperty_default(toKey_default(path23)) : basePropertyDeep_default(path23);
+function property(path28) {
+  return isKey_default(path28) ? baseProperty_default(toKey_default(path28)) : basePropertyDeep_default(path28);
 }
 var property_default;
 var init_property = __esm({
@@ -75657,13 +75104,13 @@ var require_logger2 = __commonJS({
     "use strict";
     exports2.__esModule = true;
     var _utils = require_utils5();
-    var logger2 = {
+    var logger3 = {
       methodMap: ["debug", "info", "warn", "error"],
       level: "info",
       // Maps a given level value to the `methodMap` indexes above.
       lookupLevel: function lookupLevel(level) {
         if (typeof level === "string") {
-          var levelMap = _utils.indexOf(logger2.methodMap, level.toLowerCase());
+          var levelMap = _utils.indexOf(logger3.methodMap, level.toLowerCase());
           if (levelMap >= 0) {
             level = levelMap;
           } else {
@@ -75674,9 +75121,9 @@ var require_logger2 = __commonJS({
       },
       // Can be overridden in the host environment
       log: function log(level) {
-        level = logger2.lookupLevel(level);
-        if (typeof console !== "undefined" && logger2.lookupLevel(logger2.level) <= level) {
-          var method = logger2.methodMap[level];
+        level = logger3.lookupLevel(level);
+        if (typeof console !== "undefined" && logger3.lookupLevel(logger3.level) <= level) {
+          var method = logger3.methodMap[level];
           if (!console[method]) {
             method = "log";
           }
@@ -75687,7 +75134,7 @@ var require_logger2 = __commonJS({
         }
       }
     };
-    exports2["default"] = logger2;
+    exports2["default"] = logger3;
     module2.exports = exports2["default"];
   }
 });
@@ -76308,13 +75755,13 @@ var require_ast = __commonJS({
         helperExpression: function helperExpression(node) {
           return node.type === "SubExpression" || (node.type === "MustacheStatement" || node.type === "BlockStatement") && !!(node.params && node.params.length || node.hash);
         },
-        scopedId: function scopedId(path23) {
-          return /^\.|this\b/.test(path23.original);
+        scopedId: function scopedId(path28) {
+          return /^\.|this\b/.test(path28.original);
         },
         // an ID is simple if it only has one part, and that part is not
         // `..` or `this`.
-        simpleId: function simpleId(path23) {
-          return path23.parts.length === 1 && !AST.helpers.scopedId(path23) && !path23.depth;
+        simpleId: function simpleId(path28) {
+          return path28.parts.length === 1 && !AST.helpers.scopedId(path28) && !path28.depth;
         }
       }
     };
@@ -77384,12 +76831,12 @@ var require_helpers4 = __commonJS({
         loc
       };
     }
-    function prepareMustache(path23, params, hash3, open, strip, locInfo) {
+    function prepareMustache(path28, params, hash3, open, strip, locInfo) {
       var escapeFlag = open.charAt(3) || open.charAt(2), escaped = escapeFlag !== "{" && escapeFlag !== "&";
       var decorator = /\*/.test(open);
       return {
         type: decorator ? "Decorator" : "MustacheStatement",
-        path: path23,
+        path: path28,
         params,
         hash: hash3,
         escaped,
@@ -77707,9 +77154,9 @@ var require_compiler3 = __commonJS({
       },
       DecoratorBlock: function DecoratorBlock(decorator) {
         var program = decorator.program && this.compileProgram(decorator.program);
-        var params = this.setupFullMustacheParams(decorator, program, void 0), path23 = decorator.path;
+        var params = this.setupFullMustacheParams(decorator, program, void 0), path28 = decorator.path;
         this.useDecorators = true;
-        this.opcode("registerDecorator", params.length, path23.original);
+        this.opcode("registerDecorator", params.length, path28.original);
       },
       PartialStatement: function PartialStatement(partial3) {
         this.usePartial = true;
@@ -77773,46 +77220,46 @@ var require_compiler3 = __commonJS({
         }
       },
       ambiguousSexpr: function ambiguousSexpr(sexpr, program, inverse) {
-        var path23 = sexpr.path, name28 = path23.parts[0], isBlock = program != null || inverse != null;
-        this.opcode("getContext", path23.depth);
+        var path28 = sexpr.path, name28 = path28.parts[0], isBlock = program != null || inverse != null;
+        this.opcode("getContext", path28.depth);
         this.opcode("pushProgram", program);
         this.opcode("pushProgram", inverse);
-        path23.strict = true;
-        this.accept(path23);
+        path28.strict = true;
+        this.accept(path28);
         this.opcode("invokeAmbiguous", name28, isBlock);
       },
       simpleSexpr: function simpleSexpr(sexpr) {
-        var path23 = sexpr.path;
-        path23.strict = true;
-        this.accept(path23);
+        var path28 = sexpr.path;
+        path28.strict = true;
+        this.accept(path28);
         this.opcode("resolvePossibleLambda");
       },
       helperSexpr: function helperSexpr(sexpr, program, inverse) {
-        var params = this.setupFullMustacheParams(sexpr, program, inverse), path23 = sexpr.path, name28 = path23.parts[0];
+        var params = this.setupFullMustacheParams(sexpr, program, inverse), path28 = sexpr.path, name28 = path28.parts[0];
         if (this.options.knownHelpers[name28]) {
           this.opcode("invokeKnownHelper", params.length, name28);
         } else if (this.options.knownHelpersOnly) {
           throw new _exception2["default"]("You specified knownHelpersOnly, but used the unknown helper " + name28, sexpr);
         } else {
-          path23.strict = true;
-          path23.falsy = true;
-          this.accept(path23);
-          this.opcode("invokeHelper", params.length, path23.original, _ast2["default"].helpers.simpleId(path23));
+          path28.strict = true;
+          path28.falsy = true;
+          this.accept(path28);
+          this.opcode("invokeHelper", params.length, path28.original, _ast2["default"].helpers.simpleId(path28));
         }
       },
-      PathExpression: function PathExpression(path23) {
-        this.addDepth(path23.depth);
-        this.opcode("getContext", path23.depth);
-        var name28 = path23.parts[0], scoped = _ast2["default"].helpers.scopedId(path23), blockParamId = !path23.depth && !scoped && this.blockParamIndex(name28);
+      PathExpression: function PathExpression(path28) {
+        this.addDepth(path28.depth);
+        this.opcode("getContext", path28.depth);
+        var name28 = path28.parts[0], scoped = _ast2["default"].helpers.scopedId(path28), blockParamId = !path28.depth && !scoped && this.blockParamIndex(name28);
         if (blockParamId) {
-          this.opcode("lookupBlockParam", blockParamId, path23.parts);
+          this.opcode("lookupBlockParam", blockParamId, path28.parts);
         } else if (!name28) {
           this.opcode("pushContext");
-        } else if (path23.data) {
+        } else if (path28.data) {
           this.options.data = true;
-          this.opcode("lookupData", path23.depth, path23.parts, path23.strict);
+          this.opcode("lookupData", path28.depth, path28.parts, path28.strict);
         } else {
-          this.opcode("lookupOnContext", path23.parts, path23.falsy, path23.strict, scoped);
+          this.opcode("lookupOnContext", path28.parts, path28.falsy, path28.strict, scoped);
         }
       },
       StringLiteral: function StringLiteral(string5) {
@@ -78165,16 +77612,16 @@ var require_util3 = __commonJS({
     }
     exports2.urlGenerate = urlGenerate;
     function normalize(aPath) {
-      var path23 = aPath;
+      var path28 = aPath;
       var url4 = urlParse(aPath);
       if (url4) {
         if (!url4.path) {
           return aPath;
         }
-        path23 = url4.path;
+        path28 = url4.path;
       }
-      var isAbsolute = exports2.isAbsolute(path23);
-      var parts = path23.split(/\/+/);
+      var isAbsolute = exports2.isAbsolute(path28);
+      var parts = path28.split(/\/+/);
       for (var part, up = 0, i = parts.length - 1; i >= 0; i--) {
         part = parts[i];
         if (part === ".") {
@@ -78191,15 +77638,15 @@ var require_util3 = __commonJS({
           }
         }
       }
-      path23 = parts.join("/");
-      if (path23 === "") {
-        path23 = isAbsolute ? "/" : ".";
+      path28 = parts.join("/");
+      if (path28 === "") {
+        path28 = isAbsolute ? "/" : ".";
       }
       if (url4) {
-        url4.path = path23;
+        url4.path = path28;
         return urlGenerate(url4);
       }
-      return path23;
+      return path28;
     }
     exports2.normalize = normalize;
     function join2(aRoot, aPath) {
@@ -80990,8 +80437,8 @@ var require_printer = __commonJS({
       return this.accept(sexpr.path) + " " + params + hash3;
     };
     PrintVisitor.prototype.PathExpression = function(id) {
-      var path23 = id.parts.join("/");
-      return (id.data ? "@" : "") + "PATH:" + path23;
+      var path28 = id.parts.join("/");
+      return (id.data ? "@" : "") + "PATH:" + path28;
     };
     PrintVisitor.prototype.StringLiteral = function(string5) {
       return '"' + string5.value + '"';
@@ -81031,8 +80478,8 @@ var require_lib2 = __commonJS({
     handlebars.print = printer.print;
     module2.exports = handlebars;
     function extension(module3, filename) {
-      var fs19 = require("fs");
-      var templateString = fs19.readFileSync(filename, "utf8");
+      var fs24 = require("fs");
+      var templateString = fs24.readFileSync(filename, "utf8");
       module3.exports = handlebars.compile(templateString);
     }
     if (typeof require !== "undefined" && require.extensions) {
@@ -81044,7 +80491,7 @@ var require_lib2 = __commonJS({
 
 // node_modules/@rmp135/sql-ts/dist/DatabaseTasks.js
 function convertDatabaseToTypescript(database, config3) {
-  const templateString = fs8.readFileSync(config3.template, "utf-8");
+  const templateString = fs9.readFileSync(config3.template, "utf-8");
   const compiler = import_handlebars.default.compile(templateString, { noEscape: true });
   import_handlebars.default.registerHelper("handleNumeric", handleNumeric);
   return compiler({
@@ -81070,14 +80517,14 @@ async function generateDatabase(config3, db2) {
   };
   return database;
 }
-var import_handlebars, fs8;
+var import_handlebars, fs9;
 var init_DatabaseTasks = __esm({
   "node_modules/@rmp135/sql-ts/dist/DatabaseTasks.js"() {
     "use strict";
     init_TableTasks();
     init_EnumTasks();
     import_handlebars = __toESM(require_lib2(), 1);
-    fs8 = __toESM(require("fs"), 1);
+    fs9 = __toESM(require("fs"), 1);
   }
 });
 
@@ -81224,7 +80671,7 @@ function runtimeRole() {
   return process.env.TOONFLOW_RUNTIME_ROLE || "main";
 }
 function busyTimeoutMs() {
-  if (runtimeRole() === "api") return 500;
+  if (runtimeRole() === "api") return 5e3;
   if (runtimeRole() === "worker") return 5e3;
   return 2e3;
 }
@@ -81280,7 +80727,7 @@ ${customHeader}
   }
   if (needWrite) await (0, import_promises6.writeFile)(outFile, content, "utf8");
 }
-var import_promises6, import_fs3, import_path3, import_knex3, import_crypto, queryStartedAt, dbDiagnostics, dbPath, dbDir, splitStorage, profilePath, profileDb, db, dbReady, dbClient, rawTransaction, db_default;
+var import_promises6, import_fs3, import_path3, import_knex3, import_crypto, queryStartedAt, dbDiagnostics, dbLog, dbPath, dbDir, splitStorage, profilePath, profileDb, db, dbReady, dbClient, rawTransaction, db_default;
 var init_db = __esm({
   "src/utils/db.ts"() {
     "use strict";
@@ -81292,6 +80739,7 @@ var init_db = __esm({
     import_crypto = __toESM(require("crypto"));
     init_fixDB();
     init_storagePaths();
+    init_logger();
     queryStartedAt = /* @__PURE__ */ new Map();
     dbDiagnostics = {
       queryCount: 0,
@@ -81303,8 +80751,9 @@ var init_db = __esm({
       slowTransactions: 0,
       recentSlowQueries: []
     };
+    dbLog = createLogger("db");
     dbPath = workspaceDatabasePath();
-    console.log("\u6570\u636E\u5E93\u76EE\u5F55:", dbPath);
+    dbLog.info("Database path resolved", { event: "db.path", path: dbPath });
     dbDir = import_path3.default.dirname(dbPath);
     splitStorage = storageMode() === "workspace";
     profilePath = profileDatabasePath();
@@ -81375,13 +80824,26 @@ var init_db = __esm({
           at: Date.now()
         });
         dbDiagnostics.recentSlowQueries.splice(0, Math.max(0, dbDiagnostics.recentSlowQueries.length - 50));
-        console.warn(`[db:${runtimeRole()}] slow query ${durationMs.toFixed(1)}ms: ${summarizeSql(query?.sql)}`);
+        dbLog.warn("Slow database query", {
+          event: "db.slow-query",
+          durationMs: Number(durationMs.toFixed(2)),
+          sql: summarizeSql(query?.sql),
+          role: runtimeRole()
+        });
       }
     });
     db.on("query-error", (error50, query) => {
       const key = queryKey(query);
       if (key) queryStartedAt.delete(key);
-      if (String(error50?.code || error50?.message).includes("SQLITE_BUSY")) dbDiagnostics.busyCount += 1;
+      if (String(error50?.code || error50?.message).includes("SQLITE_BUSY")) {
+        dbDiagnostics.busyCount += 1;
+        dbLog.warn("SQLite busy", {
+          event: "db.sqlite-busy",
+          sql: summarizeSql(query?.sql),
+          role: runtimeRole(),
+          error: error50
+        });
+      }
     });
     dbReady = process.env.TOONFLOW_SKIP_DB_INIT === "1" ? Promise.resolve() : (async () => {
       if (profileDb) await initDB_default(profileDb, false, { includeTables: PROFILE_TABLES });
@@ -81402,7 +80864,11 @@ var init_db = __esm({
         dbDiagnostics.transactionTotalMs += durationMs;
         if (durationMs >= 100) {
           dbDiagnostics.slowTransactions += 1;
-          console.warn(`[db:${runtimeRole()}] slow transaction ${durationMs.toFixed(1)}ms`);
+          dbLog.warn("Slow database transaction", {
+            event: "db.slow-transaction",
+            durationMs: Number(durationMs.toFixed(2)),
+            role: runtimeRole()
+          });
         }
       }
     };
@@ -81417,7 +80883,7 @@ var init_db = __esm({
 // src/utils/oss.ts
 function normalizeUserPath(userPath) {
   const trimmedPath = userPath.replace(/^[/\\]+/, "");
-  return trimmedPath.split("/").join(import_node_path8.default.sep);
+  return trimmedPath.split("/").join(import_node_path9.default.sep);
 }
 function resolveSafeLocalPath(userPath, _rootDir) {
   const absPath = resolveMediaFilePath(normalizeUserPath(userPath));
@@ -81426,14 +80892,14 @@ function resolveSafeLocalPath(userPath, _rootDir) {
   }
   return absPath;
 }
-var import_promises7, import_node_fs, import_node_path8, import_promises8, OSS, oss_default;
+var import_promises7, import_node_fs2, import_node_path9, import_promises8, OSS, oss_default;
 var init_oss = __esm({
   "src/utils/oss.ts"() {
     "use strict";
     init_getPath();
     import_promises7 = __toESM(require("node:fs/promises"));
-    import_node_fs = __toESM(require("node:fs"));
-    import_node_path8 = __toESM(require("node:path"));
+    import_node_fs2 = __toESM(require("node:fs"));
+    import_node_path9 = __toESM(require("node:path"));
     import_promises8 = require("node:stream/promises");
     init_runtimeProtocol();
     init_storagePaths();
@@ -81462,7 +80928,7 @@ var init_oss = __esm({
         await this.ensureInit();
         const safePath = normalizeUserPath(userRelPath);
         const url4 = `http://${RUNTIME_API_HOST}:${RUNTIME_API_PORT}/${prefix}/`;
-        return `${url4}${safePath.split(import_node_path8.default.sep).join("/")}`;
+        return `${url4}${safePath.split(import_node_path9.default.sep).join("/")}`;
       }
       /**
        * 读取指定路径的文件内容为 Buffer。
@@ -81493,14 +80959,14 @@ var init_oss = __esm({
         const sourceStat = await import_promises7.default.stat(sourcePath);
         if (!sourceStat.isFile()) throw new Error(`\u751F\u6210\u7ED3\u679C\u4E0D\u662F\u6709\u6548\u6587\u4EF6: ${sourcePath}`);
         const targetPath = resolveSafeLocalPath(userRelPath, this.rootDir);
-        await import_promises7.default.mkdir(import_node_path8.default.dirname(targetPath), { recursive: true });
+        await import_promises7.default.mkdir(import_node_path9.default.dirname(targetPath), { recursive: true });
         await import_promises7.default.copyFile(sourcePath, targetPath);
       }
       async writeStream(userRelPath, stream4) {
         await this.ensureInit();
         const targetPath = resolveSafeLocalPath(userRelPath, this.rootDir);
-        await import_promises7.default.mkdir(import_node_path8.default.dirname(targetPath), { recursive: true });
-        await (0, import_promises8.pipeline)(stream4, import_node_fs.default.createWriteStream(targetPath));
+        await import_promises7.default.mkdir(import_node_path9.default.dirname(targetPath), { recursive: true });
+        await (0, import_promises8.pipeline)(stream4, import_node_fs2.default.createWriteStream(targetPath));
       }
       /**
        * 读取图片文件并转换为 base64 编码的 Data URL。
@@ -81515,7 +80981,7 @@ var init_oss = __esm({
         if (!stat.isFile()) {
           throw new Error(`${userRelPath} \u4E0D\u662F\u6587\u4EF6`);
         }
-        const ext = import_node_path8.default.extname(userRelPath).toLowerCase();
+        const ext = import_node_path9.default.extname(userRelPath).toLowerCase();
         const mimeTypes = {
           ".jpg": "image/jpeg",
           ".jpeg": "image/jpeg",
@@ -81578,7 +81044,7 @@ var init_oss = __esm({
       async writeFile(userRelPath, data) {
         await this.ensureInit();
         const absPath = resolveSafeLocalPath(userRelPath, this.rootDir);
-        await import_promises7.default.mkdir(import_node_path8.default.dirname(absPath), { recursive: true });
+        await import_promises7.default.mkdir(import_node_path9.default.dirname(absPath), { recursive: true });
         const buffer = typeof data === "string" ? Buffer.from(data.replace(/^data:[^;]+;base64,/, ""), "base64") : data;
         await import_promises7.default.writeFile(absPath, buffer);
       }
@@ -82664,8 +82130,8 @@ var require_combined_stream = __commonJS({
         this._pipeNext(stream4);
         return;
       }
-      var getStream = stream4;
-      getStream(function(stream5) {
+      var getStream2 = stream4;
+      getStream2(function(stream5) {
         var isStreamLike = CombinedStream.isStreamLike(stream5);
         if (isStreamLike) {
           stream5.on("data", this._checkDataSize.bind(this));
@@ -91340,11 +90806,11 @@ var require_mime_types = __commonJS({
       }
       return exts[0];
     }
-    function lookup(path23) {
-      if (!path23 || typeof path23 !== "string") {
+    function lookup(path28) {
+      if (!path28 || typeof path28 !== "string") {
         return false;
       }
-      var extension2 = extname("x." + path23).toLowerCase().substr(1);
+      var extension2 = extname("x." + path28).toLowerCase().substr(1);
       if (!extension2) {
         return false;
       }
@@ -92459,13 +91925,13 @@ var require_form_data = __commonJS({
     "use strict";
     var CombinedStream = require_combined_stream();
     var util4 = require("util");
-    var path23 = require("path");
+    var path28 = require("path");
     var http3 = require("http");
     var https2 = require("https");
     var parseUrl2 = require("url").parse;
-    var fs19 = require("fs");
+    var fs24 = require("fs");
     var Stream = require("stream").Stream;
-    var crypto7 = require("crypto");
+    var crypto9 = require("crypto");
     var mime = require_mime_types();
     var asynckit = require_asynckit();
     var setToStringTag = require_es_set_tostringtag();
@@ -92530,7 +91996,7 @@ var require_form_data = __commonJS({
         if (value.end != void 0 && value.end != Infinity && value.start != void 0) {
           callback(null, value.end + 1 - (value.start ? value.start : 0));
         } else {
-          fs19.stat(value.path, function(err, stat) {
+          fs24.stat(value.path, function(err, stat) {
             if (err) {
               callback(err);
               return;
@@ -92587,11 +92053,11 @@ var require_form_data = __commonJS({
     FormData4.prototype._getContentDisposition = function(value, options) {
       var filename;
       if (typeof options.filepath === "string") {
-        filename = path23.normalize(options.filepath).replace(/\\/g, "/");
+        filename = path28.normalize(options.filepath).replace(/\\/g, "/");
       } else if (options.filename || value && (value.name || value.path)) {
-        filename = path23.basename(options.filename || value && (value.name || value.path));
+        filename = path28.basename(options.filename || value && (value.name || value.path));
       } else if (value && value.readable && hasOwn(value, "httpVersion")) {
-        filename = path23.basename(value.client._httpMessage.path || "");
+        filename = path28.basename(value.client._httpMessage.path || "");
       }
       if (filename) {
         return 'filename="' + filename + '"';
@@ -92671,7 +92137,7 @@ var require_form_data = __commonJS({
       return Buffer.concat([dataBuffer, Buffer.from(this._lastBoundary())]);
     };
     FormData4.prototype._generateBoundary = function() {
-      this._boundary = "--------------------------" + crypto7.randomBytes(12).toString("hex");
+      this._boundary = "--------------------------" + crypto9.randomBytes(12).toString("hex");
     };
     FormData4.prototype.getLengthSync = function() {
       var knownLength = this._overheadLength + this._valueLength;
@@ -92789,9 +92255,9 @@ function isVisitable(thing) {
 function removeBrackets(key) {
   return utils_default2.endsWith(key, "[]") ? key.slice(0, -2) : key;
 }
-function renderKey(path23, key, dots) {
-  if (!path23) return key;
-  return path23.concat(key).map(function each(token, i) {
+function renderKey(path28, key, dots) {
+  if (!path28) return key;
+  return path28.concat(key).map(function each(token, i) {
     token = removeBrackets(token);
     return !dots && i ? "[" + token + "]" : token;
   }).join(dots ? "." : "");
@@ -92841,13 +92307,13 @@ function toFormData(obj, formData, options) {
     }
     return value;
   }
-  function defaultVisitor(value, key, path23) {
+  function defaultVisitor(value, key, path28) {
     let arr = value;
     if (utils_default2.isReactNative(formData) && utils_default2.isReactNativeBlob(value)) {
-      formData.append(renderKey(path23, key, dots), convertValue(value));
+      formData.append(renderKey(path28, key, dots), convertValue(value));
       return false;
     }
-    if (value && !path23 && typeof value === "object") {
+    if (value && !path28 && typeof value === "object") {
       if (utils_default2.endsWith(key, "{}")) {
         key = metaTokens ? key : key.slice(0, -2);
         value = JSON.stringify(value);
@@ -92866,7 +92332,7 @@ function toFormData(obj, formData, options) {
     if (isVisitable(value)) {
       return true;
     }
-    formData.append(renderKey(path23, key, dots), convertValue(value));
+    formData.append(renderKey(path28, key, dots), convertValue(value));
     return false;
   }
   const stack = [];
@@ -92875,16 +92341,16 @@ function toFormData(obj, formData, options) {
     convertValue,
     isVisitable
   });
-  function build(value, path23) {
+  function build(value, path28) {
     if (utils_default2.isUndefined(value)) return;
     if (stack.indexOf(value) !== -1) {
-      throw Error("Circular reference detected in " + path23.join("."));
+      throw Error("Circular reference detected in " + path28.join("."));
     }
     stack.push(value);
     utils_default2.forEach(value, function each(el, key) {
-      const result = !(utils_default2.isUndefined(el) || el === null) && visitor.call(formData, el, utils_default2.isString(key) ? key.trim() : key, path23, exposedHelpers);
+      const result = !(utils_default2.isUndefined(el) || el === null) && visitor.call(formData, el, utils_default2.isString(key) ? key.trim() : key, path28, exposedHelpers);
       if (result === true) {
-        build(el, path23 ? path23.concat(key) : [key]);
+        build(el, path28 ? path28.concat(key) : [key]);
       }
     });
     stack.pop();
@@ -93161,7 +92627,7 @@ var init_platform = __esm({
 // node_modules/axios/lib/helpers/toURLEncodedForm.js
 function toURLEncodedForm(data, options) {
   return toFormData_default(data, new platform_default.classes.URLSearchParams(), {
-    visitor: function(value, key, path23, helpers) {
+    visitor: function(value, key, path28, helpers) {
       if (platform_default.isNode && utils_default2.isBuffer(value)) {
         this.append(key, value.toString("base64"));
         return false;
@@ -93199,11 +92665,11 @@ function arrayToObject(arr) {
   return obj;
 }
 function formDataToJSON(formData) {
-  function buildPath(path23, value, target, index) {
-    let name28 = path23[index++];
+  function buildPath(path28, value, target, index) {
+    let name28 = path28[index++];
     if (name28 === "__proto__") return true;
     const isNumericKey = Number.isFinite(+name28);
-    const isLast = index >= path23.length;
+    const isLast = index >= path28.length;
     name28 = !name28 && utils_default2.isArray(target) ? target.length : name28;
     if (isLast) {
       if (utils_default2.hasOwnProp(target, name28)) {
@@ -93216,7 +92682,7 @@ function formDataToJSON(formData) {
     if (!target[name28] || !utils_default2.isObject(target[name28])) {
       target[name28] = [];
     }
-    const result = buildPath(path23, value, target[name28], index);
+    const result = buildPath(path28, value, target[name28], index);
     if (result && utils_default2.isArray(target[name28])) {
       target[name28] = arrayToObject(target[name28]);
     }
@@ -95900,9 +95366,9 @@ var init_http = __esm({
           auth = urlUsername + ":" + urlPassword;
         }
         auth && headers.delete("authorization");
-        let path23;
+        let path28;
         try {
-          path23 = buildURL(
+          path28 = buildURL(
             parsed.pathname + parsed.search,
             config3.params,
             config3.paramsSerializer
@@ -95920,7 +95386,7 @@ var init_http = __esm({
           false
         );
         const options = {
-          path: path23,
+          path: path28,
           method,
           headers: headers.toJSON(),
           agents: { http: config3.httpAgent, https: config3.httpsAgent },
@@ -96184,14 +95650,14 @@ var init_cookies = __esm({
     cookies_default = platform_default.hasStandardBrowserEnv ? (
       // Standard browser envs support document.cookie
       {
-        write(name28, value, expires, path23, domain3, secure, sameSite) {
+        write(name28, value, expires, path28, domain3, secure, sameSite) {
           if (typeof document === "undefined") return;
           const cookie = [`${name28}=${encodeURIComponent(value)}`];
           if (utils_default2.isNumber(expires)) {
             cookie.push(`expires=${new Date(expires).toUTCString()}`);
           }
-          if (utils_default2.isString(path23)) {
-            cookie.push(`path=${path23}`);
+          if (utils_default2.isString(path28)) {
+            cookie.push(`path=${path28}`);
           }
           if (utils_default2.isString(domain3)) {
             cookie.push(`domain=${domain3}`);
@@ -98487,8 +97953,8 @@ var init_parseUtil = __esm({
     init_errors3();
     init_en2();
     makeIssue = (params) => {
-      const { data, path: path23, errorMaps, issueData } = params;
-      const fullPath = [...path23, ...issueData.path || []];
+      const { data, path: path28, errorMaps, issueData } = params;
+      const fullPath = [...path28, ...issueData.path || []];
       const fullIssue = {
         ...issueData,
         path: fullPath
@@ -98651,11 +98117,11 @@ function isValidIP(ip, version3) {
   }
   return false;
 }
-function isValidJWT2(jwt5, alg) {
-  if (!jwtRegex.test(jwt5))
+function isValidJWT2(jwt6, alg) {
+  if (!jwtRegex.test(jwt6))
     return false;
   try {
-    const [header] = jwt5.split(".");
+    const [header] = jwt6.split(".");
     if (!header)
       return false;
     const base644 = header.replace(/-/g, "+").replace(/_/g, "/").padEnd(header.length + (4 - header.length % 4) % 4, "=");
@@ -98771,11 +98237,11 @@ var init_types = __esm({
     init_parseUtil();
     init_util2();
     ParseInputLazyPath = class {
-      constructor(parent, value, path23, key) {
+      constructor(parent, value, path28, key) {
         this._cachedPath = [];
         this.parent = parent;
         this.data = value;
-        this._path = path23;
+        this._path = path28;
         this._key = key;
       }
       get path() {
@@ -106078,37 +105544,37 @@ function createOpenAI(options = {}) {
   );
   const createChatModel = (modelId) => new OpenAIChatLanguageModel(modelId, {
     provider: `${providerName}.chat`,
-    url: ({ path: path23 }) => `${baseURL}${path23}`,
+    url: ({ path: path28 }) => `${baseURL}${path28}`,
     headers: getHeaders,
     fetch: options.fetch
   });
   const createCompletionModel = (modelId) => new OpenAICompletionLanguageModel(modelId, {
     provider: `${providerName}.completion`,
-    url: ({ path: path23 }) => `${baseURL}${path23}`,
+    url: ({ path: path28 }) => `${baseURL}${path28}`,
     headers: getHeaders,
     fetch: options.fetch
   });
   const createEmbeddingModel = (modelId) => new OpenAIEmbeddingModel(modelId, {
     provider: `${providerName}.embedding`,
-    url: ({ path: path23 }) => `${baseURL}${path23}`,
+    url: ({ path: path28 }) => `${baseURL}${path28}`,
     headers: getHeaders,
     fetch: options.fetch
   });
   const createImageModel = (modelId) => new OpenAIImageModel(modelId, {
     provider: `${providerName}.image`,
-    url: ({ path: path23 }) => `${baseURL}${path23}`,
+    url: ({ path: path28 }) => `${baseURL}${path28}`,
     headers: getHeaders,
     fetch: options.fetch
   });
   const createTranscriptionModel = (modelId) => new OpenAITranscriptionModel(modelId, {
     provider: `${providerName}.transcription`,
-    url: ({ path: path23 }) => `${baseURL}${path23}`,
+    url: ({ path: path28 }) => `${baseURL}${path28}`,
     headers: getHeaders,
     fetch: options.fetch
   });
   const createSpeechModel = (modelId) => new OpenAISpeechModel(modelId, {
     provider: `${providerName}.speech`,
-    url: ({ path: path23 }) => `${baseURL}${path23}`,
+    url: ({ path: path28 }) => `${baseURL}${path28}`,
     headers: getHeaders,
     fetch: options.fetch
   });
@@ -106123,7 +105589,7 @@ function createOpenAI(options = {}) {
   const createResponsesModel = (modelId) => {
     return new OpenAIResponsesLanguageModel(modelId, {
       provider: `${providerName}.responses`,
-      url: ({ path: path23 }) => `${baseURL}${path23}`,
+      url: ({ path: path28 }) => `${baseURL}${path28}`,
       headers: getHeaders,
       fetch: options.fetch,
       fileIdPrefixes: ["file-"]
@@ -111466,7 +110932,7 @@ function createDeepSeek(options = {}) {
   const createLanguageModel = (modelId) => {
     return new DeepSeekChatLanguageModel(modelId, {
       provider: `deepseek.chat`,
-      url: ({ path: path23 }) => `${baseURL}${path23}`,
+      url: ({ path: path28 }) => `${baseURL}${path28}`,
       headers: getHeaders,
       fetch: options.fetch
     });
@@ -112984,10 +112450,10 @@ function mergeDefs2(...defs) {
 function cloneDef2(schema) {
   return mergeDefs2(schema._zod.def);
 }
-function getElementAtPath2(obj, path23) {
-  if (!path23)
+function getElementAtPath2(obj, path28) {
+  if (!path28)
     return obj;
-  return path23.reduce((acc, key) => acc == null ? void 0 : acc[key], obj);
+  return path28.reduce((acc, key) => acc == null ? void 0 : acc[key], obj);
 }
 function promiseAllObject2(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -113300,12 +112766,12 @@ function aborted2(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues2(path23, issues) {
+function prefixIssues2(path28, issues) {
   return issues.map((iss) => {
     var _a47;
     var _a37;
     (_a47 = (_a37 = iss).path) != null ? _a47 : _a37.path = [];
-    iss.path.unshift(path23);
+    iss.path.unshift(path28);
     return iss;
   });
 }
@@ -113465,7 +112931,7 @@ function formatError2(error482, mapper = (issue22) => issue22.message) {
 }
 function treeifyError2(error482, mapper = (issue22) => issue22.message) {
   const result = { errors: [] };
-  const processError = (error492, path23 = []) => {
+  const processError = (error492, path28 = []) => {
     var _a47, _b27, _c, _d;
     var _a37, _b28;
     for (const issue22 of error492.issues) {
@@ -113476,7 +112942,7 @@ function treeifyError2(error482, mapper = (issue22) => issue22.message) {
       } else if (issue22.code === "invalid_element") {
         processError({ issues: issue22.issues }, issue22.path);
       } else {
-        const fullpath = [...path23, ...issue22.path];
+        const fullpath = [...path28, ...issue22.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue22));
           continue;
@@ -113508,8 +112974,8 @@ function treeifyError2(error482, mapper = (issue22) => issue22.message) {
 }
 function toDotPath2(_path) {
   const segs = [];
-  const path23 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path23) {
+  const path28 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path28) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -116129,13 +115595,13 @@ function resolveRef2(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path23 = ref.slice(1).split("/").filter(Boolean);
-  if (path23.length === 0) {
+  const path28 = ref.slice(1).split("/").filter(Boolean);
+  if (path28.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path23[0] === defsKey) {
-    const key = path23[1];
+  if (path28[0] === defsKey) {
+    const key = path28[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -116700,7 +116166,7 @@ function createZhipu(options = {}) {
   });
   const createImageModel = (modelId) => new ZhipuImageModel(modelId, {
     provider: "zhipu.image",
-    url: ({ path: path23 }) => `${baseURL}${path23}`,
+    url: ({ path: path28 }) => `${baseURL}${path28}`,
     headers: getHeaders,
     fetch: options.fetch,
     _internal: {
@@ -128237,10 +127703,10 @@ var require_util4 = __commonJS({
     function cloneDef3(schema) {
       return mergeDefs3(schema._zod.def);
     }
-    function getElementAtPath3(obj, path23) {
-      if (!path23)
+    function getElementAtPath3(obj, path28) {
+      if (!path28)
         return obj;
-      return path23.reduce((acc, key) => acc?.[key], obj);
+      return path28.reduce((acc, key) => acc?.[key], obj);
     }
     function promiseAllObject3(promisesObj) {
       const keys2 = Object.keys(promisesObj);
@@ -128624,11 +128090,11 @@ var require_util4 = __commonJS({
       }
       return false;
     }
-    function prefixIssues3(path23, issues) {
+    function prefixIssues3(path28, issues) {
       return issues.map((iss) => {
         var _a31;
         (_a31 = iss).path ?? (_a31.path = []);
-        iss.path.unshift(path23);
+        iss.path.unshift(path28);
         return iss;
       });
     }
@@ -128853,7 +128319,7 @@ var require_errors = __commonJS({
     }
     function treeifyError3(error50, mapper = (issue3) => issue3.message) {
       const result = { errors: [] };
-      const processError = (error51, path23 = []) => {
+      const processError = (error51, path28 = []) => {
         var _a31, _b27;
         for (const issue3 of error51.issues) {
           if (issue3.code === "invalid_union" && issue3.errors.length) {
@@ -128863,7 +128329,7 @@ var require_errors = __commonJS({
           } else if (issue3.code === "invalid_element") {
             processError({ issues: issue3.issues }, issue3.path);
           } else {
-            const fullpath = [...path23, ...issue3.path];
+            const fullpath = [...path28, ...issue3.path];
             if (fullpath.length === 0) {
               result.errors.push(mapper(issue3));
               continue;
@@ -128895,8 +128361,8 @@ var require_errors = __commonJS({
     }
     function toDotPath3(_path) {
       const segs = [];
-      const path23 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-      for (const seg of path23) {
+      const path28 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+      for (const seg of path28) {
         if (typeof seg === "number")
           segs.push(`[${seg}]`);
         else if (typeof seg === "symbol")
@@ -142039,7 +141505,7 @@ var require_schemas2 = __commonJS({
     exports2.base64 = base644;
     exports2.base64url = base64url4;
     exports2.e164 = e1644;
-    exports2.jwt = jwt5;
+    exports2.jwt = jwt6;
     exports2.stringFormat = stringFormat3;
     exports2.hostname = hostname4;
     exports2.hex = hex4;
@@ -142414,7 +141880,7 @@ var require_schemas2 = __commonJS({
       core.$ZodJWT.init(inst, def);
       exports2.ZodStringFormat.init(inst, def);
     });
-    function jwt5(params) {
+    function jwt6(params) {
       return core._jwt(exports2.ZodJWT, params);
     }
     exports2.ZodCustomStringFormat = core.$constructor("ZodCustomStringFormat", (inst, def) => {
@@ -143397,13 +142863,13 @@ var require_from_json_schema = __commonJS({
       if (!ref.startsWith("#")) {
         throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
       }
-      const path23 = ref.slice(1).split("/").filter(Boolean);
-      if (path23.length === 0) {
+      const path28 = ref.slice(1).split("/").filter(Boolean);
+      if (path28.length === 0) {
         return ctx.rootSchema;
       }
       const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-      if (path23[0] === defsKey) {
-        const key = path23[1];
+      if (path28[0] === defsKey) {
+        const key = path28[1];
         if (!key || !ctx.defs[key]) {
           throw new Error(`Reference not found: ${ref}`);
         }
@@ -144448,8 +143914,8 @@ var require_parseUtil = __commonJS({
     var errors_js_1 = require_errors3();
     var en_js_1 = __importDefault(require_en2());
     var makeIssue2 = (params) => {
-      const { data, path: path23, errorMaps, issueData } = params;
-      const fullPath = [...path23, ...issueData.path || []];
+      const { data, path: path28, errorMaps, issueData } = params;
+      const fullPath = [...path28, ...issueData.path || []];
       const fullIssue = {
         ...issueData,
         path: fullPath
@@ -144603,11 +144069,11 @@ var require_types4 = __commonJS({
     var parseUtil_js_1 = require_parseUtil();
     var util_js_1 = require_util5();
     var ParseInputLazyPath2 = class {
-      constructor(parent, value, path23, key) {
+      constructor(parent, value, path28, key) {
         this._cachedPath = [];
         this.parent = parent;
         this.data = value;
-        this._path = path23;
+        this._path = path28;
         this._key = key;
       }
       get path() {
@@ -144998,11 +144464,11 @@ var require_types4 = __commonJS({
       }
       return false;
     }
-    function isValidJWT4(jwt5, alg) {
-      if (!jwtRegex2.test(jwt5))
+    function isValidJWT4(jwt6, alg) {
+      if (!jwtRegex2.test(jwt6))
         return false;
       try {
-        const [header] = jwt5.split(".");
+        const [header] = jwt6.split(".");
         if (!header)
           return false;
         const base644 = header.replace(/-/g, "+").replace(/_/g, "/").padEnd(header.length + (4 - header.length % 4) % 4, "=");
@@ -151227,13 +150693,13 @@ var require_dist6 = __commonJS({
       };
     }
     var import_provider_utils210 = require_dist5();
-    var import_zod10 = require_zod();
-    var qwenErrorDataSchema = import_zod10.z.object({
-      object: import_zod10.z.literal("error"),
-      message: import_zod10.z.string(),
-      type: import_zod10.z.string(),
-      param: import_zod10.z.string().nullable(),
-      code: import_zod10.z.string().nullable()
+    var import_zod12 = require_zod();
+    var qwenErrorDataSchema = import_zod12.z.object({
+      object: import_zod12.z.literal("error"),
+      message: import_zod12.z.string(),
+      type: import_zod12.z.string(),
+      param: import_zod12.z.string().nullable(),
+      code: import_zod12.z.string().nullable()
     });
     var qwenFailedResponseHandler = (0, import_provider_utils210.createJsonErrorResponseHandler)({
       errorSchema: qwenErrorDataSchema,
@@ -152602,8 +152068,8 @@ ${user}:`]
       });
       const getCommonModelConfig = (modelType) => ({
         provider: `qwen.${modelType}`,
-        url: ({ path: path23 }) => {
-          const url4 = new URL(`${baseURL}${path23}`);
+        url: ({ path: path28 }) => {
+          const url4 = new URL(`${baseURL}${path28}`);
           if (options.queryParams) {
             url4.search = new URLSearchParams(options.queryParams).toString();
           }
@@ -160669,8 +160135,8 @@ function createOpenAICompatible(options) {
   const getHeaders = () => withUserAgentSuffix(headers, `ai-sdk/openai-compatible/${VERSION9}`);
   const getCommonModelConfig = (modelType) => ({
     provider: `${providerName}.${modelType}`,
-    url: ({ path: path23 }) => {
-      const url4 = new URL(`${baseURL}${path23}`);
+    url: ({ path: path28 }) => {
+      const url4 = new URL(`${baseURL}${path28}`);
       if (options.queryParams) {
         url4.search = new URLSearchParams(options.queryParams).toString();
       }
@@ -173254,7 +172720,7 @@ function createMinimax(options = {}) {
   const createLanguageModel = (modelId) => {
     return new MinimaxChatLanguageModel(modelId, {
       provider: `minimax.chat`,
-      url: ({ path: path23 }) => `${baseURL}${path23}`,
+      url: ({ path: path28 }) => `${baseURL}${path28}`,
       headers: getHeaders,
       fetch: options.fetch
     });
@@ -173868,7 +173334,7 @@ function runCode(code, vendor) {
     exports: exports2,
     axios: axios_default,
     FormData: import_form_data2.default,
-    logger,
+    logger: logger2,
     jsonwebtoken: import_jsonwebtoken.default,
     crypto: import_node_crypto4.default,
     dreaminaCli: utils_default.dreaminaCli
@@ -173886,7 +173352,7 @@ function runCode(code, vendor) {
   vm.run(code);
   return exports2;
 }
-function logger(logstring) {
+function logger2(logstring) {
   console.log("\u3010VM\u3011" + JSON.stringify(logstring));
 }
 async function zipImage(completeBase64, size) {
@@ -174029,17 +173495,17 @@ function replaceUrl(url4) {
   } catch (e) {
     cleanedPath = url4;
   }
-  const normalized = import_node_path9.default.posix.normalize(cleanedPath);
+  const normalized = import_node_path10.default.posix.normalize(cleanedPath);
   if (normalized.startsWith("../") || normalized === "..") {
     return "";
   }
   return normalized.replace(/^\/+/, "");
 }
-var import_node_path9;
+var import_node_path10;
 var init_replaceUrl = __esm({
   "src/utils/replaceUrl.ts"() {
     "use strict";
-    import_node_path9 = __toESM(require("node:path"));
+    import_node_path10 = __toESM(require("node:path"));
   }
 });
 
@@ -174062,17 +173528,17 @@ function normalizeMediaPath(input) {
   return replaceUrl(withoutQuery).replace(/\\/g, "/").replace(/^\/?(oss|smallImage)\//i, "");
 }
 function inferMediaType(input) {
-  const ext = import_node_path10.default.extname(normalizeMediaPath(input)).toLowerCase();
+  const ext = import_node_path11.default.extname(normalizeMediaPath(input)).toLowerCase();
   if (IMAGE_EXT.has(ext)) return "image";
   if (VIDEO_EXT.has(ext)) return "video";
   if (AUDIO_EXT.has(ext)) return "audio";
   return "file";
 }
 function mediaMime(input) {
-  return MIME_BY_EXT[import_node_path10.default.extname(normalizeMediaPath(input)).toLowerCase()];
+  return MIME_BY_EXT[import_node_path11.default.extname(normalizeMediaPath(input)).toLowerCase()];
 }
 function publicFileUrl(userRelPath, prefix = "oss") {
-  const safePath = normalizeMediaPath(userRelPath).split(import_node_path10.default.sep).join("/");
+  const safePath = normalizeMediaPath(userRelPath).split(import_node_path11.default.sep).join("/");
   const base = `http://${RUNTIME_API_HOST}:${RUNTIME_API_PORT}/${prefix}/`;
   return `${base}${safePath}`;
 }
@@ -174087,7 +173553,7 @@ function isMediaLike(input) {
   if (lower.includes("/smallimage/") || lower.startsWith("smallimage/")) return true;
   if (/^https?:\/\/[^/]+\/(oss|assets|skills)\//i.test(value)) return true;
   if (/^\/?(oss|assets|skills)\//i.test(value)) return true;
-  const ext = import_node_path10.default.extname(lower);
+  const ext = import_node_path11.default.extname(lower);
   return IMAGE_EXT.has(ext) || VIDEO_EXT.has(ext) || AUDIO_EXT.has(ext);
 }
 async function toMediaRef(input, options = {}) {
@@ -174228,11 +173694,11 @@ function normalizeTaskResultSync(value) {
   }
   return result;
 }
-var import_node_path10, IMAGE_EXT, VIDEO_EXT, AUDIO_EXT, MIME_BY_EXT;
+var import_node_path11, IMAGE_EXT, VIDEO_EXT, AUDIO_EXT, MIME_BY_EXT;
 var init_mediaRef = __esm({
   "src/services/mediaRef.ts"() {
     "use strict";
-    import_node_path10 = __toESM(require("node:path"));
+    import_node_path11 = __toESM(require("node:path"));
     init_oss();
     init_replaceUrl();
     init_runtimeProtocol();
@@ -174340,6 +173806,16 @@ async function createUnifiedTask(input, database = db_default) {
     const id = Number(rawId);
     const task = await trx("o_tasks").where("id", id).first();
     const [eventId] = await trx("o_taskEvent").insert(taskEventRow(task, resultJson));
+    taskLog.info("Unified task created", {
+      event: "task.created",
+      taskId,
+      businessId: id,
+      projectId: input.projectId,
+      scriptId: input.scriptId,
+      taskType: input.taskType,
+      status: status2,
+      handler: input.handler
+    });
     return { id, legacyTaskId: id, taskId, eventId: Number(eventId), status: status2 };
   });
 }
@@ -174351,9 +173827,9 @@ async function updateUnifiedTask(taskIdOrLegacyId, patch, database = db_default)
     if (!current) return null;
     const terminal = patch.status && ["completed", "failed", "cancelled"].includes(patch.status);
     const resultJson = patch.result === void 0 ? current.resultJson : compactJson(patch.result);
-    const nextVersion = Number(current.version || 0) + 1;
+    const nextVersion2 = Number(current.version || 0) + 1;
     const update = {
-      version: nextVersion,
+      version: nextVersion2,
       updateTime: now2,
       resultJson
     };
@@ -174374,10 +173850,22 @@ async function updateUnifiedTask(taskIdOrLegacyId, patch, database = db_default)
     await trx("o_tasks").where("id", current.id).update(update);
     const task = { ...current, ...update };
     const [eventId] = await trx("o_taskEvent").insert(taskEventRow(task, resultJson, patch.reason));
-    return { eventId: Number(eventId), taskId: task.taskId, version: nextVersion, status: task.status };
+    taskLog.info("Unified task updated", {
+      event: "task.updated",
+      taskId: task.taskId,
+      businessId: task.id,
+      projectId: task.projectId,
+      scriptId: task.scriptId,
+      taskType: task.taskType,
+      status: task.status,
+      phase: task.phase,
+      progress: task.progress,
+      reason: patch.reason
+    });
+    return { eventId: Number(eventId), taskId: task.taskId, version: nextVersion2, status: task.status };
   });
 }
-var import_node_crypto5;
+var import_node_crypto5, taskLog;
 var init_taskCoordinator = __esm({
   "src/services/taskCoordinator.ts"() {
     "use strict";
@@ -174385,6 +173873,8 @@ var init_taskCoordinator = __esm({
     init_db();
     init_taskStatus();
     init_mediaRef();
+    init_logger();
+    taskLog = createLogger("task");
   }
 });
 
@@ -174546,19 +174036,19 @@ var require_token_io = __commonJS({
       getUserDataDir: () => getUserDataDir
     });
     module2.exports = __toCommonJS2(token_io_exports);
-    var import_path11 = __toESM2(require("path"));
-    var import_fs8 = __toESM2(require("fs"));
+    var import_path13 = __toESM2(require("path"));
+    var import_fs10 = __toESM2(require("fs"));
     var import_os = __toESM2(require("os"));
     var import_token_error = require_token_error();
     function findRootDir() {
       try {
         let dir = process.cwd();
-        while (dir !== import_path11.default.dirname(dir)) {
-          const pkgPath = import_path11.default.join(dir, ".vercel");
-          if (import_fs8.default.existsSync(pkgPath)) {
+        while (dir !== import_path13.default.dirname(dir)) {
+          const pkgPath = import_path13.default.join(dir, ".vercel");
+          if (import_fs10.default.existsSync(pkgPath)) {
             return dir;
           }
-          dir = import_path11.default.dirname(dir);
+          dir = import_path13.default.dirname(dir);
         }
       } catch (e) {
         throw new import_token_error.VercelOidcTokenError(
@@ -174573,9 +174063,9 @@ var require_token_io = __commonJS({
       }
       switch (import_os.default.platform()) {
         case "darwin":
-          return import_path11.default.join(import_os.default.homedir(), "Library/Application Support");
+          return import_path13.default.join(import_os.default.homedir(), "Library/Application Support");
         case "linux":
-          return import_path11.default.join(import_os.default.homedir(), ".local/share");
+          return import_path13.default.join(import_os.default.homedir(), ".local/share");
         case "win32":
           if (process.env.LOCALAPPDATA) {
             return process.env.LOCALAPPDATA;
@@ -174626,8 +174116,8 @@ var require_auth_config = __commonJS({
       writeAuthConfig: () => writeAuthConfig
     });
     module2.exports = __toCommonJS2(auth_config_exports);
-    var fs19 = __toESM2(require("fs"));
-    var path23 = __toESM2(require("path"));
+    var fs24 = __toESM2(require("fs"));
+    var path28 = __toESM2(require("path"));
     var import_token_util = require_token_util();
     function getAuthConfigPath() {
       const dataDir = (0, import_token_util.getVercelDataDir)();
@@ -174636,15 +174126,15 @@ var require_auth_config = __commonJS({
           `Unable to find Vercel CLI data directory. Your platform: ${process.platform}. Supported: darwin, linux, win32.`
         );
       }
-      return path23.join(dataDir, "auth.json");
+      return path28.join(dataDir, "auth.json");
     }
     function readAuthConfig() {
       try {
         const authPath = getAuthConfigPath();
-        if (!fs19.existsSync(authPath)) {
+        if (!fs24.existsSync(authPath)) {
           return null;
         }
-        const content = fs19.readFileSync(authPath, "utf8");
+        const content = fs24.readFileSync(authPath, "utf8");
         if (!content) {
           return null;
         }
@@ -174655,11 +174145,11 @@ var require_auth_config = __commonJS({
     }
     function writeAuthConfig(config3) {
       const authPath = getAuthConfigPath();
-      const authDir = path23.dirname(authPath);
-      if (!fs19.existsSync(authDir)) {
-        fs19.mkdirSync(authDir, { mode: 504, recursive: true });
+      const authDir = path28.dirname(authPath);
+      if (!fs24.existsSync(authDir)) {
+        fs24.mkdirSync(authDir, { mode: 504, recursive: true });
       }
-      fs19.writeFileSync(authPath, JSON.stringify(config3, null, 2), { mode: 384 });
+      fs24.writeFileSync(authPath, JSON.stringify(config3, null, 2), { mode: 384 });
     }
     function isValidAccessToken(authConfig) {
       if (!authConfig.token)
@@ -174805,8 +174295,8 @@ var require_token_util = __commonJS({
       saveToken: () => saveToken
     });
     module2.exports = __toCommonJS2(token_util_exports);
-    var path23 = __toESM2(require("path"));
-    var fs19 = __toESM2(require("fs"));
+    var path28 = __toESM2(require("path"));
+    var fs24 = __toESM2(require("fs"));
     var import_token_error = require_token_error();
     var import_token_io = require_token_io();
     var import_auth_config = require_auth_config();
@@ -174817,7 +174307,7 @@ var require_token_util = __commonJS({
       if (!dataDir) {
         return null;
       }
-      return path23.join(dataDir, vercelFolder);
+      return path28.join(dataDir, vercelFolder);
     }
     async function getVercelCliToken() {
       const authConfig = (0, import_auth_config.readAuthConfig)();
@@ -174890,13 +174380,13 @@ var require_token_util = __commonJS({
           "Unable to find project root directory. Have you linked your project with `vc link?`"
         );
       }
-      const prjPath = path23.join(dir, ".vercel", "project.json");
-      if (!fs19.existsSync(prjPath)) {
+      const prjPath = path28.join(dir, ".vercel", "project.json");
+      if (!fs24.existsSync(prjPath)) {
         throw new import_token_error.VercelOidcTokenError(
           "project.json not found, have you linked your project with `vc link?`"
         );
       }
-      const prj = JSON.parse(fs19.readFileSync(prjPath, "utf8"));
+      const prj = JSON.parse(fs24.readFileSync(prjPath, "utf8"));
       if (typeof prj.projectId !== "string" && typeof prj.orgId !== "string") {
         throw new TypeError(
           "Expected a string-valued projectId property. Try running `vc link` to re-link your project."
@@ -174911,11 +174401,11 @@ var require_token_util = __commonJS({
           "Unable to find user data directory. Please reach out to Vercel support."
         );
       }
-      const tokenPath = path23.join(dir, "com.vercel.token", `${projectId}.json`);
+      const tokenPath = path28.join(dir, "com.vercel.token", `${projectId}.json`);
       const tokenJson = JSON.stringify(token);
-      fs19.mkdirSync(path23.dirname(tokenPath), { mode: 504, recursive: true });
-      fs19.writeFileSync(tokenPath, tokenJson);
-      fs19.chmodSync(tokenPath, 432);
+      fs24.mkdirSync(path28.dirname(tokenPath), { mode: 504, recursive: true });
+      fs24.writeFileSync(tokenPath, tokenJson);
+      fs24.chmodSync(tokenPath, 432);
       return;
     }
     function loadToken(projectId) {
@@ -174925,11 +174415,11 @@ var require_token_util = __commonJS({
           "Unable to find user data directory. Please reach out to Vercel support."
         );
       }
-      const tokenPath = path23.join(dir, "com.vercel.token", `${projectId}.json`);
-      if (!fs19.existsSync(tokenPath)) {
+      const tokenPath = path28.join(dir, "com.vercel.token", `${projectId}.json`);
+      if (!fs24.existsSync(tokenPath)) {
         return null;
       }
-      const token = JSON.parse(fs19.readFileSync(tokenPath, "utf8"));
+      const token = JSON.parse(fs24.readFileSync(tokenPath, "utf8"));
       assertVercelOidcTokenResponse(token);
       return token;
     }
@@ -176893,12 +176383,12 @@ var init_global_utils = __esm({
 
 // node_modules/@opentelemetry/api/build/esm/diag/ComponentLogger.js
 function logProxy(funcName, namespace, args) {
-  var logger2 = getGlobal2("diag");
-  if (!logger2) {
+  var logger3 = getGlobal2("diag");
+  if (!logger3) {
     return;
   }
   args.unshift(namespace);
-  return logger2[funcName].apply(logger2, __spreadArray([], __read(args), false));
+  return logger3[funcName].apply(logger3, __spreadArray([], __read(args), false));
 }
 var __read, __spreadArray, DiagComponentLogger;
 var init_ComponentLogger = __esm({
@@ -176994,17 +176484,17 @@ var init_types2 = __esm({
 });
 
 // node_modules/@opentelemetry/api/build/esm/diag/internal/logLevelLogger.js
-function createLogLevelDiagLogger(maxLevel, logger2) {
+function createLogLevelDiagLogger(maxLevel, logger3) {
   if (maxLevel < DiagLogLevel.NONE) {
     maxLevel = DiagLogLevel.NONE;
   } else if (maxLevel > DiagLogLevel.ALL) {
     maxLevel = DiagLogLevel.ALL;
   }
-  logger2 = logger2 || {};
+  logger3 = logger3 || {};
   function _filterFunc(funcName, theLevel) {
-    var theFunc = logger2[funcName];
+    var theFunc = logger3[funcName];
     if (typeof theFunc === "function" && maxLevel >= theLevel) {
-      return theFunc.bind(logger2);
+      return theFunc.bind(logger3);
     }
     return function() {
     };
@@ -177069,19 +176559,19 @@ var init_diag = __esm({
             for (var _i = 0; _i < arguments.length; _i++) {
               args[_i] = arguments[_i];
             }
-            var logger2 = getGlobal2("diag");
-            if (!logger2)
+            var logger3 = getGlobal2("diag");
+            if (!logger3)
               return;
-            return logger2[funcName].apply(logger2, __spreadArray2([], __read2(args), false));
+            return logger3[funcName].apply(logger3, __spreadArray2([], __read2(args), false));
           };
         }
         var self2 = this;
-        var setLogger = function(logger2, optionsOrLogLevel) {
+        var setLogger = function(logger3, optionsOrLogLevel) {
           var _a31, _b27, _c;
           if (optionsOrLogLevel === void 0) {
             optionsOrLogLevel = { logLevel: DiagLogLevel.INFO };
           }
-          if (logger2 === self2) {
+          if (logger3 === self2) {
             var err = new Error("Cannot use diag as the logger for itself. Please use a DiagLogger implementation like ConsoleDiagLogger or a custom implementation");
             self2.error((_a31 = err.stack) !== null && _a31 !== void 0 ? _a31 : err.message);
             return false;
@@ -177092,7 +176582,7 @@ var init_diag = __esm({
             };
           }
           var oldLogger = getGlobal2("diag");
-          var newLogger = createLogLevelDiagLogger((_b27 = optionsOrLogLevel.logLevel) !== null && _b27 !== void 0 ? _b27 : DiagLogLevel.INFO, logger2);
+          var newLogger = createLogLevelDiagLogger((_b27 = optionsOrLogLevel.logLevel) !== null && _b27 !== void 0 ? _b27 : DiagLogLevel.INFO, logger3);
           if (oldLogger && !optionsOrLogLevel.suppressOverrideMessage) {
             var stack = (_c = new Error().stack) !== null && _c !== void 0 ? _c : "<failed to generate stacktrace>";
             oldLogger.warn("Current logger will be overwritten from " + stack);
@@ -182485,12 +181975,12 @@ var init_dist22 = __esm({
       if (options.warnings.length === 0) {
         return;
       }
-      const logger2 = globalThis.AI_SDK_LOG_WARNINGS;
-      if (logger2 === false) {
+      const logger3 = globalThis.AI_SDK_LOG_WARNINGS;
+      if (logger3 === false) {
         return;
       }
-      if (typeof logger2 === "function") {
-        logger2(options);
+      if (typeof logger3 === "function") {
+        logger3(options);
         return;
       }
       if (!hasLoggedBefore) {
@@ -185520,14 +185010,14 @@ var init_dist22 = __esm({
 });
 
 // node_modules/@ai-sdk/devtools/dist/index.js
-var import_node_path11, import_node_fs2, DB_DIR, DB_PATH, DEVTOOLS_PORT, notifyServer, notifyServerAsync, ensureGitignore, readDb, writeDb, dbCache, getDb, saveDb, createRun, createStep, updateStepResult, generateId5, activeSteps, signalHandlersRegistered, registerSignalHandlers, generateRunId, devToolsMiddleware;
+var import_node_path12, import_node_fs3, DB_DIR, DB_PATH, DEVTOOLS_PORT, notifyServer, notifyServerAsync, ensureGitignore, readDb, writeDb, dbCache, getDb, saveDb, createRun, createStep, updateStepResult, generateId5, activeSteps, signalHandlersRegistered, registerSignalHandlers, generateRunId, devToolsMiddleware;
 var init_dist23 = __esm({
   "node_modules/@ai-sdk/devtools/dist/index.js"() {
     "use strict";
-    import_node_path11 = __toESM(require("node:path"), 1);
-    import_node_fs2 = __toESM(require("node:fs"), 1);
-    DB_DIR = import_node_path11.default.join(process.cwd(), ".devtools");
-    DB_PATH = import_node_path11.default.join(DB_DIR, "generations.json");
+    import_node_path12 = __toESM(require("node:path"), 1);
+    import_node_fs3 = __toESM(require("node:fs"), 1);
+    DB_DIR = import_node_path12.default.join(process.cwd(), ".devtools");
+    DB_PATH = import_node_path12.default.join(DB_DIR, "generations.json");
     DEVTOOLS_PORT = process.env.AI_SDK_DEVTOOLS_PORT ? parseInt(process.env.AI_SDK_DEVTOOLS_PORT) : 4983;
     notifyServer = (event) => {
       notifyServerAsync(event);
@@ -185543,11 +185033,11 @@ var init_dist23 = __esm({
       }
     };
     ensureGitignore = () => {
-      const gitignorePath = import_node_path11.default.join(process.cwd(), ".gitignore");
-      if (!import_node_fs2.default.existsSync(gitignorePath)) {
+      const gitignorePath = import_node_path12.default.join(process.cwd(), ".gitignore");
+      if (!import_node_fs3.default.existsSync(gitignorePath)) {
         return;
       }
-      const content = import_node_fs2.default.readFileSync(gitignorePath, "utf-8");
+      const content = import_node_fs3.default.readFileSync(gitignorePath, "utf-8");
       const lines = content.split("\n");
       const alreadyIgnored = lines.some(
         (line) => line.trim() === ".devtools" || line.trim() === ".devtools/"
@@ -185557,13 +185047,13 @@ var init_dist23 = __esm({
 ` : `${content}
 .devtools
 `;
-        import_node_fs2.default.writeFileSync(gitignorePath, newContent);
+        import_node_fs3.default.writeFileSync(gitignorePath, newContent);
       }
     };
     readDb = () => {
       try {
-        if (import_node_fs2.default.existsSync(DB_PATH)) {
-          const content = import_node_fs2.default.readFileSync(DB_PATH, "utf-8");
+        if (import_node_fs3.default.existsSync(DB_PATH)) {
+          const content = import_node_fs3.default.readFileSync(DB_PATH, "utf-8");
           return JSON.parse(content);
         }
       } catch {
@@ -185571,12 +185061,12 @@ var init_dist23 = __esm({
       return { runs: [], steps: [] };
     };
     writeDb = (db2) => {
-      const isFirstRun = !import_node_fs2.default.existsSync(DB_DIR);
+      const isFirstRun = !import_node_fs3.default.existsSync(DB_DIR);
       if (isFirstRun) {
-        import_node_fs2.default.mkdirSync(DB_DIR, { recursive: true });
+        import_node_fs3.default.mkdirSync(DB_DIR, { recursive: true });
         ensureGitignore();
       }
-      import_node_fs2.default.writeFileSync(DB_PATH, JSON.stringify(db2, null, 2));
+      import_node_fs3.default.writeFileSync(DB_PATH, JSON.stringify(db2, null, 2));
     };
     dbCache = null;
     getDb = () => {
@@ -186027,7 +185517,9 @@ var init_ai = __esm({
     AiTypeValues = [
       "scriptAgent",
       "productionAgent",
+      "storyAgent",
       "universalAi",
+      "storyAgent:decisionAgent",
       "scriptAgent:decisionAgent",
       "scriptAgent:supervisionAgent",
       "scriptAgent:storySkeletonAgent",
@@ -186106,8 +185598,8 @@ var init_ai = __esm({
         await exec(modelName);
         return this;
       }
-      async save(path23) {
-        await utils_default.oss.writeFile(path23, this.result);
+      async save(path28) {
+        await utils_default.oss.writeFile(path28, this.result);
         return this;
       }
     };
@@ -186136,8 +185628,8 @@ var init_ai = __esm({
           throw e;
         }
       }
-      async save(path23) {
-        await utils_default.oss.writeFile(path23, this.result);
+      async save(path28) {
+        await utils_default.oss.writeFile(path28, this.result);
         return this;
       }
     };
@@ -186164,8 +185656,8 @@ var init_ai = __esm({
         }
         return await exec(modelName);
       }
-      async save(path23) {
-        await utils_default.oss.writeFile(path23, this.result);
+      async save(path28) {
+        await utils_default.oss.writeFile(path28, this.result);
         return this;
       }
     };
@@ -186244,22 +185736,63 @@ var init_getPrompts = __esm({
   }
 });
 
+// src/services/builtinData.ts
+function unique(values) {
+  return [...new Set(values.map((item) => import_node_path13.default.resolve(item)))];
+}
+function builtinDataCandidates(...parts) {
+  const repoDataPath = import_node_path13.default.resolve(process.cwd(), "data", ...parts);
+  const runtimeSystemPath = systemDataPath(...parts);
+  return process.env.NODE_ENV !== "prod" ? unique([repoDataPath, runtimeSystemPath]) : unique([runtimeSystemPath, repoDataPath]);
+}
+function findBuiltinDataFile(...parts) {
+  return builtinDataCandidates(...parts).find((file3) => import_node_fs4.default.existsSync(file3) && import_node_fs4.default.statSync(file3).isFile()) || null;
+}
+function findBuiltinDataDir(...parts) {
+  return builtinDataCandidates(...parts).find((dir) => import_node_fs4.default.existsSync(dir) && import_node_fs4.default.statSync(dir).isDirectory()) || null;
+}
+async function readBuiltinDataFile(...parts) {
+  const file3 = findBuiltinDataFile(...parts);
+  if (!file3) return null;
+  return {
+    file: file3,
+    content: await import_node_fs4.default.promises.readFile(file3, "utf8")
+  };
+}
+var import_node_fs4, import_node_path13;
+var init_builtinData = __esm({
+  "src/services/builtinData.ts"() {
+    "use strict";
+    import_node_fs4 = __toESM(require("node:fs"));
+    import_node_path13 = __toESM(require("node:path"));
+    init_storagePaths();
+  }
+});
+
 // src/utils/getArtPrompt.ts
+function artPromptBaseDirs(source, styleName) {
+  const dirs = [
+    findBuiltinDataDir("skills", source, styleName),
+    getPath_default(["skills", source, styleName])
+  ].filter(Boolean);
+  return [...new Set(dirs.map((dir) => import_path4.default.resolve(dir)))];
+}
 function getArtPrompt(styleName, source, fileName) {
-  const baseDir = getPath_default(["skills", source, styleName]);
-  if (!import_fs4.default.existsSync(baseDir)) {
-    return "";
-  }
-  const prefixFile = findFileRecursive(baseDir, "prefix.md");
-  const prefixContent = prefixFile ? import_fs4.default.readFileSync(prefixFile, "utf-8") : "";
-  const target = fileName.endsWith(".md") ? fileName : `${fileName}.md`;
-  const found = findFileRecursive(baseDir, target);
-  if (!found) {
-    return prefixContent;
-  }
-  const fileContent = import_fs4.default.readFileSync(found, "utf-8");
-  return prefixContent ? `${prefixContent}
+  for (const baseDir of artPromptBaseDirs(source, styleName)) {
+    if (!import_fs4.default.existsSync(baseDir)) continue;
+    const prefixFile = findFileRecursive(baseDir, "prefix.md");
+    const prefixContent = prefixFile ? import_fs4.default.readFileSync(prefixFile, "utf-8") : "";
+    const target = fileName.endsWith(".md") ? fileName : `${fileName}.md`;
+    const found = findFileRecursive(baseDir, target);
+    if (!found) {
+      if (prefixContent) return prefixContent;
+      continue;
+    }
+    const fileContent = import_fs4.default.readFileSync(found, "utf-8");
+    return prefixContent ? `${prefixContent}
 ${fileContent}` : fileContent;
+  }
+  return "";
 }
 function findFileRecursive(dir, targetName) {
   const entries = import_fs4.default.readdirSync(dir, { withFileTypes: true });
@@ -186282,6 +185815,7 @@ var init_getArtPrompt = __esm({
     import_fs4 = __toESM(require("fs"));
     import_path4 = __toESM(require("path"));
     init_getPath();
+    init_builtinData();
   }
 });
 
@@ -186462,15 +185996,12 @@ function runRaw(args, timeoutMs = 12e4) {
   const command = normalizedArgs[0] || "-h";
   if (!ALLOWED_COMMANDS.has(command)) throw new Error(`\u4E0D\u5141\u8BB8\u6267\u884C\u7684\u5373\u68A6 CLI \u547D\u4EE4: ${command}`);
   const startedAt = Date.now();
-  console.info(
-    `[dreamina-cli] ${JSON.stringify({
-      time: (/* @__PURE__ */ new Date()).toISOString(),
-      event: "command.started",
-      command,
-      timeoutMs,
-      argCount: normalizedArgs.length - 1
-    })}`
-  );
+  dreaminaLog.info("Dreamina CLI command started", {
+    event: "command.started",
+    command,
+    timeoutMs,
+    argCount: normalizedArgs.length - 1
+  });
   return new Promise((resolve3, reject) => {
     const child = (0, import_child_process.spawn)(cliPath(), normalizedArgs, {
       cwd: cliDir(),
@@ -186485,14 +186016,11 @@ function runRaw(args, timeoutMs = 12e4) {
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill();
-      console.warn(
-        `[dreamina-cli] ${JSON.stringify({
-          time: (/* @__PURE__ */ new Date()).toISOString(),
-          event: "command.timeout",
-          command,
-          elapsedMs: Date.now() - startedAt
-        })}`
-      );
+      dreaminaLog.warn("Dreamina CLI command timeout", {
+        event: "command.timeout",
+        command,
+        elapsedMs: Date.now() - startedAt
+      });
       reject(new Error(`\u5373\u68A6 CLI \u6267\u884C\u8D85\u65F6: dreamina ${command}`));
     }, timeoutMs);
     child.stdout?.on("data", (chunk) => {
@@ -186504,31 +186032,25 @@ function runRaw(args, timeoutMs = 12e4) {
     child.on("error", (err) => {
       if (child.pid) activeCliProcesses.delete(child.pid);
       clearTimeout(timer);
-      console.error(
-        `[dreamina-cli] ${JSON.stringify({
-          time: (/* @__PURE__ */ new Date()).toISOString(),
-          event: "command.error",
-          command,
-          elapsedMs: Date.now() - startedAt,
-          message: err.message
-        })}`
-      );
+      dreaminaLog.error("Dreamina CLI command error", {
+        event: "command.error",
+        command,
+        elapsedMs: Date.now() - startedAt,
+        error: err
+      });
       reject(err);
     });
     child.on("close", (code) => {
       if (child.pid) activeCliProcesses.delete(child.pid);
       clearTimeout(timer);
-      const message = `[dreamina-cli] ${JSON.stringify({
-        time: (/* @__PURE__ */ new Date()).toISOString(),
+      dreaminaLog[code === 0 ? "info" : "warn"]("Dreamina CLI command finished", {
         event: "command.finished",
         command,
         code,
         elapsedMs: Date.now() - startedAt,
         stdoutBytes: Buffer.byteLength(stdout),
         stderrBytes: Buffer.byteLength(stderr)
-      })}`;
-      if (code === 0) console.info(message);
-      else console.warn(message);
+      });
       resolve3({ stdout, stderr, code });
     });
   });
@@ -186872,10 +186394,37 @@ async function runRawWithLogs(args, timeoutMs) {
   const offsets = snapshotLogOffsets();
   const result = await runRaw(args, timeoutMs);
   await new Promise((resolve3) => setTimeout(resolve3, 250));
+  const logs = readLogDelta(offsets);
+  if (logs || result.stdout || result.stderr) {
+    const command = args[0] || "unknown";
+    const diagnosticFile = writeDiagnosticFile(
+      `${command}-${result.code ?? "unknown"}`,
+      [
+        `command: dreamina ${args.join(" ")}`,
+        `code: ${result.code}`,
+        "----- stdout -----",
+        result.stdout,
+        "----- stderr -----",
+        result.stderr,
+        "----- cli logs -----",
+        logs
+      ].join("\n"),
+      { provider: "dreamina", event: "command.diagnostic", model: args.find((arg) => arg.startsWith("--model_version=")) }
+    );
+    dreaminaLog.info("Dreamina CLI diagnostic captured", {
+      event: "command.diagnostic",
+      command,
+      code: result.code,
+      diagnosticFile,
+      stdoutBytes: Buffer.byteLength(result.stdout || ""),
+      stderrBytes: Buffer.byteLength(result.stderr || ""),
+      logBytes: Buffer.byteLength(logs || "")
+    });
+  }
   return {
     ...result,
     result,
-    logs: readLogDelta(offsets)
+    logs
   };
 }
 function parseDreaminaRemoteEvidence(output, submitId) {
@@ -187420,7 +186969,7 @@ ${result.stderr}`.trim(),
     downloadDir
   };
 }
-var import_fs7, import_path7, import_node_os, import_child_process, DOWNLOAD_URL, VERSION_URL, COMMANDS, ALLOWED_COMMANDS, currentLogin, queueState, activeCliProcesses, dreaminaCli_default;
+var import_fs7, import_path7, import_node_os, import_child_process, dreaminaLog, DOWNLOAD_URL, VERSION_URL, COMMANDS, ALLOWED_COMMANDS, currentLogin, queueState, activeCliProcesses, dreaminaCli_default;
 var init_dreaminaCli = __esm({
   "src/utils/dreaminaCli.ts"() {
     "use strict";
@@ -187430,6 +186979,8 @@ var init_dreaminaCli = __esm({
     import_node_os = __toESM(require("node:os"));
     import_child_process = require("child_process");
     init_getPath();
+    init_logger();
+    dreaminaLog = createLogger("dreamina-cli", { provider: "dreamina" });
     DOWNLOAD_URL = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/dreamina_cli_beta/dreamina_cli_windows_amd64.exe";
     VERSION_URL = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/dreamina_cli_beta/version.json";
     COMMANDS = ["text2image", "image2image", "text2video", "image2video", "multiframe2video", "multimodal2video"];
@@ -187758,7 +187309,7 @@ var require_path = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.convertPosixPathToPattern = exports2.convertWindowsPathToPattern = exports2.convertPathToPattern = exports2.escapePosixPath = exports2.escapeWindowsPath = exports2.escape = exports2.removeLeadingDotSegment = exports2.makeAbsolute = exports2.unixify = void 0;
     var os2 = require("os");
-    var path23 = require("path");
+    var path28 = require("path");
     var IS_WINDOWS_PLATFORM = os2.platform() === "win32";
     var LEADING_DOT_SEGMENT_CHARACTERS_COUNT = 2;
     var POSIX_UNESCAPED_GLOB_SYMBOLS_RE = /(\\?)([()*?[\]{|}]|^!|[!+@](?=\()|\\(?![!()*+?@[\]{|}]))/g;
@@ -187770,7 +187321,7 @@ var require_path = __commonJS({
     }
     exports2.unixify = unixify;
     function makeAbsolute(cwd, filepath) {
-      return path23.resolve(cwd, filepath);
+      return path28.resolve(cwd, filepath);
     }
     exports2.makeAbsolute = makeAbsolute;
     function removeLeadingDotSegment(entry) {
@@ -189069,7 +188620,7 @@ var require_braces = __commonJS({
 var require_constants5 = __commonJS({
   "node_modules/picomatch/lib/constants.js"(exports2, module2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     var WIN_SLASH = "\\\\/";
     var WIN_NO_SLASH = `[^${WIN_SLASH}]`;
     var DEFAULT_MAX_EXTGLOB_RECURSION = 0;
@@ -189243,7 +188794,7 @@ var require_constants5 = __commonJS({
       /* | */
       CHAR_ZERO_WIDTH_NOBREAK_SPACE: 65279,
       /* \uFEFF */
-      SEP: path23.sep,
+      SEP: path28.sep,
       /**
        * Create EXTGLOB_CHARS
        */
@@ -189270,7 +188821,7 @@ var require_constants5 = __commonJS({
 var require_utils7 = __commonJS({
   "node_modules/picomatch/lib/utils.js"(exports2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     var win32 = process.platform === "win32";
     var {
       REGEX_BACKSLASH,
@@ -189299,7 +188850,7 @@ var require_utils7 = __commonJS({
       if (options && typeof options.windows === "boolean") {
         return options.windows;
       }
-      return win32 === true || path23.sep === "\\";
+      return win32 === true || path28.sep === "\\";
     };
     exports2.escapeLast = (input, char, lastIdx) => {
       const idx = input.lastIndexOf(char, lastIdx);
@@ -190663,7 +190214,7 @@ var require_parse5 = __commonJS({
 var require_picomatch = __commonJS({
   "node_modules/picomatch/lib/picomatch.js"(exports2, module2) {
     "use strict";
-    var path23 = require("path");
+    var path28 = require("path");
     var scan = require_scan();
     var parse4 = require_parse5();
     var utils = require_utils7();
@@ -190748,7 +190299,7 @@ var require_picomatch = __commonJS({
     };
     picomatch.matchBase = (input, glob, options, posix = utils.isWindows(options)) => {
       const regex = glob instanceof RegExp ? glob : picomatch.makeRe(glob, options);
-      return regex.test(path23.basename(input));
+      return regex.test(path28.basename(input));
     };
     picomatch.isMatch = (str, patterns, options) => picomatch(patterns, options)(str);
     picomatch.parse = (pattern, options) => {
@@ -190975,7 +190526,7 @@ var require_pattern = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isAbsolute = exports2.partitionAbsoluteAndRelative = exports2.removeDuplicateSlashes = exports2.matchAny = exports2.convertPatternsToRe = exports2.makeRe = exports2.getPatternParts = exports2.expandBraceExpansion = exports2.expandPatternsWithBraceExpansion = exports2.isAffectDepthOfReadingPattern = exports2.endsWithSlashGlobStar = exports2.hasGlobStar = exports2.getBaseDirectory = exports2.isPatternRelatedToParentDirectory = exports2.getPatternsOutsideCurrentDirectory = exports2.getPatternsInsideCurrentDirectory = exports2.getPositivePatterns = exports2.getNegativePatterns = exports2.isPositivePattern = exports2.isNegativePattern = exports2.convertToNegativePattern = exports2.convertToPositivePattern = exports2.isDynamicPattern = exports2.isStaticPattern = void 0;
-    var path23 = require("path");
+    var path28 = require("path");
     var globParent = require_glob_parent();
     var micromatch = require_micromatch();
     var GLOBSTAR = "**";
@@ -191070,7 +190621,7 @@ var require_pattern = __commonJS({
     }
     exports2.endsWithSlashGlobStar = endsWithSlashGlobStar;
     function isAffectDepthOfReadingPattern(pattern) {
-      const basename = path23.basename(pattern);
+      const basename = path28.basename(pattern);
       return endsWithSlashGlobStar(pattern) || isStaticPattern(basename);
     }
     exports2.isAffectDepthOfReadingPattern = isAffectDepthOfReadingPattern;
@@ -191128,7 +190679,7 @@ var require_pattern = __commonJS({
     }
     exports2.partitionAbsoluteAndRelative = partitionAbsoluteAndRelative;
     function isAbsolute(pattern) {
-      return path23.isAbsolute(pattern);
+      return path28.isAbsolute(pattern);
     }
     exports2.isAbsolute = isAbsolute;
   }
@@ -191303,10 +190854,10 @@ var require_utils8 = __commonJS({
     exports2.array = array4;
     var errno = require_errno();
     exports2.errno = errno;
-    var fs19 = require_fs2();
-    exports2.fs = fs19;
-    var path23 = require_path();
-    exports2.path = path23;
+    var fs24 = require_fs2();
+    exports2.fs = fs24;
+    var path28 = require_path();
+    exports2.path = path28;
     var pattern = require_pattern();
     exports2.pattern = pattern;
     var stream4 = require_stream2();
@@ -191418,8 +190969,8 @@ var require_async3 = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.read = void 0;
-    function read(path23, settings, callback) {
-      settings.fs.lstat(path23, (lstatError, lstat) => {
+    function read(path28, settings, callback) {
+      settings.fs.lstat(path28, (lstatError, lstat) => {
         if (lstatError !== null) {
           callFailureCallback(callback, lstatError);
           return;
@@ -191428,7 +190979,7 @@ var require_async3 = __commonJS({
           callSuccessCallback(callback, lstat);
           return;
         }
-        settings.fs.stat(path23, (statError, stat) => {
+        settings.fs.stat(path28, (statError, stat) => {
           if (statError !== null) {
             if (settings.throwErrorOnBrokenSymbolicLink) {
               callFailureCallback(callback, statError);
@@ -191460,13 +191011,13 @@ var require_sync2 = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.read = void 0;
-    function read(path23, settings) {
-      const lstat = settings.fs.lstatSync(path23);
+    function read(path28, settings) {
+      const lstat = settings.fs.lstatSync(path28);
       if (!lstat.isSymbolicLink() || !settings.followSymbolicLink) {
         return lstat;
       }
       try {
-        const stat = settings.fs.statSync(path23);
+        const stat = settings.fs.statSync(path28);
         if (settings.markSymbolicLink) {
           stat.isSymbolicLink = () => true;
         }
@@ -191488,12 +191039,12 @@ var require_fs3 = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.createFileSystemAdapter = exports2.FILE_SYSTEM_ADAPTER = void 0;
-    var fs19 = require("fs");
+    var fs24 = require("fs");
     exports2.FILE_SYSTEM_ADAPTER = {
-      lstat: fs19.lstat,
-      stat: fs19.stat,
-      lstatSync: fs19.lstatSync,
-      statSync: fs19.statSync
+      lstat: fs24.lstat,
+      stat: fs24.stat,
+      lstatSync: fs24.lstatSync,
+      statSync: fs24.statSync
     };
     function createFileSystemAdapter(fsMethods) {
       if (fsMethods === void 0) {
@@ -191510,12 +191061,12 @@ var require_settings = __commonJS({
   "node_modules/@nodelib/fs.stat/out/settings.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
-    var fs19 = require_fs3();
+    var fs24 = require_fs3();
     var Settings = class {
       constructor(_options = {}) {
         this._options = _options;
         this.followSymbolicLink = this._getValue(this._options.followSymbolicLink, true);
-        this.fs = fs19.createFileSystemAdapter(this._options.fs);
+        this.fs = fs24.createFileSystemAdapter(this._options.fs);
         this.markSymbolicLink = this._getValue(this._options.markSymbolicLink, false);
         this.throwErrorOnBrokenSymbolicLink = this._getValue(this._options.throwErrorOnBrokenSymbolicLink, true);
       }
@@ -191537,17 +191088,17 @@ var require_out = __commonJS({
     var sync = require_sync2();
     var settings_1 = require_settings();
     exports2.Settings = settings_1.default;
-    function stat(path23, optionsOrSettingsOrCallback, callback) {
+    function stat(path28, optionsOrSettingsOrCallback, callback) {
       if (typeof optionsOrSettingsOrCallback === "function") {
-        async.read(path23, getSettings(), optionsOrSettingsOrCallback);
+        async.read(path28, getSettings(), optionsOrSettingsOrCallback);
         return;
       }
-      async.read(path23, getSettings(optionsOrSettingsOrCallback), callback);
+      async.read(path28, getSettings(optionsOrSettingsOrCallback), callback);
     }
     exports2.stat = stat;
-    function statSync(path23, optionsOrSettings) {
+    function statSync(path28, optionsOrSettings) {
       const settings = getSettings(optionsOrSettings);
-      return sync.read(path23, settings);
+      return sync.read(path28, settings);
     }
     exports2.statSync = statSync;
     function getSettings(settingsOrOptions = {}) {
@@ -191672,8 +191223,8 @@ var require_utils9 = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.fs = void 0;
-    var fs19 = require_fs4();
-    exports2.fs = fs19;
+    var fs24 = require_fs4();
+    exports2.fs = fs24;
   }
 });
 
@@ -191765,16 +191316,16 @@ var require_async4 = __commonJS({
           return;
         }
         const tasks = names.map((name28) => {
-          const path23 = common.joinPathSegments(directory, name28, settings.pathSegmentSeparator);
+          const path28 = common.joinPathSegments(directory, name28, settings.pathSegmentSeparator);
           return (done) => {
-            fsStat.stat(path23, settings.fsStatSettings, (error50, stats) => {
+            fsStat.stat(path28, settings.fsStatSettings, (error50, stats) => {
               if (error50 !== null) {
                 done(error50);
                 return;
               }
               const entry = {
                 name: name28,
-                path: path23,
+                path: path28,
                 dirent: utils.fs.createDirentFromStats(name28, stats)
               };
               if (settings.stats) {
@@ -191868,14 +191419,14 @@ var require_fs5 = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.createFileSystemAdapter = exports2.FILE_SYSTEM_ADAPTER = void 0;
-    var fs19 = require("fs");
+    var fs24 = require("fs");
     exports2.FILE_SYSTEM_ADAPTER = {
-      lstat: fs19.lstat,
-      stat: fs19.stat,
-      lstatSync: fs19.lstatSync,
-      statSync: fs19.statSync,
-      readdir: fs19.readdir,
-      readdirSync: fs19.readdirSync
+      lstat: fs24.lstat,
+      stat: fs24.stat,
+      lstatSync: fs24.lstatSync,
+      statSync: fs24.statSync,
+      readdir: fs24.readdir,
+      readdirSync: fs24.readdirSync
     };
     function createFileSystemAdapter(fsMethods) {
       if (fsMethods === void 0) {
@@ -191892,15 +191443,15 @@ var require_settings2 = __commonJS({
   "node_modules/@nodelib/fs.scandir/out/settings.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
-    var path23 = require("path");
+    var path28 = require("path");
     var fsStat = require_out();
-    var fs19 = require_fs5();
+    var fs24 = require_fs5();
     var Settings = class {
       constructor(_options = {}) {
         this._options = _options;
         this.followSymbolicLinks = this._getValue(this._options.followSymbolicLinks, false);
-        this.fs = fs19.createFileSystemAdapter(this._options.fs);
-        this.pathSegmentSeparator = this._getValue(this._options.pathSegmentSeparator, path23.sep);
+        this.fs = fs24.createFileSystemAdapter(this._options.fs);
+        this.pathSegmentSeparator = this._getValue(this._options.pathSegmentSeparator, path28.sep);
         this.stats = this._getValue(this._options.stats, false);
         this.throwErrorOnBrokenSymbolicLink = this._getValue(this._options.throwErrorOnBrokenSymbolicLink, true);
         this.fsStatSettings = new fsStat.Settings({
@@ -191927,17 +191478,17 @@ var require_out2 = __commonJS({
     var sync = require_sync3();
     var settings_1 = require_settings2();
     exports2.Settings = settings_1.default;
-    function scandir(path23, optionsOrSettingsOrCallback, callback) {
+    function scandir(path28, optionsOrSettingsOrCallback, callback) {
       if (typeof optionsOrSettingsOrCallback === "function") {
-        async.read(path23, getSettings(), optionsOrSettingsOrCallback);
+        async.read(path28, getSettings(), optionsOrSettingsOrCallback);
         return;
       }
-      async.read(path23, getSettings(optionsOrSettingsOrCallback), callback);
+      async.read(path28, getSettings(optionsOrSettingsOrCallback), callback);
     }
     exports2.scandir = scandir;
-    function scandirSync(path23, optionsOrSettings) {
+    function scandirSync(path28, optionsOrSettings) {
       const settings = getSettings(optionsOrSettings);
-      return sync.read(path23, settings);
+      return sync.read(path28, settings);
     }
     exports2.scandirSync = scandirSync;
     function getSettings(settingsOrOptions = {}) {
@@ -192584,7 +192135,7 @@ var require_settings3 = __commonJS({
   "node_modules/@nodelib/fs.walk/out/settings.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
-    var path23 = require("path");
+    var path28 = require("path");
     var fsScandir = require_out2();
     var Settings = class {
       constructor(_options = {}) {
@@ -192594,7 +192145,7 @@ var require_settings3 = __commonJS({
         this.deepFilter = this._getValue(this._options.deepFilter, null);
         this.entryFilter = this._getValue(this._options.entryFilter, null);
         this.errorFilter = this._getValue(this._options.errorFilter, null);
-        this.pathSegmentSeparator = this._getValue(this._options.pathSegmentSeparator, path23.sep);
+        this.pathSegmentSeparator = this._getValue(this._options.pathSegmentSeparator, path28.sep);
         this.fsScandirSettings = new fsScandir.Settings({
           followSymbolicLinks: this._options.followSymbolicLinks,
           fs: this._options.fs,
@@ -192656,7 +192207,7 @@ var require_reader2 = __commonJS({
   "node_modules/fast-glob/out/readers/reader.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
-    var path23 = require("path");
+    var path28 = require("path");
     var fsStat = require_out();
     var utils = require_utils8();
     var Reader = class {
@@ -192669,7 +192220,7 @@ var require_reader2 = __commonJS({
         });
       }
       _getFullEntryPath(filepath) {
-        return path23.resolve(this._settings.cwd, filepath);
+        return path28.resolve(this._settings.cwd, filepath);
       }
       _makeEntry(stats, pattern) {
         const entry = {
@@ -193085,7 +192636,7 @@ var require_provider = __commonJS({
   "node_modules/fast-glob/out/providers/provider.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
-    var path23 = require("path");
+    var path28 = require("path");
     var deep_1 = require_deep();
     var entry_1 = require_entry();
     var error_1 = require_error();
@@ -193099,7 +192650,7 @@ var require_provider = __commonJS({
         this.entryTransformer = new entry_2.default(this._settings);
       }
       _getRootDirectory(task) {
-        return path23.resolve(this._settings.cwd, task.base);
+        return path28.resolve(this._settings.cwd, task.base);
       }
       _getReaderOptions(task) {
         const basePath = task.base === "." ? "" : task.base;
@@ -193280,16 +192831,16 @@ var require_settings4 = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.DEFAULT_FILE_SYSTEM_ADAPTER = void 0;
-    var fs19 = require("fs");
+    var fs24 = require("fs");
     var os2 = require("os");
     var CPU_COUNT = Math.max(os2.cpus().length, 1);
     exports2.DEFAULT_FILE_SYSTEM_ADAPTER = {
-      lstat: fs19.lstat,
-      lstatSync: fs19.lstatSync,
-      stat: fs19.stat,
-      statSync: fs19.statSync,
-      readdir: fs19.readdir,
-      readdirSync: fs19.readdirSync
+      lstat: fs24.lstat,
+      lstatSync: fs24.lstatSync,
+      stat: fs24.stat,
+      statSync: fs24.statSync,
+      readdir: fs24.readdir,
+      readdirSync: fs24.readdirSync
     };
     var Settings = class {
       constructor(_options = {}) {
@@ -193497,6 +193048,20 @@ function parseFrontmatter(content) {
   }
   return { name: result.name, description: result.description };
 }
+function buildSkillPrompt(skills) {
+  const skillEntries = skills.map((s) => `  <skill>
+    <name>${s.name}</name>
+    <description>${s.description}</description>
+  </skill>`).join("\n");
+  return `## Skills
+\u4EE5\u4E0B\u6280\u80FD\u63D0\u4F9B\u4E86\u4E13\u4E1A\u4EFB\u52A1\u7684\u4E13\u7528\u6307\u4EE4\u3002
+\u5F53\u4EFB\u52A1\u4E0E\u67D0\u4E2A\u6280\u80FD\u7684\u63CF\u8FF0\u5339\u914D\u65F6\uFF0C\u8C03\u7528 activate_skill \u5DE5\u5177\u5E76\u4F20\u5165\u6280\u80FD\u540D\u79F0\u6765\u52A0\u8F7D\u5B8C\u6574\u6307\u4EE4\u3002
+\u52A0\u8F7D\u540E\u9075\u5FAA\u6280\u80FD\u6307\u4EE4\u6267\u884C\u4EFB\u52A1\uFF0C\u9700\u8981\u65F6\u8C03\u7528 read_skill_file \u8BFB\u53D6\u8D44\u6E90\u6587\u4EF6\u5185\u5BB9\u3002
+
+<available_skills>
+${skillEntries}
+</available_skills>`;
+}
 function createSkillTools(skills, skillPaths, rootDir = getPath_default("skills")) {
   const activated = /* @__PURE__ */ new Set();
   const skillsRootDir = import_path8.default.resolve(rootDir);
@@ -193519,7 +193084,7 @@ function createSkillTools(skills, skillPaths, rootDir = getPath_default("skills"
         if (!matched) return { error: `\u672A\u627E\u5230\u6280\u80FD "${name28}"` };
         let raw = "";
         try {
-          raw = await fs16.promises.readFile(matched.path, "utf-8");
+          raw = await fs18.promises.readFile(matched.path, "utf-8");
           console.log(`\u26A1[\u4E3B\u6280\u80FD] \u2713 \u5DF2\u8BFB\u53D6\u4E3B\u6280\u80FD\u6587\u4EF6\uFF1A ${matched.path}\uFF08${raw.length} \u5B57\u7B26\uFF09`);
         } catch (error50) {
           console.log(`\u26A1[\u4E3B\u6280\u80FD] \u2717 \u8BFB\u53D6\u5931\u8D25\uFF1A\u672A\u627E\u5230\u6587\u4EF6 "${matched.path}"`);
@@ -193534,8 +193099,8 @@ function createSkillTools(skills, skillPaths, rootDir = getPath_default("skills"
         content += "\u4F7F\u7528 read_skill_file \u5DE5\u5177\u8BFB\u53D6\u8D44\u6E90\u6587\u4EF6\u3002\n";
         if (skillPaths.secondarySkills.length > 0) {
           content += "\n<skill_resources>\n";
-          for (const path23 of skillPaths.secondarySkills) {
-            content += `  <file>${path23}</file>
+          for (const path28 of skillPaths.secondarySkills) {
+            content += `  <file>${path28}</file>
 `;
           }
           content += "</skill_resources>\n";
@@ -193564,7 +193129,7 @@ function createSkillTools(skills, skillPaths, rootDir = getPath_default("skills"
         }
         let body = "";
         try {
-          body = await fs16.promises.readFile(fullPath, "utf-8");
+          body = await fs18.promises.readFile(fullPath, "utf-8");
           console.log(`\u{1F4D6}[\u6280\u6CD5\u6587\u4EF6] \u2713 \u5DF2\u8BFB\u53D6\u6587\u4EF6\uFF1A ${filePath}\uFF08${body.length} \u5B57\u7B26\uFF09`);
         } catch {
           console.log(`\u{1F4D6}[\u6280\u6CD5\u6587\u4EF6] \u2717 \u8BFB\u53D6\u5931\u8D25\uFF1A\u672A\u627E\u5230\u6587\u4EF6 "${filePath}"`);
@@ -193578,8 +193143,8 @@ function createSkillTools(skills, skillPaths, rootDir = getPath_default("skills"
         content += "\u53EF\u4EE5\u4F7F\u7528 read_skill_file \u5DE5\u5177\u8BFB\u53D6\u8D44\u6E90\u6587\u4EF6\u3002\n";
         if (skillPaths.tertiarySkills.length > 0) {
           content += "\n<skill_resources>\n";
-          for (const path23 of skillPaths.tertiarySkills) {
-            content += `  <file>${path23}</file>
+          for (const path28 of skillPaths.tertiarySkills) {
+            content += `  <file>${path28}</file>
 `;
           }
           content += "</skill_resources>\n";
@@ -193598,7 +193163,7 @@ async function scanSkills(folderPath) {
   });
   return entries;
 }
-var import_path8, fs16, import_fast_glob;
+var import_path8, fs18, import_fast_glob;
 var init_skillsTools = __esm({
   "src/utils/agent/skillsTools.ts"() {
     "use strict";
@@ -193607,19 +193172,991 @@ var init_skillsTools = __esm({
     import_path8 = __toESM(require("path"));
     init_is_path_inside();
     init_getPath();
-    fs16 = __toESM(require("fs"));
+    fs18 = __toESM(require("fs"));
     import_fast_glob = __toESM(require_out4());
   }
 });
 
+// src/services/storyboardTableContract.ts
+function parseStoryboardJsonObject(value) {
+  if (!value) return null;
+  if (typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function parseStoryboardTableRow(value) {
+  const object4 = parseStoryboardJsonObject(value);
+  if (!object4) return null;
+  const result = storyboardTableRowV2Schema.safeParse(object4);
+  return result.success ? result.data : null;
+}
+function stringifyDialogue(dialogue) {
+  if (!dialogue.length) return "\u65E0\u53F0\u8BCD";
+  return dialogue.map((item) => {
+    const suffix = item.voiceTone ? `\uFF08${item.voiceTone}\uFF09` : "";
+    return `${item.speaker}\uFF1A${item.text}${suffix}`;
+  }).join("\uFF1B");
+}
+function stringifySoundEffects(soundEffects) {
+  return soundEffects.join("\u3001");
+}
+function validateStoryboardTableRows(rows) {
+  const issues = [];
+  const seenIndexes = /* @__PURE__ */ new Set();
+  rows.forEach((row, rowIndex) => {
+    const result = storyboardTableRowV2Schema.safeParse(row);
+    if (!result.success) {
+      for (const issue3 of result.error.issues) {
+        issues.push({
+          index: rowIndex,
+          field: issue3.path.join(".") || "row",
+          message: issue3.message
+        });
+      }
+      return;
+    }
+    if (seenIndexes.has(result.data.index)) {
+      issues.push({ index: rowIndex, field: "index", message: "duplicate index" });
+    }
+    seenIndexes.add(result.data.index);
+  });
+  return issues;
+}
+function storyboardRowToDbPatch(row, revision = 1) {
+  return {
+    tableRowJson: JSON.stringify(row),
+    factStatus: "ready",
+    factVersion: row.version,
+    factRevision: revision,
+    // Compatibility projections. They are never read as authoritative facts.
+    duration: String(row.durationSec),
+    scene: row.location,
+    location: row.location,
+    timeOfDay: row.timeOfDay,
+    sceneContinuityId: row.sceneContinuityId || null,
+    picture: row.picture,
+    action: row.action,
+    shotSize: row.shotSize,
+    cameraMove: row.cameraMove,
+    dialogue: stringifyDialogue(row.dialogue),
+    sound: stringifySoundEffects(row.soundEffects),
+    visibleEmotion: row.visibleEmotion,
+    groupKey: row.groupKey,
+    groupName: row.groupName,
+    groupIntent: row.groupIntent,
+    beatId: row.beatId,
+    videoDesc: ""
+  };
+}
+function assetIdsFromStoryboardRow(row) {
+  return [...new Set(row.requiredAssets.map((item) => item.assetId))];
+}
+var requiredText, optionalText, storyboardCharacterSchema, storyboardDialogueSchema, storyboardRequiredAssetSchema, storyboardTableRowV2Schema, storyboardGroupPlanV2Schema;
+var init_storyboardTableContract = __esm({
+  "src/services/storyboardTableContract.ts"() {
+    "use strict";
+    init_zod();
+    requiredText = external_exports.string().trim().min(1);
+    optionalText = external_exports.string().trim().min(1).optional();
+    storyboardCharacterSchema = external_exports.object({
+      assetId: external_exports.number().int().positive().optional(),
+      name: requiredText,
+      action: requiredText,
+      orientation: requiredText,
+      spatialPosition: requiredText,
+      posture: optionalText,
+      expression: optionalText,
+      gaze: optionalText,
+      handAction: optionalText,
+      movement: optionalText
+    });
+    storyboardDialogueSchema = external_exports.object({
+      speaker: external_exports.string().trim(),
+      text: requiredText,
+      voiceTone: optionalText
+    });
+    storyboardRequiredAssetSchema = external_exports.object({
+      assetId: external_exports.number().int().positive(),
+      name: requiredText,
+      type: external_exports.enum(["role", "scene", "tool", "clip"]),
+      order: external_exports.number().int().nonnegative()
+    });
+    storyboardTableRowV2Schema = external_exports.object({
+      version: external_exports.literal(1),
+      index: external_exports.number().int().nonnegative(),
+      sceneNo: optionalText,
+      groupKey: requiredText,
+      groupName: requiredText,
+      groupIntent: requiredText,
+      beatId: requiredText,
+      durationSec: external_exports.number().positive(),
+      location: requiredText,
+      timeOfDay: requiredText,
+      sceneContinuityId: optionalText,
+      picture: requiredText,
+      shotSize: requiredText,
+      cameraMove: requiredText,
+      cameraAngle: optionalText,
+      transitionFromPrevious: optionalText,
+      action: requiredText,
+      characters: external_exports.array(storyboardCharacterSchema),
+      visibleEmotion: requiredText,
+      dialogue: external_exports.array(storyboardDialogueSchema),
+      soundEffects: external_exports.array(requiredText),
+      requiredAssets: external_exports.array(storyboardRequiredAssetSchema)
+    });
+    storyboardGroupPlanV2Schema = external_exports.object({
+      groupKey: requiredText,
+      groupName: requiredText,
+      groupIntent: requiredText,
+      storyboardIndexes: external_exports.array(external_exports.number().int().nonnegative()).min(1)
+    });
+  }
+});
+
+// src/services/musicSuggestion.ts
+function hasAny(text2, words) {
+  return words.some((word) => text2.includes(word));
+}
+function buildTrackBgmSuggestion(input) {
+  const text2 = `${input.scene || ""} ${input.event || ""} ${input.groupIntent || ""}`.toLowerCase();
+  const isTense = hasAny(text2, ["\u8FFD", "\u9003", "\u5A01\u80C1", "\u538B\u8FEB", "\u5371\u9669", "\u8B66\u89C9", "panic", "threat", "chase"]);
+  const isTender = hasAny(text2, ["\u6E29\u67D4", "\u544A\u522B", "\u56DE\u5FC6", "\u62E5\u62B1", "\u5B89\u9759", "tender", "memory"]);
+  const isComedy = hasAny(text2, ["\u559C\u5267", "\u5C34\u5C2C", "\u8BEF\u4F1A", "\u6ED1\u7A3D", "comedy"]);
+  const intensity = isTense ? 4 : isComedy ? 2 : isTender ? 2 : 3;
+  const mood = isTense ? "low tension and restrained pressure" : isComedy ? "light ironic pulse" : isTender ? "warm restrained emotion" : "neutral dramatic support";
+  return {
+    groupKey: input.groupKey,
+    mood,
+    intensity,
+    tempoBpm: isTense ? "78-92" : isComedy ? "96-112" : isTender ? "60-72" : "72-88",
+    rhythm: isTense ? "sparse pulse with small rises at action beats" : "steady low-density underscore",
+    instrumentation: isTense ? ["low strings", "muted piano", "sub bass pulse"] : isComedy ? ["light pizzicato", "small percussion"] : ["soft piano", "warm strings"],
+    entryPoint: "fade in at the first visible action beat",
+    exitPoint: "fade out before the next scene boundary",
+    syncPoints: ["match camera movement starts", "leave dialogue clear"],
+    avoid: ["lyrics", "dominant melody", "sound effects that duplicate on-screen sound"],
+    postNote: "BGM suggestion only; do not include it in video model prompts."
+  };
+}
+var init_musicSuggestion = __esm({
+  "src/services/musicSuggestion.ts"() {
+    "use strict";
+  }
+});
+
+// src/services/videoModelPolicy.ts
+function splitModelKey(modelKey) {
+  const [vendorId, modelName = ""] = String(modelKey || "").split(/:(.+)/);
+  return { vendorId, modelName };
+}
+function uniqueSortedNumbers(values) {
+  return [...new Set(values.map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
+}
+function uniqueStrings(values) {
+  return [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+function resolutionMatches(candidate, resolution) {
+  return String(candidate || "").toLowerCase() === resolution.toLowerCase();
+}
+async function getVideoModelPolicy(modelKey, options = {}) {
+  const { vendorId, modelName } = splitModelKey(modelKey);
+  const fallbackMaxDuration = options.fallbackMaxDuration ?? 15;
+  const models = vendorId ? await utils_default.vendor.getModelList(vendorId) : [];
+  const model = models.find((item) => item?.type === "video" && item.modelName === modelName);
+  const maps = Array.isArray(model?.durationResolutionMap) ? model.durationResolutionMap : [];
+  const supportedResolutions = uniqueStrings(maps.flatMap((item) => item?.resolution || []));
+  let candidateMaps = maps;
+  if (options.resolution && maps.length) {
+    const matched = maps.filter((item) => (item?.resolution || []).some((value) => resolutionMatches(value, options.resolution)));
+    if (matched.length) candidateMaps = matched;
+  }
+  const supportedDurations = uniqueSortedNumbers(candidateMaps.flatMap((item) => item?.duration || []));
+  const allDurations = uniqueSortedNumbers(maps.flatMap((item) => item?.duration || []));
+  const maxDuration = supportedDurations.length ? Math.max(...supportedDurations) : allDurations.length ? Math.max(...allDurations) : fallbackMaxDuration;
+  return {
+    vendorId,
+    modelName,
+    modelLabel: model?.name || modelName || "default video model",
+    resolution: options.resolution,
+    maxDuration,
+    supportedDurations,
+    supportedResolutions,
+    canValidate: Boolean(model && maps.length)
+  };
+}
+async function getProjectDefaultVideoPolicy(projectId, options = {}) {
+  const db2 = options.knex ?? utils_default.db;
+  const project = await db2("o_project").where("id", projectId).select("videoModel").first();
+  return getVideoModelPolicy(project?.videoModel || "", { resolution: options.resolution, fallbackMaxDuration: 15 });
+}
+var init_videoModelPolicy = __esm({
+  "src/services/videoModelPolicy.ts"() {
+    "use strict";
+    init_utils3();
+  }
+});
+
+// src/services/storyboardGroupPlanner.ts
+function safeText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function compactKey(value) {
+  return value.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+}
+function fallbackGroupKey(index) {
+  return `G${String(index + 1).padStart(2, "0")}`;
+}
+function deriveStoryboardGroupMeta(item, index) {
+  const fact = parseStoryboardTableRow(item.tableRowJson);
+  const rawKey = safeText(fact?.groupKey) || safeText(item.groupKey) || safeText(item.track);
+  const groupKey = compactKey(rawKey) || fallbackGroupKey(index);
+  const groupName = safeText(fact?.groupName) || safeText(item.groupName) || safeText(item.track) || groupKey;
+  const groupIntent = safeText(fact?.groupIntent) || safeText(item.groupIntent) || safeText(item.action) || safeText(item.picture) || groupName;
+  return {
+    groupKey,
+    groupName,
+    groupIntent,
+    beatId: safeText(fact?.beatId) || safeText(item.beatId) || void 0
+  };
+}
+function buildStoryboardGroupPlans(rows, options = {}) {
+  const buckets = /* @__PURE__ */ new Map();
+  rows.forEach((row, index) => {
+    const meta4 = deriveStoryboardGroupMeta(row, index);
+    const fact = parseStoryboardTableRow(row.tableRowJson);
+    row.groupKey = row.groupKey || meta4.groupKey;
+    row.groupName = row.groupName || meta4.groupName;
+    row.groupIntent = row.groupIntent || meta4.groupIntent;
+    row.duration = fact?.durationSec ?? row.duration;
+    row.location = fact?.location ?? row.location;
+    row.scene = fact?.location ?? row.scene;
+    if (!buckets.has(meta4.groupKey)) buckets.set(meta4.groupKey, []);
+    buckets.get(meta4.groupKey)?.push(row);
+  });
+  return [...buckets.entries()].map(([groupKey, groupRows]) => {
+    const first = groupRows[0] || {};
+    const totalDuration = groupRows.reduce((sum, row) => sum + (Number(row.duration) || 0), 0);
+    const warnings = [];
+    const scenes = new Set(groupRows.map((row) => safeText(row.location) || safeText(row.scene) || safeText(row.track)).filter(Boolean));
+    const durationPolicy = options.durationPolicy;
+    if (scenes.size > 1) {
+      warnings.push({
+        issueType: "group_cross_scene",
+        severity: "blocking",
+        message: "Storyboard group may cross scene boundaries.",
+        reason: [...scenes].join(" / ")
+      });
+    }
+    if (durationPolicy && totalDuration > durationPolicy.maxDuration) {
+      warnings.push({
+        issueType: "group_duration_exceeds_model",
+        severity: durationPolicy.canValidate ? "blocking" : "warning",
+        message: "Storyboard group duration exceeds the default video model capacity.",
+        reason: `duration=${totalDuration}s, model=${durationPolicy.modelLabel}, max=${durationPolicy.maxDuration}s, resolution=${durationPolicy.resolution || "default"}`
+      });
+    }
+    if (groupRows.length > 6) {
+      warnings.push({
+        issueType: "group_pacing_dragging",
+        severity: "warning",
+        message: "Storyboard group contains many shots and may feel slow for short drama pacing.",
+        reason: `shots=${groupRows.length}`
+      });
+    }
+    const groupIntent = safeText(first.groupIntent) || safeText(first.action) || safeText(first.picture);
+    return {
+      groupKey,
+      groupName: safeText(first.groupName) || groupKey,
+      storyboardIndexes: groupRows.map((row) => Number(row.index ?? row.id)).filter(Number.isFinite),
+      scene: safeText(first.location) || safeText(first.scene) || safeText(first.track) || "",
+      event: groupIntent,
+      totalDuration,
+      pacing: totalDuration <= 6 ? "fast" : totalDuration <= 12 ? "medium" : "slow",
+      groupIntent,
+      boundaryReason: "Generated from storyboard table groupKey. New scene/time/event should use a new group.",
+      warnings,
+      bgmSuggestion: buildTrackBgmSuggestion({
+        groupKey,
+        scene: safeText(first.track),
+        event: groupIntent,
+        groupIntent,
+        totalDuration
+      })
+    };
+  });
+}
+async function syncVideoTracksForStoryboards(trx, params) {
+  const durationPolicy = params.durationPolicy ?? await getProjectDefaultVideoPolicy(params.projectId, { knex: trx });
+  const plans = buildStoryboardGroupPlans(params.storyboards, { durationPolicy });
+  for (const plan of plans) {
+    const storyboardIds = params.storyboards.filter((row) => row.groupKey === plan.groupKey).map((row) => Number(row.id));
+    const duration4 = plan.totalDuration;
+    const existing = await trx("o_videoTrack").where({ projectId: params.projectId, scriptId: params.scriptId, groupKey: plan.groupKey }).modify((query) => {
+      query.where("archived", 0);
+    }).first();
+    let trackId = Number(existing?.id);
+    if (existing) {
+      await trx("o_videoTrack").where("id", trackId).update({
+        duration: duration4,
+        groupName: plan.groupName,
+        groupIntent: plan.groupIntent,
+        groupPlanJson: JSON.stringify(plan),
+        musicPlanJson: JSON.stringify(plan.bgmSuggestion),
+        reviewState: plan.warnings.some((item) => item.severity === "blocking") ? "blocked" : plan.warnings.length ? "hasIssues" : "pending",
+        reviewIssuesJson: JSON.stringify(plan.warnings)
+      });
+    } else {
+      const [insertedId] = await trx("o_videoTrack").insert({
+        scriptId: params.scriptId,
+        projectId: params.projectId,
+        duration: duration4,
+        groupKey: plan.groupKey,
+        groupName: plan.groupName,
+        groupIntent: plan.groupIntent,
+        groupPlanJson: JSON.stringify(plan),
+        musicPlanJson: JSON.stringify(plan.bgmSuggestion),
+        reviewState: plan.warnings.some((item) => item.severity === "blocking") ? "blocked" : plan.warnings.length ? "hasIssues" : "pending",
+        reviewIssuesJson: JSON.stringify(plan.warnings),
+        archived: 0
+      });
+      trackId = Number(insertedId);
+    }
+    await trx("o_storyboard").whereIn("id", storyboardIds).update({
+      trackId,
+      groupKey: plan.groupKey,
+      groupName: plan.groupName,
+      groupIntent: plan.groupIntent
+    });
+  }
+  return plans;
+}
+var init_storyboardGroupPlanner = __esm({
+  "src/services/storyboardGroupPlanner.ts"() {
+    "use strict";
+    init_musicSuggestion();
+    init_videoModelPolicy();
+    init_storyboardTableContract();
+  }
+});
+
+// src/services/storyboardGeneration.ts
+function storyboardCommitScopeKey(projectId, scriptId) {
+  return `${Number(projectId)}:${Number(scriptId)}`;
+}
+function byteLength2(value) {
+  return Buffer.byteLength(value, "utf8");
+}
+function rowHash(value) {
+  return import_node_crypto8.default.createHash("sha256").update(value, "utf8").digest("hex");
+}
+function generationIssue(field, message) {
+  return { index: -1, field, message };
+}
+function serializeGenerationError(error50) {
+  const anyError = error50;
+  const message = anyError?.message ? String(anyError.message) : String(error50 || "unknown storyboard commit error");
+  return {
+    message: message.slice(0, 2e3),
+    code: anyError?.code ? String(anyError.code).slice(0, 200) : void 0,
+    name: anyError?.name ? String(anyError.name).slice(0, 200) : void 0,
+    stack: anyError?.stack ? String(anyError.stack).slice(0, 4e3) : void 0
+  };
+}
+function parseStoredGenerationError(value, fallback) {
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed?.message) return serializeGenerationError(parsed);
+    } catch {
+      return { message: value.slice(0, 2e3) };
+    }
+  }
+  return { message: fallback };
+}
+function validationIssuesJson(issues) {
+  return JSON.stringify({ message: "storyboard generation validation failed", issues });
+}
+function storedGenerationErrorCode(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const parsed = JSON.parse(value);
+    return parsed?.code ? String(parsed.code) : "";
+  } catch {
+    return "";
+  }
+}
+function failedRetryCoolingDown(generation) {
+  if (storedGenerationErrorCode(generation?.errorJson) === "STALE_COMMIT_RECOVERED") return false;
+  return generation?.state === "failed" && Number.isFinite(Number(generation.updatedAt)) && Date.now() - Number(generation.updatedAt) < STORYBOARD_FAILED_RETRY_COOLDOWN_MS;
+}
+function commitInProgressError() {
+  return {
+    code: "COMMIT_IN_PROGRESS",
+    message: "storyboard generation commit is already in progress",
+    retryable: true
+  };
+}
+function isStaleCommittingGeneration(generation) {
+  if (generation?.state !== "committing") return false;
+  const scopeKey = storyboardCommitScopeKey(generation.projectId, generation.scriptId);
+  if (activeStoryboardCommits.has(scopeKey)) return false;
+  const updatedAt = Number(generation.updatedAt);
+  return Number.isFinite(updatedAt) && Date.now() - updatedAt > STORYBOARD_COMMIT_STALE_MS;
+}
+async function recoverStaleCommittingGeneration(knex3, generation) {
+  if (!isStaleCommittingGeneration(generation)) return generation;
+  const laterCommitted = await knex3("o_storyboardGeneration").where({ projectId: generation.projectId, scriptId: generation.scriptId, state: "committed" }).andWhere("updatedAt", ">", Number(generation.updatedAt || 0)).orderBy("updatedAt", "desc").first("generationId");
+  const errorJson = laterCommitted ? {
+    message: "stale storyboard commit was superseded by a newer committed generation",
+    code: "STALE_COMMIT_SUPERSEDED"
+  } : {
+    message: "stale storyboard commit was recovered after the process stopped while committing",
+    code: "STALE_COMMIT_RECOVERED",
+    retryable: true
+  };
+  await knex3("o_storyboardGeneration").where({ generationId: generation.generationId, state: "committing" }).update({
+    state: laterCommitted ? "superseded" : "failed",
+    errorJson: JSON.stringify(errorJson),
+    updatedAt: Date.now()
+  });
+  return knex3("o_storyboardGeneration").where({ generationId: generation.generationId }).first();
+}
+async function recoverStaleCommittingGenerationsForScope(knex3, projectId, scriptId) {
+  const committingRows = await knex3("o_storyboardGeneration").where({ projectId, scriptId, state: "committing" });
+  for (const generation of committingRows) {
+    await recoverStaleCommittingGeneration(knex3, generation);
+  }
+}
+async function withStoryboardCommitLock(scopeKey, task) {
+  if (activeStoryboardCommits.has(scopeKey)) {
+    return {
+      status: "failed",
+      error: commitInProgressError()
+    };
+  }
+  let release;
+  const lock = new Promise((resolve3) => {
+    release = resolve3;
+  });
+  activeStoryboardCommits.set(scopeKey, lock);
+  try {
+    return await task();
+  } finally {
+    if (activeStoryboardCommits.get(scopeKey) === lock) activeStoryboardCommits.delete(scopeKey);
+    release();
+  }
+}
+async function nextGenerationIndex(knex3, generationId) {
+  const rows = await knex3("o_storyboardGenerationRow").where({ generationId }).orderBy("rowIndex", "asc").select("rowIndex");
+  let nextIndex = 0;
+  for (const row of rows) {
+    if (Number(row.rowIndex) !== nextIndex) break;
+    nextIndex += 1;
+  }
+  return nextIndex;
+}
+async function assertStoryboardGenerationScope(knex3, projectId, scriptId) {
+  if (!Number.isFinite(projectId) || !Number.isFinite(scriptId)) {
+    throw new Error("storyboard generation scope is invalid");
+  }
+  const script = await knex3("o_script").where({ id: scriptId, projectId }).first("id");
+  if (!script) {
+    throw new Error(`script ${scriptId} does not exist in project ${projectId}`);
+  }
+}
+async function cleanupExpiredStoryboardGenerations(knex3 = utils_default.db) {
+  const cutoff = Date.now() - STORYBOARD_GENERATION_TTL_MS;
+  const expired = await knex3("o_storyboardGeneration").whereIn("state", STORYBOARD_EXPIRE_GENERATION_STATES).andWhere("updatedAt", "<", cutoff).select("generationId");
+  const ids = expired.map((item) => String(item.generationId));
+  if (!ids.length) return 0;
+  await knex3.transaction(async (trx) => {
+    await trx("o_storyboardGenerationRow").whereIn("generationId", ids).del();
+    await trx("o_storyboardGeneration").whereIn("generationId", ids).update({
+      state: "expired",
+      updatedAt: Date.now()
+    });
+  });
+  return ids.length;
+}
+async function beginStoryboardGeneration(input, knex3 = utils_default.db) {
+  const expectedRowCount = Number(input.expectedRowCount);
+  if (!Number.isInteger(expectedRowCount) || expectedRowCount <= 0) {
+    throw new Error("expectedRowCount must be a positive integer");
+  }
+  const groups = input.groups.map((group) => storyboardGroupPlanV2Schema.parse(group));
+  const indexes = groups.flatMap((group) => group.storyboardIndexes);
+  const uniqueIndexes = new Set(indexes);
+  if (indexes.length !== expectedRowCount || uniqueIndexes.size !== expectedRowCount) {
+    throw new Error("groups.storyboardIndexes must cover every storyboard index exactly once");
+  }
+  for (let index = 0; index < expectedRowCount; index += 1) {
+    if (!uniqueIndexes.has(index)) throw new Error(`groups.storyboardIndexes is missing index ${index}`);
+  }
+  await assertStoryboardGenerationScope(knex3, Number(input.projectId), Number(input.scriptId));
+  await cleanupExpiredStoryboardGenerations(knex3);
+  await recoverStaleCommittingGenerationsForScope(knex3, Number(input.projectId), Number(input.scriptId));
+  const now2 = Date.now();
+  const generationId = import_node_crypto8.default.randomUUID();
+  const committing = await knex3("o_storyboardGeneration").where({ projectId: input.projectId, scriptId: input.scriptId, state: "committing" }).first("generationId");
+  if (committing) {
+    throw new Error("storyboard generation commit is already in progress");
+  }
+  await knex3.transaction(async (trx) => {
+    await trx("o_storyboardGeneration").where({ projectId: input.projectId, scriptId: input.scriptId }).whereIn("state", STORYBOARD_ACTIVE_GENERATION_STATES).update({
+      state: "superseded",
+      errorJson: JSON.stringify({
+        message: "storyboard generation was superseded by a newer generation",
+        code: "GENERATION_SUPERSEDED"
+      }),
+      updatedAt: now2
+    });
+    await trx("o_storyboardGeneration").insert({
+      generationId,
+      projectId: input.projectId,
+      scriptId: input.scriptId,
+      expectedRowCount,
+      groupPlanJson: JSON.stringify(groups),
+      state: "writing",
+      revision: null,
+      errorJson: null,
+      createdAt: now2,
+      updatedAt: now2
+    });
+  });
+  return { generationId, nextIndex: 0, batchSize: STORYBOARD_BATCH_SIZE };
+}
+async function appendStoryboardRows(input, knex3 = utils_default.db) {
+  if (!input.rows.length || input.rows.length > STORYBOARD_BATCH_SIZE) {
+    throw new Error(`rows must contain between 1 and ${STORYBOARD_BATCH_SIZE} items`);
+  }
+  const generation = await knex3("o_storyboardGeneration").where({ generationId: input.generationId }).first();
+  if (!generation) throw new Error("storyboard generation does not exist");
+  if (!["writing", "invalid"].includes(generation.state)) {
+    throw new Error(`storyboard generation is ${generation.state}`);
+  }
+  const rows = input.rows.map((row) => storyboardTableRowV2Schema.parse(row));
+  const issues = validateStoryboardTableRows(rows);
+  const serialized = rows.map((row) => JSON.stringify(row));
+  serialized.forEach((value, index) => {
+    if (byteLength2(value) > STORYBOARD_ROW_MAX_BYTES) {
+      issues.push({
+        index,
+        field: "row",
+        message: `row exceeds ${STORYBOARD_ROW_MAX_BYTES} bytes`
+      });
+    }
+  });
+  if (serialized.reduce((sum, value) => sum + byteLength2(value), 0) > STORYBOARD_BATCH_MAX_BYTES) {
+    issues.push(generationIssue("rows", `batch exceeds ${STORYBOARD_BATCH_MAX_BYTES} bytes`));
+  }
+  const nextIndex = await nextGenerationIndex(knex3, input.generationId);
+  rows.forEach((row, index) => {
+    if (row.index < 0 || row.index >= Number(generation.expectedRowCount)) {
+      issues.push({
+        index,
+        field: "index",
+        message: `index ${row.index} is outside expected range 0-${Number(generation.expectedRowCount) - 1}`
+      });
+    }
+  });
+  const seenIndexes = /* @__PURE__ */ new Set();
+  rows.forEach((row, index) => {
+    if (seenIndexes.has(row.index)) issues.push({ index, field: "index", message: `duplicate row index ${row.index}` });
+    seenIndexes.add(row.index);
+  });
+  if (issues.length) {
+    await knex3("o_storyboardGeneration").where({ generationId: input.generationId }).update({
+      state: "invalid",
+      errorJson: validationIssuesJson(issues),
+      updatedAt: Date.now()
+    });
+    return {
+      accepted: 0,
+      nextIndex,
+      totalAccepted: nextIndex,
+      expectedRowCount: Number(generation.expectedRowCount),
+      issues
+    };
+  }
+  const existingRows = await knex3("o_storyboardGenerationRow").where({ generationId: input.generationId }).whereIn(
+    "rowIndex",
+    rows.map((row) => row.index)
+  );
+  const existingMap = new Map(existingRows.map((row) => [Number(row.rowIndex), row]));
+  const conflicts = [];
+  serialized.forEach((value, index) => {
+    const rowIndex = rows[index].index;
+    const existing = existingMap.get(rowIndex);
+    if (existing && existing.rowHash !== rowHash(value)) {
+      conflicts.push({ index, field: "index", message: `row ${rowIndex} was already written with different content` });
+    }
+  });
+  if (conflicts.length) {
+    return {
+      accepted: 0,
+      nextIndex,
+      totalAccepted: nextIndex,
+      expectedRowCount: Number(generation.expectedRowCount),
+      issues: conflicts
+    };
+  }
+  let accepted = 0;
+  await knex3.transaction(async (trx) => {
+    for (const [index, row] of rows.entries()) {
+      if (existingMap.has(row.index)) continue;
+      const value = serialized[index];
+      await trx("o_storyboardGenerationRow").insert({
+        generationId: input.generationId,
+        rowIndex: row.index,
+        rowJson: value,
+        rowHash: rowHash(value),
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      });
+      accepted += 1;
+    }
+    await trx("o_storyboardGeneration").where({ generationId: input.generationId }).update({
+      state: "writing",
+      errorJson: null,
+      updatedAt: Date.now()
+    });
+  });
+  const updatedNextIndex = await nextGenerationIndex(knex3, input.generationId);
+  const totalRow = await knex3("o_storyboardGenerationRow").where({ generationId: input.generationId }).count({ count: "*" }).first();
+  return {
+    accepted,
+    nextIndex: updatedNextIndex,
+    totalAccepted: Number(totalRow?.count || 0),
+    expectedRowCount: Number(generation.expectedRowCount),
+    issues: []
+  };
+}
+async function validateAssets(knex3, projectId, rows) {
+  const ids = [...new Set(rows.flatMap(assetIdsFromStoryboardRow))];
+  if (!ids.length) return [];
+  const assets = await knex3("o_assets").whereIn("id", ids).select("id", "projectId");
+  const valid = new Set(
+    assets.filter((asset) => Number(asset.projectId) === projectId).map((asset) => Number(asset.id))
+  );
+  return rows.flatMap(
+    (row, rowIndex) => row.requiredAssets.filter((asset) => !valid.has(asset.assetId)).map((asset) => ({
+      index: rowIndex,
+      field: "requiredAssets",
+      message: `asset ${asset.assetId} does not exist in project ${projectId}`
+    }))
+  );
+}
+function validateGroups(rows, groups, durationPolicy) {
+  const issues = [];
+  const groupMap = new Map(groups.map((group) => [group.groupKey, group]));
+  const sortedRows = [...rows].sort((a, b) => a.index - b.index);
+  rows.forEach((row, rowIndex) => {
+    const group = groupMap.get(row.groupKey);
+    if (!group) {
+      issues.push({ index: rowIndex, field: "groupKey", message: `unknown groupKey ${row.groupKey}` });
+      return;
+    }
+    if (!group.storyboardIndexes.includes(row.index)) {
+      issues.push({
+        index: rowIndex,
+        field: "groupKey",
+        message: `row index ${row.index} is not listed in group ${row.groupKey}`
+      });
+    }
+  });
+  for (const group of groups) {
+    const actual = sortedRows.filter((row) => row.groupKey === group.groupKey).map((row) => row.index);
+    if (JSON.stringify(actual) !== JSON.stringify(group.storyboardIndexes)) {
+      issues.push(generationIssue(`groups.${group.groupKey}`, "storyboard indexes do not match the submitted rows"));
+    }
+    const sortedIndexes = [...group.storyboardIndexes].sort((a, b) => a - b);
+    for (let index = 1; index < sortedIndexes.length; index += 1) {
+      if (sortedIndexes[index] !== sortedIndexes[index - 1] + 1) {
+        issues.push(generationIssue(`groups.${group.groupKey}`, "storyboard indexes must be continuous"));
+        break;
+      }
+    }
+    if (JSON.stringify(sortedIndexes) !== JSON.stringify(group.storyboardIndexes)) {
+      issues.push(generationIssue(`groups.${group.groupKey}`, "storyboard indexes must be in ascending order"));
+    }
+    const totalDuration = rows.filter((row) => row.groupKey === group.groupKey).reduce((sum, row) => sum + (Number(row.durationSec) || 0), 0);
+    if (durationPolicy?.canValidate && Number.isFinite(totalDuration) && totalDuration > Number(durationPolicy.maxDuration)) {
+      issues.push(
+        generationIssue(
+          `groups.${group.groupKey}.durationSec`,
+          `group duration ${totalDuration}s exceeds ${durationPolicy.modelLabel} max duration ${durationPolicy.maxDuration}s`
+        )
+      );
+    }
+  }
+  return issues;
+}
+function normalizeRowsWithGroupPlan(rows, groups) {
+  const groupMap = new Map(groups.map((group) => [group.groupKey, group]));
+  return rows.map((row) => {
+    const group = groupMap.get(row.groupKey);
+    return group ? {
+      ...row,
+      groupName: group.groupName,
+      groupIntent: group.groupIntent
+    } : row;
+  });
+}
+async function commitStoryboardGeneration(generationId, knex3 = utils_default.db) {
+  let generation = await knex3("o_storyboardGeneration").where({ generationId }).first();
+  if (!generation) throw new Error("storyboard generation does not exist");
+  const committedResult = (row) => ({
+    status: "committed",
+    rowCount: Number(row.expectedRowCount),
+    groupCount: JSON.parse(row.groupPlanJson || "[]").length,
+    revision: Number(row.revision || 1)
+  });
+  const failedResult = (error50) => ({
+    status: "failed",
+    error: error50
+  });
+  if (generation.state === "committed") return committedResult(generation);
+  if (generation.state === "superseded") {
+    return failedResult({
+      code: "GENERATION_SUPERSEDED",
+      message: "storyboard generation was superseded by a newer generation"
+    });
+  }
+  if (failedRetryCoolingDown(generation)) {
+    return failedResult(parseStoredGenerationError(generation.errorJson, "storyboard generation commit failed"));
+  }
+  if (generation.state === "committing") {
+    generation = await recoverStaleCommittingGeneration(knex3, generation);
+    if (generation.state === "superseded") {
+      return failedResult({
+        code: "GENERATION_SUPERSEDED",
+        message: "storyboard generation was superseded by a newer generation"
+      });
+    }
+    if (generation.state === "committing") return failedResult(commitInProgressError());
+  }
+  if (!["writing", "invalid", "failed"].includes(generation.state)) {
+    return failedResult({ message: `storyboard generation is ${generation.state}` });
+  }
+  const scopeKey = `${generation.projectId}:${generation.scriptId}`;
+  return withStoryboardCommitLock(scopeKey, async () => {
+    generation = await knex3("o_storyboardGeneration").where({ generationId }).first();
+    if (!generation) throw new Error("storyboard generation does not exist");
+    if (generation.state === "committed") return committedResult(generation);
+    if (generation.state === "superseded") {
+      return failedResult({
+        code: "GENERATION_SUPERSEDED",
+        message: "storyboard generation was superseded by a newer generation"
+      });
+    }
+    if (failedRetryCoolingDown(generation)) {
+      return failedResult(parseStoredGenerationError(generation.errorJson, "storyboard generation commit failed"));
+    }
+    if (generation.state === "committing") {
+      generation = await recoverStaleCommittingGeneration(knex3, generation);
+      if (generation.state === "committed") return committedResult(generation);
+      if (generation.state === "superseded") {
+        return failedResult({
+          code: "GENERATION_SUPERSEDED",
+          message: "storyboard generation was superseded by a newer generation"
+        });
+      }
+      if (generation.state === "committing") return failedResult(commitInProgressError());
+    }
+    if (!["writing", "invalid", "failed"].includes(generation.state)) {
+      return failedResult({ message: `storyboard generation is ${generation.state}` });
+    }
+    try {
+      await assertStoryboardGenerationScope(knex3, Number(generation.projectId), Number(generation.scriptId));
+    } catch (error50) {
+      const serialized = serializeGenerationError(error50);
+      await knex3("o_storyboardGeneration").where({ generationId }).update({
+        state: "failed",
+        errorJson: JSON.stringify(serialized),
+        updatedAt: Date.now()
+      });
+      return failedResult(serialized);
+    }
+    const locked = await knex3("o_storyboardGeneration").where({ generationId }).whereIn("state", ["writing", "invalid", "failed"]).update({ state: "committing", errorJson: null, updatedAt: Date.now() });
+    if (!locked) {
+      generation = await knex3("o_storyboardGeneration").where({ generationId }).first();
+      return generation?.state === "committed" ? committedResult(generation) : failedResult(commitInProgressError());
+    }
+    try {
+      generation = await knex3("o_storyboardGeneration").where({ generationId }).first();
+      const draftRows = await knex3("o_storyboardGenerationRow").where({ generationId }).orderBy("rowIndex", "asc");
+      let rows = [];
+      const parseIssues = [];
+      for (const draft of draftRows) {
+        try {
+          rows.push(storyboardTableRowV2Schema.parse(JSON.parse(draft.rowJson)));
+        } catch (error50) {
+          parseIssues.push(generationIssue(`row.${draft.rowIndex}`, error50?.message || "invalid row JSON"));
+        }
+      }
+      const groups = JSON.parse(generation.groupPlanJson || "[]").map(
+        (group) => storyboardGroupPlanV2Schema.parse(group)
+      );
+      const durationPolicy = await getProjectDefaultVideoPolicy(Number(generation.projectId), { knex: knex3 });
+      const issues = [
+        ...parseIssues,
+        ...validateStoryboardTableRows(rows),
+        ...validateGroups(rows, groups, durationPolicy),
+        ...await validateAssets(knex3, Number(generation.projectId), rows)
+      ];
+      if (rows.length !== Number(generation.expectedRowCount)) {
+        issues.push(generationIssue("expectedRowCount", `expected ${generation.expectedRowCount}, got ${rows.length}`));
+      }
+      rows = rows.sort((a, b) => a.index - b.index);
+      for (let index = 0; index < Number(generation.expectedRowCount); index += 1) {
+        if (!rows[index] || rows[index].index !== index) {
+          issues.push({ index, field: "index", message: `missing row index ${index}` });
+        }
+      }
+      if (issues.length) {
+        await knex3("o_storyboardGeneration").where({ generationId }).update({
+          state: "invalid",
+          errorJson: validationIssuesJson(issues),
+          updatedAt: Date.now()
+        });
+        return { status: "invalid", issues };
+      }
+      rows = normalizeRowsWithGroupPlan(rows, groups);
+      const revisionRow = await knex3("o_storyboard").where({ projectId: generation.projectId, scriptId: generation.scriptId }).max({ revision: "factRevision" }).first();
+      const revision = Number(revisionRow?.revision || 0) + 1;
+      const existingIds = (await knex3("o_storyboard").where({ projectId: generation.projectId, scriptId: generation.scriptId }).select("id")).map((row) => Number(row.id));
+      const hasArchivedColumn = await knex3.schema.hasColumn("o_videoTrack", "archived");
+      await knex3.transaction(async (trx) => {
+        if (existingIds.length) {
+          await trx("o_assets2Storyboard").whereIn("storyboardId", existingIds).del();
+          await trx("o_storyboard").whereIn("id", existingIds).del();
+        }
+        if (hasArchivedColumn) {
+          await trx("o_videoTrack").where({ projectId: generation.projectId, scriptId: generation.scriptId }).update({ archived: 1 });
+        }
+        for (const row of rows) {
+          const [id] = await trx("o_storyboard").insert({
+            ...storyboardRowToDbPatch(row, revision),
+            projectId: generation.projectId,
+            scriptId: generation.scriptId,
+            index: row.index,
+            prompt: "",
+            filePath: "",
+            state: "\u672A\u751F\u6210",
+            shouldGenerateImage: 0,
+            referenceImages: "[]",
+            createTime: Date.now()
+          });
+          const assetIds = assetIdsFromStoryboardRow(row);
+          if (assetIds.length) {
+            await trx("o_assets2Storyboard").insert(assetIds.map((assetId) => ({ assetId, storyboardId: id })));
+          }
+        }
+        const storyboards = await trx("o_storyboard").where({ projectId: generation.projectId, scriptId: generation.scriptId }).orderBy("index", "asc");
+        await syncVideoTracksForStoryboards(trx, {
+          projectId: Number(generation.projectId),
+          scriptId: Number(generation.scriptId),
+          storyboards,
+          durationPolicy
+        });
+        const formalCountRow = await trx("o_storyboard").where({ projectId: generation.projectId, scriptId: generation.scriptId }).count({ count: "*" }).first();
+        if (Number(formalCountRow?.count || 0) !== Number(generation.expectedRowCount)) {
+          throw new Error(
+            `storyboard commit wrote ${formalCountRow?.count || 0} rows, expected ${generation.expectedRowCount}`
+          );
+        }
+        if (hasArchivedColumn) {
+          const groupKeys = groups.map((group) => group.groupKey);
+          const activeTrackCountRow = await trx("o_videoTrack").where({ projectId: generation.projectId, scriptId: generation.scriptId, archived: 0 }).whereIn("groupKey", groupKeys).count({ count: "*" }).first();
+          if (Number(activeTrackCountRow?.count || 0) !== groups.length) {
+            throw new Error(
+              `storyboard commit produced ${activeTrackCountRow?.count || 0} active tracks, expected ${groups.length}`
+            );
+          }
+        }
+        await trx("o_storyboardGeneration").where({ generationId }).update({
+          state: "committed",
+          revision,
+          errorJson: null,
+          updatedAt: Date.now()
+        });
+        await trx("o_storyboardGeneration").where({ projectId: generation.projectId, scriptId: generation.scriptId }).whereIn("state", STORYBOARD_ACTIVE_GENERATION_STATES).whereNot({ generationId }).update({
+          state: "superseded",
+          errorJson: JSON.stringify({
+            message: "storyboard generation was superseded by a committed generation",
+            code: "GENERATION_SUPERSEDED"
+          }),
+          updatedAt: Date.now()
+        });
+        await trx("o_storyboardGenerationRow").where({ generationId }).del();
+      });
+      return {
+        status: "committed",
+        rowCount: rows.length,
+        groupCount: groups.length,
+        revision
+      };
+    } catch (error50) {
+      const serialized = { ...serializeGenerationError(error50), retryable: true };
+      await knex3("o_storyboardGeneration").where({ generationId }).update({
+        state: "failed",
+        errorJson: JSON.stringify(serialized),
+        updatedAt: Date.now()
+      });
+      return { status: "failed", error: serialized };
+    }
+  });
+}
+var import_node_crypto8, STORYBOARD_BATCH_SIZE, STORYBOARD_ROW_MAX_BYTES, STORYBOARD_BATCH_MAX_BYTES, STORYBOARD_GENERATION_TTL_MS, STORYBOARD_FAILED_RETRY_COOLDOWN_MS, STORYBOARD_COMMIT_STALE_MS, STORYBOARD_ACTIVE_GENERATION_STATES, STORYBOARD_EXPIRE_GENERATION_STATES, activeStoryboardCommits;
+var init_storyboardGeneration = __esm({
+  "src/services/storyboardGeneration.ts"() {
+    "use strict";
+    import_node_crypto8 = __toESM(require("node:crypto"));
+    init_utils3();
+    init_storyboardTableContract();
+    init_storyboardGroupPlanner();
+    init_videoModelPolicy();
+    STORYBOARD_BATCH_SIZE = 10;
+    STORYBOARD_ROW_MAX_BYTES = 32 * 1024;
+    STORYBOARD_BATCH_MAX_BYTES = 256 * 1024;
+    STORYBOARD_GENERATION_TTL_MS = 24 * 60 * 60 * 1e3;
+    STORYBOARD_FAILED_RETRY_COOLDOWN_MS = 30 * 1e3;
+    STORYBOARD_COMMIT_STALE_MS = 5 * 60 * 1e3;
+    STORYBOARD_ACTIVE_GENERATION_STATES = ["writing", "invalid", "failed"];
+    STORYBOARD_EXPIRE_GENERATION_STATES = ["writing", "invalid", "failed", "committing", "superseded"];
+    activeStoryboardCommits = /* @__PURE__ */ new Map();
+  }
+});
+
 // src/agents/productionAgent/tools.ts
-var deriveAssetSchema, assetItemSchema, storyboardSchema, workbenchDataSchema, posterItemSchema, flowDataSchema, keySchema, flowDataKeyLabels, tools_default;
+function scopedNumber(value, field) {
+  const number5 = Number(value);
+  if (!Number.isFinite(number5)) throw new Error(`missing production agent ${field}`);
+  return number5;
+}
+function assertOptionalScopeMatches(input, projectId, scriptId) {
+  if (input.projectId != null && Number(input.projectId) !== projectId) {
+    throw new Error(`projectId ${input.projectId} does not match current production agent projectId ${projectId}`);
+  }
+  if (input.scriptId != null && Number(input.scriptId) !== scriptId) {
+    throw new Error(`scriptId ${input.scriptId} does not match current production agent scriptId ${scriptId}`);
+  }
+}
+var deriveAssetSchema, assetItemSchema, storyboardSchema, workbenchDataSchema, beginStoryboardTableInputSchema, appendStoryboardRowsInputSchema, commitStoryboardTableInputSchema, updateStoryboardPanelV2InputSchema, posterItemSchema, flowDataSchema, keySchema, flowDataKeyLabels, tools_default;
 var init_tools = __esm({
   "src/agents/productionAgent/tools.ts"() {
     "use strict";
     init_dist22();
     init_zod();
     init_utils3();
+    init_storyboardTableContract();
+    init_storyboardGeneration();
     deriveAssetSchema = external_exports.object({
       id: external_exports.number().describe("\u884D\u751F\u8D44\u4EA7ID,\u5982\u679C\u65B0\u589E\u5219\u4E3A\u7A7A"),
       assetsId: external_exports.number().describe("\u5173\u8054\u7684\u8D44\u4EA7ID"),
@@ -193644,7 +194181,22 @@ var init_tools = __esm({
       prompt: external_exports.string().describe("\u751F\u6210\u63D0\u793A\u8BCD"),
       associateAssetsIds: external_exports.array(external_exports.number()).describe("\u5173\u8054\u8D44\u4EA7ID\u5217\u8868"),
       src: external_exports.string().nullable().describe("\u5206\u955C\u8D44\u6E90\u8DEF\u5F84"),
-      index: external_exports.number().nullable().optional().describe("\u5206\u955C\u6392\u5E8F\u5B57\u6BB5")
+      index: external_exports.number().nullable().optional().describe("\u5206\u955C\u6392\u5E8F\u5B57\u6BB5"),
+      groupKey: external_exports.string().optional().describe("Storyboard group key"),
+      groupName: external_exports.string().optional().describe("Storyboard group name"),
+      groupIntent: external_exports.string().optional().describe("Storyboard group dramatic intent"),
+      beatId: external_exports.string().optional().describe("Beat id inside the storyboard group"),
+      tableRowJson: external_exports.string().nullable().optional().describe("\u552F\u4E00\u7ED3\u6784\u5316\u5206\u955C\u4E8B\u5B9E JSON"),
+      factStatus: external_exports.enum(["draft", "ready", "legacy"]).optional().describe("\u5206\u955C\u4E8B\u5B9E\u72B6\u6001"),
+      location: external_exports.string().optional(),
+      timeOfDay: external_exports.string().optional(),
+      picture: external_exports.string().optional(),
+      action: external_exports.string().optional(),
+      shotSize: external_exports.string().optional(),
+      cameraMove: external_exports.string().optional(),
+      dialogue: external_exports.string().optional(),
+      sound: external_exports.string().optional(),
+      visibleEmotion: external_exports.string().optional()
     });
     workbenchDataSchema = external_exports.object({
       name: external_exports.string().describe("\u9879\u76EE\u540D\u79F0"),
@@ -193653,6 +194205,33 @@ var init_tools = __esm({
       fps: external_exports.string().describe("\u5E27\u7387"),
       cover: external_exports.string().optional().describe("\u5C01\u9762\u56FE\u7247\u8DEF\u5F84"),
       gradient: external_exports.string().optional().describe("\u6E10\u53D8\u8272\u914D\u7F6E")
+    });
+    beginStoryboardTableInputSchema = external_exports.object({
+      projectId: external_exports.number().optional(),
+      scriptId: external_exports.number().optional(),
+      expectedRowCount: external_exports.number().int().positive(),
+      groups: external_exports.array(storyboardGroupPlanV2Schema).min(1)
+    });
+    appendStoryboardRowsInputSchema = external_exports.object({
+      generationId: external_exports.string().uuid(),
+      startIndex: external_exports.number().int().nonnegative(),
+      rows: external_exports.array(storyboardTableRowV2Schema).min(1).max(10)
+    });
+    commitStoryboardTableInputSchema = external_exports.object({
+      generationId: external_exports.string().uuid()
+    });
+    updateStoryboardPanelV2InputSchema = external_exports.object({
+      projectId: external_exports.number().optional(),
+      scriptId: external_exports.number().optional(),
+      items: external_exports.array(
+        external_exports.object({
+          storyboardId: external_exports.number().optional(),
+          index: external_exports.number().optional(),
+          prompt: external_exports.string(),
+          shouldGenerateImage: external_exports.boolean(),
+          associateAssetsIds: external_exports.array(external_exports.number()).optional().default([])
+        })
+      )
     });
     posterItemSchema = external_exports.object({
       id: external_exports.number().describe("\u6D77\u62A5ID"),
@@ -193689,6 +194268,123 @@ var init_tools = __esm({
             thinking.updateTitle(`\u83B7\u53D6${flowDataKeyLabels[key]}\u5B8C\u6210`);
             thinking.complete();
             return flowData[key];
+          }
+        }),
+        begin_storyboard_table: tool({
+          description: "Start an atomic storyboard-table generation and submit the complete group plan before writing rows.",
+          inputSchema: jsonSchema(beginStoryboardTableInputSchema.toJSONSchema()),
+          execute: async (raw) => {
+            const input = beginStoryboardTableInputSchema.parse(raw);
+            const projectId = scopedNumber(resTool.data.projectId, "projectId");
+            const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+            assertOptionalScopeMatches(input, projectId, scriptId);
+            const thinking = msg.thinking("\u6B63\u5728\u521B\u5EFA\u5206\u955C\u8868\u5199\u5165\u6279\u6B21...");
+            try {
+              const result = await beginStoryboardGeneration({
+                projectId,
+                scriptId,
+                expectedRowCount: input.expectedRowCount,
+                groups: input.groups
+              });
+              thinking.appendText(`generationId=${result.generationId}, expectedRows=${input.expectedRowCount}`);
+              return result;
+            } catch (error50) {
+              thinking.appendText(error50?.message || String(error50));
+              thinking.updateTitle?.("storyboard table begin failed");
+              throw error50;
+            } finally {
+              thinking.complete();
+            }
+          }
+        }),
+        append_storyboard_rows: tool({
+          description: "Append 1-10 authoritative structured storyboard rows. Retry identical rows safely after interruption.",
+          inputSchema: jsonSchema(appendStoryboardRowsInputSchema.toJSONSchema()),
+          execute: async (raw) => {
+            const input = appendStoryboardRowsInputSchema.parse(raw);
+            const thinking = msg.thinking(`\u6B63\u5728\u5199\u5165\u5206\u955C ${input.startIndex + 1}-${input.startIndex + input.rows.length}...`);
+            try {
+              const result = await appendStoryboardRows(input);
+              thinking.appendText(`accepted=${result.accepted}, nextIndex=${result.nextIndex}, issues=${result.issues.length}`);
+              return result;
+            } catch (error50) {
+              thinking.appendText(error50?.message || String(error50));
+              thinking.updateTitle?.("storyboard rows append failed");
+              throw error50;
+            } finally {
+              thinking.complete();
+            }
+          }
+        }),
+        commit_storyboard_table: tool({
+          description: "Validate all submitted rows and atomically replace the formal storyboard table.",
+          inputSchema: jsonSchema(commitStoryboardTableInputSchema.toJSONSchema()),
+          execute: async (raw) => {
+            const input = commitStoryboardTableInputSchema.parse(raw);
+            const thinking = msg.thinking("\u6B63\u5728\u6821\u9A8C\u5E76\u63D0\u4EA4\u5B8C\u6574\u5206\u955C\u8868...");
+            try {
+              const result = await commitStoryboardGeneration(input.generationId);
+              if (result.status === "committed") {
+                thinking.appendText(`rows=${result.rowCount}, groups=${result.groupCount}, revision=${result.revision}`);
+                thinking.updateTitle?.("storyboard table committed");
+              } else if (result.status === "invalid") {
+                thinking.appendText(JSON.stringify(result.issues));
+                thinking.updateTitle?.("storyboard table validation failed");
+              } else {
+                const message = result.error.code === "COMMIT_IN_PROGRESS" ? "\u63D0\u4EA4\u4ECD\u88AB\u540E\u7AEF\u4EFB\u52A1\u5360\u7528\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u6216\u91CD\u65B0\u5F00\u59CB\u5206\u955C\u8868\u751F\u6210\u3002" : JSON.stringify(result.error);
+                thinking.appendText(message);
+                thinking.updateTitle?.("storyboard table commit failed");
+              }
+              return result;
+            } catch (error50) {
+              thinking.appendText(error50?.message || String(error50));
+              thinking.updateTitle?.("storyboard table commit failed");
+              throw error50;
+            } finally {
+              thinking.complete();
+            }
+          }
+        }),
+        update_storyboard_panel_v2: tool({
+          description: "Update visual-generation fields for existing storyboard rows. It never creates storyboard rows and never rewrites storyboard-table narrative facts.",
+          inputSchema: jsonSchema(
+            updateStoryboardPanelV2InputSchema.toJSONSchema()
+          ),
+          execute: async (raw) => {
+            const input = updateStoryboardPanelV2InputSchema.parse(raw);
+            const projectId = scopedNumber(resTool.data.projectId, "projectId");
+            const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+            assertOptionalScopeMatches(input, projectId, scriptId);
+            const updatedIds = [];
+            const issues = [];
+            await utils_default.db.transaction(async (trx) => {
+              for (const [itemIndex, item] of input.items.entries()) {
+                const query = trx("o_storyboard").where({ projectId, scriptId });
+                if (item.storyboardId != null) query.andWhere("id", item.storyboardId);
+                else if (item.index != null) query.andWhere("index", item.index);
+                else {
+                  issues.push({ item: itemIndex, message: "storyboardId or index is required" });
+                  continue;
+                }
+                const storyboard = await query.first("id");
+                if (!storyboard) {
+                  issues.push({ item: itemIndex, message: "storyboard not found" });
+                  continue;
+                }
+                const storyboardId = Number(storyboard.id);
+                await trx("o_storyboard").where("id", storyboardId).update({
+                  prompt: item.prompt,
+                  shouldGenerateImage: item.shouldGenerateImage ? 1 : 0
+                });
+                await trx("o_assets2Storyboard").where("storyboardId", storyboardId).del();
+                const assetIds = [...new Set(item.associateAssetsIds || [])];
+                if (assetIds.length) {
+                  await trx("o_assets2Storyboard").insert(assetIds.map((assetId) => ({ storyboardId, assetId })));
+                }
+                updatedIds.push(storyboardId);
+              }
+            });
+            return { ok: issues.length === 0, updatedIds, issues };
           }
         }),
         add_deriveAsset: tool({
@@ -193806,6 +194502,130 @@ var init_tools = __esm({
   }
 });
 
+// src/services/textAsset.ts
+function sha256(content) {
+  return import_node_crypto9.default.createHash("sha256").update(content, "utf8").digest("hex");
+}
+function sanitizeSegment(value, fallback) {
+  const cleaned = String(value ?? "").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  return cleaned || fallback;
+}
+function normalizeRelativePath(filePath) {
+  const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (normalized.includes("..")) throw new Error("Invalid text asset path");
+  if (!normalized.startsWith(`${TEXT_ASSET_ROOT}/`) && !normalized.startsWith(`${PROJECT_TEXT_ROOT}/`)) {
+    throw new Error("Invalid text asset root");
+  }
+  return normalized;
+}
+function resolveTextAssetPath(filePath) {
+  const relative = normalizeRelativePath(filePath);
+  let root2;
+  let target;
+  if (relative.startsWith(`${PROJECT_TEXT_ROOT}/`)) {
+    root2 = import_node_path14.default.resolve(workspaceRoot());
+    target = import_node_path14.default.resolve(workspaceRoot(), ...relative.split("/"));
+  } else {
+    root2 = import_node_path14.default.resolve(legacyDataRoot(), TEXT_ASSET_ROOT);
+    target = import_node_path14.default.resolve(legacyDataRoot(), ...relative.split("/"));
+    if (storageMode() === "workspace" && !(target === root2 || isPathInside(target, root2))) {
+      root2 = import_node_path14.default.resolve(utils_default.getPath(TEXT_ASSET_ROOT));
+      target = import_node_path14.default.resolve(utils_default.getPath(relative.split("/")));
+    }
+  }
+  if (target !== root2 && !isPathInside(target, root2)) throw new Error("Invalid text asset path");
+  return target;
+}
+async function nextTextAssetId() {
+  const row = await utils_default.db("o_textAsset").max("id as id").first();
+  return Number(row?.id || 0) + 1;
+}
+async function nextVersion(input) {
+  const query = utils_default.db("o_textAsset").where({ projectId: input.projectId, targetType: input.targetType });
+  if (input.scriptId == null) query.whereNull("scriptId");
+  else query.andWhere("scriptId", input.scriptId);
+  if (input.targetId == null) query.whereNull("targetId");
+  else query.andWhere("targetId", String(input.targetId));
+  const row = await query.max("version as version").first();
+  return Number(row?.version || 0) + 1;
+}
+async function createTextAsset(input) {
+  const content = input.content ?? "";
+  const now2 = Date.now();
+  const id = await nextTextAssetId();
+  const version3 = await nextVersion(input);
+  const ext = input.extension || (input.targetType === "promptDiagnostic" ? "json" : "md");
+  const targetId = sanitizeSegment(input.targetId ?? "project", "project");
+  const scriptSegment = input.scriptId == null ? "common" : `script-${input.scriptId}`;
+  const fileName = `${scriptSegment}-${targetId}-v${version3}-${utils_default.uuid()}.${ext}`;
+  const relativePath = storageMode() === "workspace" ? ["projects", String(input.projectId), "text", sanitizeSegment(input.targetType, "text"), fileName].join("/") : [TEXT_ASSET_ROOT, String(input.projectId), sanitizeSegment(input.targetType, "text"), fileName].join("/");
+  const absolutePath = resolveTextAssetPath(relativePath);
+  await import_promises9.default.mkdir(import_node_path14.default.dirname(absolutePath), { recursive: true });
+  const tempPath = `${absolutePath}.tmp-${process.pid}-${Date.now()}`;
+  await import_promises9.default.writeFile(tempPath, content, "utf8");
+  await import_promises9.default.rename(tempPath, absolutePath);
+  const size = Buffer.byteLength(content, "utf8");
+  const hash3 = sha256(content);
+  const summary = (input.summary || content.replace(/\s+/g, " ").slice(0, 500)).slice(0, 1e3);
+  await utils_default.db("o_textAsset").insert({
+    id,
+    projectId: input.projectId,
+    scriptId: input.scriptId ?? null,
+    targetType: input.targetType,
+    targetId: input.targetId == null ? null : String(input.targetId),
+    filePath: relativePath,
+    summary,
+    size,
+    hash: hash3,
+    version: version3,
+    state: input.state || "complete",
+    createTime: now2,
+    updateTime: now2
+  });
+  return {
+    id,
+    projectId: input.projectId,
+    scriptId: input.scriptId ?? null,
+    targetType: input.targetType,
+    targetId: input.targetId == null ? null : String(input.targetId),
+    filePath: relativePath,
+    summary,
+    size,
+    hash: hash3,
+    version: version3,
+    state: input.state || "complete",
+    createTime: now2,
+    updateTime: now2
+  };
+}
+function summarizeLongText(content, textAssetId) {
+  const compact = content.replace(/\s+/g, " ").trim();
+  const head = compact.slice(0, 1200);
+  const tail = compact.length > 1800 ? compact.slice(-400) : "";
+  return [
+    head,
+    tail ? `... ${tail}` : "",
+    "",
+    `[full text asset: ${textAssetId}]`
+  ].filter(Boolean).join("\n");
+}
+var import_node_crypto9, import_promises9, import_node_path14, TEXT_ASSET_ROOT, PROJECT_TEXT_ROOT, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT;
+var init_textAsset = __esm({
+  "src/services/textAsset.ts"() {
+    "use strict";
+    import_node_crypto9 = __toESM(require("node:crypto"));
+    import_promises9 = __toESM(require("node:fs/promises"));
+    import_node_path14 = __toESM(require("node:path"));
+    init_is_path_inside();
+    init_utils3();
+    init_storagePaths();
+    TEXT_ASSET_ROOT = "textAssets";
+    PROJECT_TEXT_ROOT = "projects";
+    DEFAULT_PAGE_LIMIT = 128 * 1024;
+    MAX_PAGE_LIMIT = 1024 * 1024;
+  }
+});
+
 // src/agents/productionAgent/index.ts
 function buildMemPrompt(mem) {
   let memoryContext = "";
@@ -193827,12 +194647,49 @@ ${mem.shortTerm.map((m) => `${m.role}: ${m.content}`).join("\n")}`;
 \u4EE5\u4E0B\u662F\u4F60\u5BF9\u7528\u6237\u7684\u8BB0\u5FC6\uFF0C\u53EF\u4F5C\u4E3A\u53C2\u8003\u4F46\u4E0D\u8981\u4E3B\u52A8\u63D0\u53CA\uFF1A
 ${memoryContext}`;
 }
+async function readBuiltinSkill(fileName) {
+  const builtin = await readBuiltinDataFile("skills", fileName);
+  if (builtin) return builtin.content;
+  return fs20.promises.readFile(import_path9.default.join(utils_default.getPath("skills"), fileName), "utf-8");
+}
+async function buildProductionModelInfo(params) {
+  const durationPolicy = await getProjectDefaultVideoPolicy(params.projectId);
+  const durationText = durationPolicy.canValidate ? `${durationPolicy.maxDuration}s` : `${durationPolicy.maxDuration}s\uFF08\u4F9B\u5E94\u5546\u672A\u63D0\u4F9B\u5B8C\u6574\u65F6\u957F\u914D\u7F6E\uFF0C\u6309\u7CFB\u7EDF\u515C\u5E95\u63D0\u793A\uFF1B\u540E\u7AEF\u4E0D\u4F1A\u786C\u963B\u65AD\uFF09`;
+  return [
+    "\u9879\u76EE\u4F7F\u7528\u7684\u6A21\u578B\u5982\u4E0B\uFF1A",
+    `\u56FE\u50CF\u6A21\u578B\uFF1A${params.imageModelName}`,
+    `\u89C6\u9891\u6A21\u578B\uFF1A${params.videoModelName}`,
+    `\u591A\u53C2\uFF1A${params.isRef ? "\u662F" : "\u5426"}`,
+    `\u9ED8\u8BA4\u89C6\u9891\u6A21\u578B\u6700\u5927\u652F\u6301\u65F6\u957F\uFF1A${durationText}`,
+    "\u5206\u955C\u7EC4\u662F\u4E00\u6B21\u89C6\u9891\u751F\u6210\u5355\u5143\uFF0C\u4E0D\u662F\u573A\u6B21\uFF1B\u5355\u7EC4\u603B\u65F6\u957F\u4E0D\u5F97\u8D85\u8FC7\u9ED8\u8BA4\u89C6\u9891\u6A21\u578B\u6700\u5927\u652F\u6301\u65F6\u957F\u3002"
+  ].join("\n");
+}
+function isExplicitStoryboardImageGenerationRequest(text2) {
+  const compact = String(text2 || "").replace(/\s+/g, "");
+  if (!/(分镜图|分镜图片|故事板图|storyboard)/i.test(compact)) return false;
+  if (/(不生成|不要生成|别生成|暂不生成|先不生成|无需生成|不用生成)/.test(compact)) return false;
+  return /(生成|开始|启动|确认|同意|执行|生图)/.test(compact);
+}
+function isShortConfirmation(text2) {
+  const compact = String(text2 || "").replace(/\s+/g, "");
+  return /^(确认|可以|好的|好|同意|开始|生成|是|要)$/.test(compact);
+}
+function recentlyAskedStoryboardImageGeneration(mem) {
+  const recent = mem.shortTerm.slice(-6).map((item) => `${item.role}: ${item.content}`).join("\n");
+  return /是否生成分镜图|要不要生成分镜图|确认生成分镜图|生成分镜图/.test(recent);
+}
+function skillDirCandidates(...parts) {
+  const dirs = [
+    findBuiltinDataDir("skills", ...parts),
+    utils_default.getPath(["skills", ...parts])
+  ].filter(Boolean);
+  return [...new Set(dirs.map((dir) => import_path9.default.resolve(dir)))];
+}
 async function runDecisionAI(ctx) {
   const { isolationKey, text: text2, abortSignal } = ctx;
   const memory = new memory_default("productionAgent", isolationKey);
   await memory.add("user", text2);
-  const skill = import_path9.default.join(utils_default.getPath("skills"), "production_agent_decision.md");
-  const prompt = await fs17.promises.readFile(skill, "utf-8");
+  const prompt = await readBuiltinSkill("production_agent_decision.md");
   const projectInfo = await utils_default.db("o_project").where("id", ctx.resTool.data.projectId).first();
   if (!projectInfo) throw new Error(`\u9879\u76EE\u4E0D\u5B58\u5728\uFF0CID: ${ctx.resTool.data.projectId}`);
   const [_, imageModelName] = projectInfo.imageModel.split(/:(.+)/);
@@ -193846,10 +194703,12 @@ async function runDecisionAI(ctx) {
     videoMode = projectInfo.mode ?? "";
   }
   const isRef = Array.isArray(videoMode) ? true : false;
-  const modelInfo = `\u9879\u76EE\u4F7F\u7528\u7684\u6A21\u578B\u5982\u4E0B\uFF1A
-\u56FE\u50CF\u6A21\u578B\uFF1A${imageModelName}
-\u89C6\u9891\u6A21\u578B\uFF1A${videoModelName}
-\u591A\u53C2\uFF1A${isRef ? "\u662F" : "\u5426"}`;
+  const modelInfo = await buildProductionModelInfo({
+    projectId: Number(ctx.resTool.data.projectId),
+    imageModelName,
+    videoModelName,
+    isRef
+  });
   const mem = buildMemPrompt(await memory.get(text2));
   const { fullStream } = await utils_default.Ai.Text("productionAgent:decisionAgent", ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
     messages: [
@@ -193897,7 +194756,24 @@ async function createSubAgent(parentCtx) {
     });
     const fullResponse = await consumeFullStream(fullStream, subMsg);
     if (fullResponse.trim()) {
-      await memory.add(memoryKey, removeAllXmlTags(fullResponse), {
+      let memoryContent = removeAllXmlTags(fullResponse);
+      if (memoryContent.length > 4e3) {
+        try {
+          const asset = await createTextAsset({
+            projectId: Number(resTool.data.projectId),
+            scriptId: resTool.data.scriptId == null ? null : Number(resTool.data.scriptId),
+            targetType: "agentOutput",
+            targetId: `${key}:${Date.now()}`,
+            content: fullResponse,
+            summary: `${name28} output (${fullResponse.length} chars)`,
+            state: "complete"
+          });
+          memoryContent = summarizeLongText(memoryContent, asset.id);
+        } catch (err) {
+          console.warn("[productionAgent] failed to archive long output", err);
+        }
+      }
+      await memory.add(memoryKey, memoryContent, {
         name: name28,
         createTime: new Date(subMsg.datetime).getTime()
       });
@@ -193922,16 +194798,18 @@ async function createSubAgent(parentCtx) {
     videoMode = projectInfo.mode ?? "";
   }
   const isRef = Array.isArray(videoMode) ? true : false;
-  const modelInfo = `\u9879\u76EE\u4F7F\u7528\u7684\u6A21\u578B\u5982\u4E0B\uFF1A
-\u56FE\u50CF\u6A21\u578B\uFF1A${imageModelName}
-\u89C6\u9891\u6A21\u578B\uFF1A${videoModelName}
-\u591A\u53C2\uFF1A${isRef ? "\u662F" : "\u5426"}`;
+  const modelInfo = await buildProductionModelInfo({
+    projectId: Number(resTool.data.projectId),
+    imageModelName,
+    videoModelName,
+    isRef
+  });
+  let storyboardPanelRanThisTurn = false;
   const run_sub_agent_derive_assets = tool({
     description: "\u8FD0\u884C\u6267\u884CsubAgent\u6765\u5B8C\u6210\u884D\u751F\u8D44\u4EA7\u5206\u6790\u4E0E\u4FE1\u606F\u5199\u5165\u76F8\u5173\u4EFB\u52A1",
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
-      const skill = import_path9.default.join(utils_default.getPath("skills"), "production_execution_derive_assets.md");
-      const systemPrompt = await fs17.promises.readFile(skill, "utf-8");
+      const systemPrompt = await readBuiltinSkill("production_execution_derive_assets.md");
       return runAgent({
         key: "productionAgent:deriveAssetsAgent",
         prompt,
@@ -193951,8 +194829,7 @@ ${modelInfo}` },
     description: "\u8FD0\u884C\u6267\u884CsubAgent\u6765\u5B8C\u6210\u884D\u751F\u8D44\u4EA7\u56FE\u7247\u751F\u6210\u76F8\u5173\u4EFB\u52A1",
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
-      const skill = import_path9.default.join(utils_default.getPath("skills"), "production_execution_generate_assets.md");
-      const systemPrompt = await fs17.promises.readFile(skill, "utf-8");
+      const systemPrompt = await readBuiltinSkill("production_execution_generate_assets.md");
       return runAgent({
         key: "productionAgent:generateAssetsAgent",
         prompt,
@@ -193972,8 +194849,7 @@ ${modelInfo}` },
     description: "\u8FD0\u884C\u6267\u884CsubAgent\u6765\u5B8C\u6210\u5BFC\u6F14\u89C4\u5212\u76F8\u5173\u4EFB\u52A1",
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
-      const skill = import_path9.default.join(utils_default.getPath("skills"), "production_execution_director_plan.md");
-      const systemPrompt = await fs17.promises.readFile(skill, "utf-8");
+      const systemPrompt = await readBuiltinSkill("production_execution_director_plan.md");
       const addPrompt = "\n\u4F60\u5FC5\u987B\u4F7F\u7528\u5982\u4E0BXML\u683C\u5F0F\u5199\u5165\u5DE5\u4F5C\u533A\uFF1A\n```\n<scriptPlan>\u5185\u5BB9</scriptPlan>\n```";
       return runAgent({
         key: "productionAgent:directorPlanAgent",
@@ -193994,8 +194870,14 @@ ${modelInfo}` },
     description: "\u8FD0\u884C\u6267\u884CsubAgent\u6765\u5B8C\u6210\u5206\u955C\u56FE\u751F\u6210\u76F8\u5173\u4EFB\u52A1",
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
-      const skill = import_path9.default.join(utils_default.getPath("skills"), "production_execution_storyboard_gen.md");
-      const systemPrompt = await fs17.promises.readFile(skill, "utf-8");
+      if (storyboardPanelRanThisTurn) {
+        return "\u5206\u955C\u9762\u677F\u521A\u521A\u5199\u5165\u5B8C\u6210\u3002\u5FC5\u987B\u5148\u7B49\u5F85\u7528\u6237\u660E\u786E\u786E\u8BA4\uFF0C\u4E0D\u80FD\u5728\u540C\u4E00\u8F6E\u81EA\u52A8\u542F\u52A8\u5206\u955C\u56FE\u751F\u6210\u3002\u8BF7\u8BE2\u95EE\u7528\u6237\u662F\u5426\u751F\u6210\u5206\u955C\u56FE\u3002";
+      }
+      const confirmedFromRecentPrompt = isShortConfirmation(parentCtx.text) && recentlyAskedStoryboardImageGeneration(await memory.get(parentCtx.text));
+      if (!isExplicitStoryboardImageGenerationRequest(parentCtx.text) && !confirmedFromRecentPrompt) {
+        return "\u672A\u68C0\u6D4B\u5230\u7528\u6237\u672C\u8F6E\u660E\u786E\u786E\u8BA4\u751F\u6210\u5206\u955C\u56FE\u3002\u4E0D\u80FD\u81EA\u52A8\u542F\u52A8\u5206\u955C\u56FE\u751F\u6210\uFF1B\u8BF7\u5148\u8BE2\u95EE\u7528\u6237\u662F\u5426\u751F\u6210\u5206\u955C\u56FE\u3002";
+      }
+      const systemPrompt = await readBuiltinSkill("production_execution_storyboard_gen.md");
       return runAgent({
         key: "productionAgent:storyboardGenAgent",
         prompt,
@@ -194016,41 +194898,67 @@ ${modelInfo}` },
     description: "\u8FD0\u884C\u6267\u884CsubAgent\u6765\u5B8C\u6210\u5206\u955C\u9762\u677F\u5199\u5165\u76F8\u5173\u4EFB\u52A1",
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
-      const skill = import_path9.default.join(utils_default.getPath("skills"), "production_execution_storyboard_panel.md");
-      const systemPrompt = await fs17.promises.readFile(skill, "utf-8");
-      const addPrompt = "\n\u4F60\u5FC5\u987B\u4F7F\u7528\u5982\u4E0BXML\u683C\u5F0F\u5199\u5165\u5DE5\u4F5C\u533A\uFF1A\n```\n<storyboardItem videoDesc='\u89C6\u9891\u63CF\u8FF0' prompt=\u63D0\u793A\u8BCD\u5185\u5BB9 track='\u5206\u7EC4' shouldGenerateImage='true/false' duration='\u89C6\u9891\u63A8\u8350\u65F6\u95F4' associateAssetsIds='[\u8BE5\u5206\u955C\u6240\u9700\u7684\u8D44\u4EA7ID\u5217\u8868]'></storyboardItem>\n```";
-      return runAgent({
+      const systemPrompt = await readBuiltinSkill("production_execution_storyboard_panel.md");
+      const addPrompt = `
+
+\u5206\u955C\u53D9\u4E8B\u4E8B\u5B9E\u5DF2\u7ECF\u7531 tableRowJson \u4FDD\u5B58\u3002\u4F60\u4E0D\u80FD\u65B0\u589E\u5206\u955C\uFF0C\u4E5F\u4E0D\u80FD\u4FEE\u6539\u4EFB\u4F55\u5206\u955C\u4E8B\u5B9E\u3002
+\u4F60\u5FC5\u987B\u8BFB\u53D6 get_flowData("storyboard") \u8FD4\u56DE\u7684\u5DF2\u6709\u5206\u955C\uFF0C\u5E76\u8C03\u7528 update_storyboard_panel_v2\uFF1A
+- \u4F7F\u7528 storyboardId\uFF08\u4F18\u5148\uFF09\u6216 index \u5B9A\u4F4D\u5DF2\u6709\u5206\u955C\u3002
+- \u53EA\u5199\u5206\u955C\u56FE prompt\u3001shouldGenerateImage \u548C associateAssetsIds\u3002
+- prompt \u4EC5\u7528\u4E8E\u751F\u6210\u5206\u955C\u56FE\uFF0C\u4E0D\u662F\u89C6\u9891\u53D9\u4E8B\u4E8B\u5B9E\u6E90\u3002
+- \u4E0D\u751F\u6210 videoDesc\u3002
+- \u4E0D\u8F93\u51FA XML\u3001Markdown \u6216\u5B8C\u6574\u5206\u955C JSON\uFF0C\u4E0D\u8981\u6C42\u524D\u7AEF\u89E3\u6790\u6216\u4FDD\u5B58\u3002
+`;
+      const response = await runAgent({
         key: "productionAgent:storyboardPanelAgent",
         prompt,
-        system: systemPrompt + addPrompt,
+        system: systemPrompt + addPrompt + "\n\n\u5B8C\u6210\u540E\u5FC5\u987B\u505C\u6B62\uFF0C\u7B49\u5F85\u7528\u6237\u660E\u786E\u786E\u8BA4\u540E\u624D\u5141\u8BB8\u8FDB\u5165\u5206\u955C\u56FE\u751F\u6210\u9636\u6BB5\uFF1B\u4E0D\u5F97\u81EA\u884C\u542F\u52A8\u5206\u955C\u56FE\u751F\u6210\u3002",
         name: "\u6267\u884C\u5BFC\u6F14",
         memoryKey: "assistant:execution",
         messages: [
           { role: "assistant", content: productionSkills.prompt + `
 ${modelInfo}` },
-          { role: "user", content: prompt + addPrompt }
+          {
+            role: "user",
+            content: prompt + addPrompt + "\n\n\u5B8C\u6210\u540E\u5FC5\u987B\u505C\u6B62\uFF0C\u7B49\u5F85\u7528\u6237\u660E\u786E\u786E\u8BA4\u540E\u624D\u5141\u8BB8\u8FDB\u5165\u5206\u955C\u56FE\u751F\u6210\u9636\u6BB5\uFF1B\u4E0D\u5F97\u81EA\u884C\u542F\u52A8\u5206\u955C\u56FE\u751F\u6210\u3002"
+          }
         ],
         tools: { activate_skill: productionSkills.tools.activate_skill }
       });
+      storyboardPanelRanThisTurn = true;
+      return `${response}
+
+\u5206\u955C\u9762\u677F\u5199\u5165\u5DF2\u5B8C\u6210\u3002\u9700\u8981\u7528\u6237\u660E\u786E\u786E\u8BA4\u540E\uFF0C\u624D\u80FD\u542F\u52A8\u5206\u955C\u56FE\u751F\u6210\u3002`;
     }
   });
   const run_sub_agent_storyboard_table = tool({
     description: "\u8FD0\u884C\u6267\u884CsubAgent\u6765\u5B8C\u6210\u5206\u955C\u8868\u6784\u5EFA\u76F8\u5173\u4EFB\u52A1",
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
-      const skill = import_path9.default.join(utils_default.getPath("skills"), "production_execution_storyboard_table.md");
-      const systemPrompt = await fs17.promises.readFile(skill, "utf-8");
-      const addPrompt = "\n\u4F60\u5FC5\u987B\u4F7F\u7528\u5982\u4E0BXML\u683C\u5F0F\u5199\u5165\u5DE5\u4F5C\u533A\uFF1A\n```\n<storyboardTable>\u5185\u5BB9</storyboardTable>\n```";
+      const systemPrompt = await readBuiltinSkill("production_execution_storyboard_table.md");
+      const addPrompt = `
+
+\u4F60\u5FC5\u987B\u53EA\u901A\u8FC7\u7ED3\u6784\u5316\u5DE5\u5177\u5199\u5165\u5206\u955C\u8868\uFF0C\u4E0D\u5F97\u8F93\u51FA\u6574\u5F20 Markdown\u3001XML\u3001JSON \u6216\u8981\u6C42\u524D\u7AEF\u89E3\u6790\u6587\u672C\u3002
+\u6267\u884C\u987A\u5E8F\uFF1A
+1. \u5148\u5B8C\u6210\u5168\u5C40\u5206\u7EC4\u548C\u603B\u884C\u6570\u89C4\u5212\uFF0C\u8C03\u7528 begin_storyboard_table\u3002
+2. \u4E25\u683C\u6309 index \u4ECE 0 \u5F00\u59CB\uFF0C\u6BCF\u6279 5-10 \u6761\u8C03\u7528 append_storyboard_rows\u3002
+3. \u6BCF\u6279\u4EE5\u540E\u7AEF\u8FD4\u56DE\u7684 nextIndex \u7EE7\u7EED\uFF1B\u4E2D\u65AD\u91CD\u8BD5\u65F6\u63D0\u4EA4\u5B8C\u5168\u76F8\u540C\u7684\u6279\u6B21\u3002
+4. \u5168\u90E8\u5199\u5165\u540E\u8C03\u7528 commit_storyboard_table\u3002
+5. \u63D0\u4EA4\u6210\u529F\u540E\u53EA\u8FD4\u56DE\u201C\u5206\u955C\u8868\u5DF2\u5B8C\u6210\uFF0C\u5171 N \u6761\u5206\u955C\u3001M \u4E2A\u5206\u7EC4\u201D\u3002
+\u6BCF\u6761\u5206\u955C\u5FC5\u987B\u5B8C\u6574\u7B26\u5408 StoryboardTableRow \u7ED3\u6784\uFF1B\u7981\u6B62\u4ECE videoDesc\u3001Markdown\u3001XML\u3001\u56FE\u7247 prompt \u6216\u804A\u5929\u6587\u672C\u6062\u590D\u4E8B\u5B9E\u3002
+`;
+      const storyboardTableRules = "\n\n\u5206\u955C\u7EC4\u89C4\u5219\uFF1A\u5206\u955C\u7EC4\u662F\u4E00\u6B21\u89C6\u9891\u751F\u6210\u5355\u5143\uFF0C\u4E0D\u662F\u573A\u6B21\u3002\u5355\u4E2A\u573A\u6B21\u53EF\u62C6\u4E3A\u591A\u4E2A\u5206\u955C\u7EC4\uFF1B\u6BCF\u7EC4 storyboardIndexes \u5FC5\u987B\u8FDE\u7EED\u9012\u589E\uFF1B\u6BCF\u7EC4 durationSec \u603B\u548C\u5FC5\u987B\u5C0F\u4E8E\u7B49\u4E8E\u4E0A\u65B9\u6A21\u578B\u4FE1\u606F\u91CC\u7684\u9ED8\u8BA4\u89C6\u9891\u6A21\u578B\u6700\u5927\u652F\u6301\u65F6\u957F\u3002\u8DE8\u573A\u666F\u3001\u8DE8\u65F6\u95F4\u3001\u8DE8\u8FDE\u7EED\u4E8B\u4EF6\u76EE\u6807\u6216\u8DE8\u620F\u5267\u529F\u80FD\u65F6\u5FC5\u987B\u65B0\u5EFA\u5206\u955C\u7EC4\u3002";
+      const commitFailureRules = "\n\nCommit failure handling: if commit_storyboard_table returns status=invalid or status=failed, stop immediately and report the short failure reason. Do not keep waiting, do not loop retry commit, and do not start a new generation in the same execution turn. For COMMIT_IN_PROGRESS, say: \u63D0\u4EA4\u4ECD\u88AB\u540E\u7AEF\u4EFB\u52A1\u5360\u7528\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u6216\u91CD\u65B0\u5F00\u59CB\u5206\u955C\u8868\u751F\u6210\u3002";
       return runAgent({
         key: "productionAgent:storyboardTableAgent",
         prompt,
-        system: systemPrompt + addPrompt,
+        system: systemPrompt + addPrompt + storyboardTableRules + commitFailureRules,
         name: "\u6267\u884C\u5BFC\u6F14",
         memoryKey: "assistant:execution",
         messages: [
           { role: "assistant", content: productionSkills.prompt + `
 ${modelInfo}` },
-          { role: "user", content: prompt + addPrompt }
+          { role: "user", content: prompt + addPrompt + storyboardTableRules + commitFailureRules }
         ],
         tools: { activate_skill: productionSkills.tools.activate_skill }
       });
@@ -194060,8 +194968,7 @@ ${modelInfo}` },
     description: "\u8FD0\u884C\u76D1\u7763\u5C42subAgent\u6267\u884C\u72EC\u7ACB\u4EFB\u52A1\uFF0C\u5B8C\u6210\u540E\u8FD4\u56DE\u7ED3\u679C",
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
-      const skill = import_path9.default.join(utils_default.getPath("skills"), "production_agent_supervision.md");
-      const systemPrompt = await fs17.promises.readFile(skill, "utf-8");
+      const systemPrompt = await readBuiltinSkill("production_agent_supervision.md");
       return runAgent({
         key: "productionAgent:supervisionAgent",
         prompt,
@@ -194082,21 +194989,28 @@ ${modelInfo}` },
   };
 }
 async function createArtSkills(artName, storyName) {
-  const artWorkerPath = utils_default.getPath(["skills", "art_skills", artName, "driector_skills"]);
-  const storyWorkerPath = utils_default.getPath(["skills", "story_skills", storyName, "driector_skills"]);
-  const skillList = [...await scanSkills(artWorkerPath + "/*.md"), ...await scanSkills(storyWorkerPath + "/*.md")];
+  const skillList = [];
+  for (const dir of [
+    ...skillDirCandidates("art_skills", artName, "driector_skills"),
+    ...skillDirCandidates("story_skills", storyName, "driector_skills")
+  ]) {
+    skillList.push(...await scanSkills(dir + "/*.md"));
+  }
   const mainSkills = [];
+  const seenSkillNames = /* @__PURE__ */ new Set();
   for (const skillPath of skillList) {
-    if (!fs17.existsSync(skillPath)) throw new Error(`\u4E3B\u6280\u80FD\u6587\u4EF6\u4E0D\u5B58\u5728: ${skillPath}`);
-    const content = await fs17.promises.readFile(skillPath, "utf-8");
+    if (!fs20.existsSync(skillPath)) throw new Error(`\u4E3B\u6280\u80FD\u6587\u4EF6\u4E0D\u5B58\u5728: ${skillPath}`);
+    const content = await fs20.promises.readFile(skillPath, "utf-8");
     const parsed = parseFrontmatter(content);
+    if (seenSkillNames.has(parsed.name)) continue;
+    seenSkillNames.add(parsed.name);
     mainSkills.push({ path: skillPath, ...parsed });
   }
   const res = {
     prompt: `## Skills
 \u4EE5\u4E0B\u6280\u80FD\u63D0\u4F9B\u4E86\u4E13\u4E1A\u4EFB\u52A1\u7684\u4E13\u7528\u6307\u4EE4\u3002
 \u5F53\u4EFB\u52A1\u4E0E\u67D0\u4E2A\u6280\u80FD\u7684\u63CF\u8FF0\u5339\u914D\u65F6\uFF0C\u8C03\u7528 activate_skill \u5DE5\u5177\u5E76\u4F20\u5165\u6280\u80FD\u540D\u79F0\u6765\u52A0\u8F7D\u5B8C\u6574\u6307\u4EE4\u3002
-${buildSkillPrompt(mainSkills)}`,
+${buildSkillPrompt2(mainSkills)}`,
     tools: createSkillTools(mainSkills, { mainSkill: mainSkills, secondarySkills: [], tertiarySkills: [] })
   };
   return res;
@@ -194151,7 +195065,7 @@ function removeAllXmlTags(text2) {
   text2 = text2.replace(/<\/?[a-zA-Z][\w-]*(\s+[^>]*)?>/g, "");
   return text2.trim();
 }
-function buildSkillPrompt(skills) {
+function buildSkillPrompt2(skills) {
   const skillEntries = skills.map((s) => `  <skill>
     <name>${s.name}</name>
     <description>${s.description}</description>
@@ -194162,31 +195076,34 @@ ${skillEntries}
 </available_skills>`;
 }
 async function useProductionSkills(artName, storyName) {
-  const artWorkerPath = utils_default.getPath(["skills", "art_skills", artName, "driector_skills"]);
-  const storyWorkerPath = utils_default.getPath(["skills", "story_skills", storyName, "driector_skills"]);
-  const productionPath = utils_default.getPath(["skills", "production_skills"]);
-  const skillList = [
-    ...await scanSkills(artWorkerPath + "/*.md"),
-    ...await scanSkills(storyWorkerPath + "/*.md"),
-    ...await scanSkills(productionPath + "/*.md")
-  ];
+  const skillList = [];
+  for (const dir of [
+    ...skillDirCandidates("art_skills", artName, "driector_skills"),
+    ...skillDirCandidates("story_skills", storyName, "driector_skills"),
+    ...skillDirCandidates("production_skills")
+  ]) {
+    skillList.push(...await scanSkills(dir + "/*.md"));
+  }
   const mainSkills = [];
+  const seenSkillNames = /* @__PURE__ */ new Set();
   for (const skillPath of skillList) {
-    if (!fs17.existsSync(skillPath)) throw new Error(`\u4E3B\u6280\u80FD\u6587\u4EF6\u4E0D\u5B58\u5728: ${skillPath}`);
-    const content = await fs17.promises.readFile(skillPath, "utf-8");
+    if (!fs20.existsSync(skillPath)) throw new Error(`\u4E3B\u6280\u80FD\u6587\u4EF6\u4E0D\u5B58\u5728: ${skillPath}`);
+    const content = await fs20.promises.readFile(skillPath, "utf-8");
     const parsed = parseFrontmatter(content);
+    if (seenSkillNames.has(parsed.name)) continue;
+    seenSkillNames.add(parsed.name);
     mainSkills.push({ path: skillPath, ...parsed });
   }
   const res = {
     prompt: `## Skills
 \u4EE5\u4E0B\u6280\u80FD\u63D0\u4F9B\u4E86\u4E13\u4E1A\u4EFB\u52A1\u7684\u4E13\u7528\u6307\u4EE4\u3002
 \u5F53\u4EFB\u52A1\u4E0E\u67D0\u4E2A\u6280\u80FD\u7684\u63CF\u8FF0\u5339\u914D\u65F6\uFF0C\u8C03\u7528 activate_skill \u5DE5\u5177\u5E76\u4F20\u5165\u6280\u80FD\u540D\u79F0\u6765\u52A0\u8F7D\u5B8C\u6574\u6307\u4EE4\u3002
-${buildSkillPrompt(mainSkills)}`,
+${buildSkillPrompt2(mainSkills)}`,
     tools: createSkillTools(mainSkills, { mainSkill: mainSkills, secondarySkills: [], tertiarySkills: [] })
   };
   return res;
 }
-var fs17, import_path9;
+var fs20, import_path9;
 var init_productionAgent = __esm({
   "src/agents/productionAgent/index.ts"() {
     "use strict";
@@ -194196,8 +195113,11 @@ var init_productionAgent = __esm({
     init_memory();
     init_skillsTools();
     init_tools();
-    fs17 = __toESM(require("fs"));
+    fs20 = __toESM(require("fs"));
     import_path9 = __toESM(require("path"));
+    init_builtinData();
+    init_textAsset();
+    init_videoModelPolicy();
   }
 });
 
@@ -194802,6 +195722,23 @@ async function verifyToken(rawToken) {
     return false;
   }
 }
+async function validateProductionAgentContext(input) {
+  const projectId = Number(input?.projectId);
+  const scriptId = Number(input?.scriptId);
+  const isolationKey = String(input?.isolationKey || "");
+  if (!Number.isFinite(projectId) || !Number.isFinite(scriptId) || !isolationKey) {
+    throw new Error("invalid production agent context");
+  }
+  const expectedIsolationKey = `${projectId}:productionAgent:${scriptId}`;
+  if (isolationKey !== expectedIsolationKey) {
+    throw new Error(`production agent isolationKey mismatch: expected ${expectedIsolationKey}`);
+  }
+  const script = await utils_default.db("o_script").where({ id: scriptId, projectId }).first("id");
+  if (!script) {
+    throw new Error(`script ${scriptId} does not belong to project ${projectId}`);
+  }
+  return { isolationKey, projectId, scriptId };
+}
 var import_jsonwebtoken2, productionAgent_default;
 var init_productionAgent2 = __esm({
   "src/socket/routes/productionAgent.ts"() {
@@ -194814,34 +195751,42 @@ var init_productionAgent2 = __esm({
       nsp.on("connection", async (socket) => {
         const token = socket.handshake.auth.token;
         if (!token || !await verifyToken(token)) {
-          console.log("[productionAgent] \u8FDE\u63A5\u5931\u8D25\uFF0Ctoken\u65E0\u6548");
+          console.log("[productionAgent] connection rejected: invalid token");
           socket.disconnect();
           return;
         }
-        let isolationKey = socket.handshake.auth.isolationKey;
-        if (!isolationKey) {
-          console.log("[productionAgent] \u8FDE\u63A5\u5931\u8D25\uFF0C\u7F3A\u5C11 isolationKey");
+        let context2;
+        try {
+          context2 = await validateProductionAgentContext(socket.handshake.auth);
+        } catch (error50) {
+          console.log("[productionAgent] connection rejected:", utils_default.error(error50).message);
           socket.disconnect();
           return;
         }
-        console.log("[productionAgent] \u5DF2\u8FDE\u63A5:", socket.id);
+        console.log("[productionAgent] connected:", socket.id, context2.isolationKey);
         let resTool = new resTool_default(socket, {
-          projectId: socket.handshake.auth.projectId,
-          scriptId: socket.handshake.auth.scriptId
+          projectId: context2.projectId,
+          scriptId: context2.scriptId
         });
         let abortController = null;
         const thinkConfig = {
           think: false,
           thinlLevel: 0
         };
-        socket.on("updateContext", (data, callback) => {
-          isolationKey = data.isolationKey;
-          resTool = new resTool_default(socket, {
-            projectId: data.projectId,
-            scriptId: data.scriptId
-          });
-          console.log("[productionAgent] \u4E0A\u4E0B\u6587\u5DF2\u66F4\u65B0:", isolationKey);
-          callback?.({ success: true });
+        socket.on("updateContext", async (data, callback) => {
+          try {
+            if (abortController) throw new Error("production agent is running; stop it before switching context");
+            const nextContext = await validateProductionAgentContext(data);
+            context2 = nextContext;
+            resTool = new resTool_default(socket, {
+              projectId: nextContext.projectId,
+              scriptId: nextContext.scriptId
+            });
+            console.log("[productionAgent] context updated:", context2.isolationKey);
+            callback?.({ success: true });
+          } catch (error50) {
+            callback?.({ success: false, message: utils_default.error(error50).message });
+          }
         });
         socket.on("chat", async (data) => {
           const { content } = data;
@@ -194851,7 +195796,7 @@ var init_productionAgent2 = __esm({
           const msg = resTool.newMessage("assistant", "\u89C6\u9891\u7B56\u5212");
           const ctx = {
             socket,
-            isolationKey,
+            isolationKey: context2.isolationKey,
             text: content,
             userMessageTime: new Date(msg.datetime).getTime() - 1,
             abortSignal: currentController.signal,
@@ -194874,7 +195819,7 @@ var init_productionAgent2 = __esm({
         socket.on("updateThinkConfig", (data) => {
           thinkConfig.think = data.think;
           thinkConfig.thinlLevel = data.thinlLevel;
-          console.log("[productionAgent] \u66F4\u65B0\u601D\u8003\u914D\u7F6E:", thinkConfig);
+          console.log("[productionAgent] think config updated:", thinkConfig);
         });
         socket.on("stop", () => {
           abortController?.abort();
@@ -194882,7 +195827,7 @@ var init_productionAgent2 = __esm({
         });
       });
       nsp.on("disconnect", (socket) => {
-        console.log("[productionAgent] \u5DF2\u65AD\u5F00\u8FDE\u63A5:", socket.id);
+        console.log("[productionAgent] disconnected:", socket.id);
       });
     };
   }
@@ -195020,7 +195965,7 @@ async function runDecisionAI2(ctx) {
   const memory = new memory_default("scriptAgent", isolationKey);
   await memory.add("user", text2, { createTime: userMessageTime });
   const skill = import_path10.default.join(utils_default.getPath("skills"), "script_agent_decision.md");
-  const prompt = await fs18.promises.readFile(skill, "utf-8");
+  const prompt = await fs21.promises.readFile(skill, "utf-8");
   const mem = buildMemPrompt2(await memory.get(text2));
   const projectData = await utils_default.db("o_project").where("id", resTool.data.projectId).first();
   const novelData = await utils_default.db("o_novel").where("projectId", resTool.data.projectId).select("chapterIndex");
@@ -195095,7 +196040,7 @@ function createSubAgent2(parentCtx) {
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
       const skill = import_path10.default.join(utils_default.getPath("skills"), "script_execution_skeleton.md");
-      const systemPrompt = await fs18.promises.readFile(skill, "utf-8");
+      const systemPrompt = await fs21.promises.readFile(skill, "utf-8");
       const formatPrompt = "\n\u4F60\u5FC5\u987B\u4F7F\u7528\u5982\u4E0BXML\u683C\u5F0F\u5199\u5165\u5DE5\u4F5C\u533A\uFF1A\n<storySkeleton>\u6545\u4E8B\u9AA8\u67B6\u5185\u5BB9</storySkeleton>";
       return runAgent({
         key: "scriptAgent:storySkeletonAgent",
@@ -195112,7 +196057,7 @@ function createSubAgent2(parentCtx) {
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
       const skill = import_path10.default.join(utils_default.getPath("skills"), "script_execution_adaptation.md");
-      const systemPrompt = await fs18.promises.readFile(skill, "utf-8");
+      const systemPrompt = await fs21.promises.readFile(skill, "utf-8");
       const formatPrompt = "\n\u4F60\u5FC5\u987B\u4F7F\u7528\u5982\u4E0BXML\u683C\u5F0F\u5199\u5165\u5DE5\u4F5C\u533A\uFF1A\n<adaptationStrategy>\u6539\u7F16\u7B56\u7565\u5185\u5BB9</adaptationStrategy>";
       return runAgent({
         key: "scriptAgent:adaptationStrategyAgent",
@@ -195129,7 +196074,7 @@ function createSubAgent2(parentCtx) {
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
       const skill = import_path10.default.join(utils_default.getPath("skills"), "script_execution_script.md");
-      const systemPrompt = await fs18.promises.readFile(skill, "utf-8");
+      const systemPrompt = await fs21.promises.readFile(skill, "utf-8");
       const scriptList = await utils_default.db("o_script").where("projectId", resTool.data.projectId).select("id", "name");
       const scriptPrompt = ["## \u53EF\u7528\u5267\u672C(ID:\u540D\u79F0)", scriptList.map((s) => `${s.id}:${(s.name || "").replace(/[,:]/g, "")}`).join(","), ""].join(
         "\n"
@@ -195156,7 +196101,7 @@ XML\u4E0D\u5F97\u6DFB\u52A0\u4EFB\u4F55\u989D\u5916\u6807\u7B7E<scriptItem name=
     inputSchema: jsonSchema(promptInput),
     execute: async ({ prompt }) => {
       const skill = import_path10.default.join(utils_default.getPath("skills"), "script_agent_supervision.md");
-      const systemPrompt = await fs18.promises.readFile(skill, "utf-8");
+      const systemPrompt = await fs21.promises.readFile(skill, "utf-8");
       return runAgent({
         key: "scriptAgent:supervisionAgent",
         prompt,
@@ -195223,7 +196168,7 @@ function removeAllXmlTags2(text2) {
   text2 = text2.replace(/<\/?[a-zA-Z][\w-]*(\s+[^>]*)?>/g, "");
   return text2.trim();
 }
-var fs18, import_path10;
+var fs21, import_path10;
 var init_scriptAgent = __esm({
   "src/agents/scriptAgent/index.ts"() {
     "use strict";
@@ -195232,7 +196177,7 @@ var init_scriptAgent = __esm({
     init_utils3();
     init_memory();
     init_tools2();
-    fs18 = __toESM(require("fs"));
+    fs21 = __toESM(require("fs"));
     import_path10 = __toESM(require("path"));
   }
 });
@@ -195328,6 +196273,538 @@ var init_scriptAgent2 = __esm({
   }
 });
 
+// src/services/storyArtifacts.ts
+function parseJson3(value) {
+  if (typeof value !== "string" || !value) return value ?? null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+function stringifyJson(value) {
+  if (value == null || value === "") return null;
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+function normalizeArtifact(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    contentJson: parseJson3(row.contentJson),
+    version: Number(row.version || 1)
+  };
+}
+function normalizeAnnotation(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    artifactVersion: Number(row.artifactVersion || 1),
+    startOffset: row.startOffset == null ? null : Number(row.startOffset),
+    endOffset: row.endOffset == null ? null : Number(row.endOffset)
+  };
+}
+async function assertProject(projectId) {
+  const project = await utils_default.db("o_project").where("id", projectId).first("id");
+  if (!project) throw new Error("Project not found");
+}
+async function listArtifacts(input) {
+  let query = utils_default.db("o_storyArtifact").where("projectId", input.projectId);
+  if (input.type) query = query.where("type", input.type);
+  if (input.status) query = query.where("status", input.status);
+  if (!input.includeArchived && !input.status) query = query.whereNot("status", "archived");
+  const rows = await query.orderBy("updateTime", "desc").orderBy("id", "desc");
+  return rows.map(normalizeArtifact);
+}
+async function getArtifact(projectId, artifactId) {
+  const row = await utils_default.db("o_storyArtifact").where({ id: artifactId, projectId }).first();
+  if (!row) throw new Error("Story artifact not found");
+  return normalizeArtifact(row);
+}
+async function createArtifact(input) {
+  await assertProject(input.projectId);
+  const now2 = Date.now();
+  let version3 = 1;
+  if (input.parentId) {
+    const parent = await utils_default.db("o_storyArtifact").where({ id: input.parentId, projectId: input.projectId }).first();
+    if (!parent) throw new Error("Parent story artifact not found");
+    version3 = Number(parent.version || 1) + 1;
+  }
+  const [id] = await utils_default.db("o_storyArtifact").insert({
+    projectId: input.projectId,
+    type: input.type,
+    title: input.title,
+    content: input.content,
+    contentJson: stringifyJson(input.contentJson),
+    version: version3,
+    parentId: input.parentId ?? null,
+    status: input.status ?? "draft",
+    createTime: now2,
+    updateTime: now2
+  });
+  return getArtifact(input.projectId, Number(id));
+}
+async function updateArtifact(input) {
+  await getArtifact(input.projectId, input.id);
+  const updateData = { updateTime: Date.now() };
+  if (input.title != null) updateData.title = input.title;
+  if (input.content != null) updateData.content = input.content;
+  if (Object.prototype.hasOwnProperty.call(input, "contentJson")) updateData.contentJson = stringifyJson(input.contentJson);
+  if (input.status != null) updateData.status = input.status;
+  await utils_default.db("o_storyArtifact").where({ id: input.id, projectId: input.projectId }).update(updateData);
+  return getArtifact(input.projectId, input.id);
+}
+async function listAnnotations(input) {
+  await getArtifact(input.projectId, input.artifactId);
+  let query = utils_default.db("o_storyAnnotation").where({ projectId: input.projectId, artifactId: input.artifactId });
+  if (input.status) query = query.where("status", input.status);
+  const rows = await query.orderBy("createTime", "asc").orderBy("id", "asc");
+  return rows.map(normalizeAnnotation);
+}
+async function updateAnnotationStatus(input) {
+  if (!input.ids.length) return [];
+  await utils_default.db("o_storyAnnotation").where("projectId", input.projectId).whereIn("id", input.ids).update({
+    status: input.status,
+    updateTime: Date.now()
+  });
+  const rows = await utils_default.db("o_storyAnnotation").where("projectId", input.projectId).whereIn("id", input.ids).orderBy("id", "asc");
+  return rows.map(normalizeAnnotation);
+}
+async function reviseArtifactWithAnnotations(input) {
+  const source = await getArtifact(input.projectId, input.sourceArtifactId);
+  const openAnnotations = await listAnnotations({ projectId: input.projectId, artifactId: input.sourceArtifactId, status: "open" });
+  const annotationIds = input.annotationIds?.length ? input.annotationIds : openAnnotations.map((item) => Number(item.id));
+  const next = await createArtifact({
+    projectId: input.projectId,
+    type: source.type,
+    title: input.title || source.title,
+    content: input.content,
+    contentJson: input.contentJson ?? source.contentJson,
+    parentId: input.sourceArtifactId,
+    status: "draft"
+  });
+  if (annotationIds.length) {
+    await updateAnnotationStatus({ projectId: input.projectId, ids: annotationIds, status: "applied" });
+  }
+  await utils_default.db("o_storyRevisionMap").insert({
+    projectId: input.projectId,
+    sourceArtifactId: input.sourceArtifactId,
+    newArtifactId: next.id,
+    annotationIds: JSON.stringify(annotationIds),
+    changeSummary: input.changeSummary ?? "",
+    createTime: Date.now()
+  });
+  return next;
+}
+async function publishArtifactToScript(input) {
+  const artifact = await getArtifact(input.projectId, input.artifactId);
+  if (artifact.type !== "script") throw new Error("Only script artifacts can be published to script");
+  const now2 = Date.now();
+  let scriptId = input.scriptId ?? null;
+  const name28 = input.name || artifact.title || "Untitled Script";
+  if (scriptId) {
+    const row = await utils_default.db("o_script").where({ id: scriptId, projectId: input.projectId }).first();
+    if (!row) throw new Error("Target script not found");
+    await utils_default.db("o_script").where({ id: scriptId, projectId: input.projectId }).update({
+      name: name28,
+      content: artifact.content
+    });
+  } else {
+    const inserted = await utils_default.db("o_script").insert({
+      projectId: input.projectId,
+      name: name28,
+      content: artifact.content,
+      createTime: now2
+    });
+    scriptId = Number(inserted[0]);
+  }
+  if (input.assets) {
+    await utils_default.db("o_scriptAssets").where({ scriptId }).delete();
+    if (input.assets.length) {
+      const rows = input.assets.map((assetId) => ({ scriptId, assetId }));
+      await utils_default.db("o_scriptAssets").insert(rows);
+    }
+  }
+  await updateArtifact({ id: input.artifactId, projectId: input.projectId, status: "published" });
+  return { scriptId, artifactId: input.artifactId };
+}
+async function getStoryContext(projectId) {
+  const [project, scripts, novels, artifacts] = await Promise.all([
+    utils_default.db("o_project").where("id", projectId).first(),
+    utils_default.db("o_script").where("projectId", projectId).select("id", "name", "content").orderBy("id", "asc"),
+    utils_default.db("o_novel").where("projectId", projectId).select("id", "chapterIndex", "chapter", "event").orderBy("chapterIndex", "asc"),
+    listArtifacts({ projectId, includeArchived: false })
+  ]);
+  return { project, scripts, novels, artifacts };
+}
+var STORY_ARTIFACT_TYPES;
+var init_storyArtifacts = __esm({
+  "src/services/storyArtifacts.ts"() {
+    "use strict";
+    init_utils3();
+    STORY_ARTIFACT_TYPES = ["idea", "bible", "outline", "episodeOutline", "sceneCard", "script", "review", "research"];
+  }
+});
+
+// src/agents/storyAgent/tools.ts
+function useStoryTools(projectId) {
+  return {
+    get_project_story_context: tool({
+      description: "Read project story context including project info, existing scripts, novel events, and story artifacts.",
+      inputSchema: jsonSchema(external_exports.object({}).toJSONSchema()),
+      execute: async () => getStoryContext(projectId)
+    }),
+    get_artifact_with_annotations: tool({
+      description: "Read a story artifact with its open user annotations.",
+      inputSchema: jsonSchema(
+        external_exports.object({ artifactId: external_exports.number().describe("Story artifact id") }).toJSONSchema()
+      ),
+      execute: async ({ artifactId }) => ({
+        artifact: await getArtifact(projectId, artifactId),
+        annotations: await listAnnotations({ projectId, artifactId, status: "open" })
+      })
+    }),
+    create_artifact: tool({
+      description: "Persist an official AI story output as an artifact for review and annotation.",
+      inputSchema: jsonSchema(
+        external_exports.object({
+          type: external_exports.enum(STORY_ARTIFACT_TYPES).describe("Artifact type"),
+          title: external_exports.string().describe("Artifact title"),
+          content: external_exports.string().describe("Full artifact text"),
+          contentJson: external_exports.any().optional().describe("Optional structured artifact data"),
+          parentId: external_exports.number().nullable().optional().describe("Parent artifact id when creating a new version")
+        }).toJSONSchema()
+      ),
+      execute: async (input) => createArtifact({ ...input, projectId, type: input.type })
+    }),
+    revise_artifact_with_annotations: tool({
+      description: "Persist a revised artifact after applying user annotations. The model must generate the revised text before calling this tool.",
+      inputSchema: jsonSchema(
+        external_exports.object({
+          sourceArtifactId: external_exports.number().describe("Source artifact id"),
+          title: external_exports.string().optional().describe("Title for the revised artifact"),
+          content: external_exports.string().describe("Full revised artifact text"),
+          contentJson: external_exports.any().optional(),
+          changeSummary: external_exports.string().optional().describe("Short explanation of the revision"),
+          annotationIds: external_exports.array(external_exports.number()).optional().describe("Applied annotation ids; defaults to all open annotations")
+        }).toJSONSchema()
+      ),
+      execute: async (input) => reviseArtifactWithAnnotations({ ...input, projectId })
+    }),
+    publish_artifact_to_script: tool({
+      description: "Publish a script artifact into the existing o_script production pipeline after the user confirms it.",
+      inputSchema: jsonSchema(
+        external_exports.object({
+          artifactId: external_exports.number(),
+          scriptId: external_exports.number().nullable().optional(),
+          name: external_exports.string().optional(),
+          assets: external_exports.array(external_exports.number()).optional()
+        }).toJSONSchema()
+      ),
+      execute: async (input) => publishArtifactToScript({ ...input, projectId })
+    })
+  };
+}
+var init_tools3 = __esm({
+  "src/agents/storyAgent/tools.ts"() {
+    "use strict";
+    init_dist22();
+    init_zod();
+    init_storyArtifacts();
+  }
+});
+
+// src/agents/storyAgent/skills.ts
+function resolveStorySkill(rootDir, fileName) {
+  const runtimePath = import_path11.default.join(rootDir, fileName);
+  if (import_fs8.default.existsSync(runtimePath)) return runtimePath;
+  const bundledPath = import_path11.default.resolve("data", "skills", fileName);
+  if (import_fs8.default.existsSync(bundledPath)) return bundledPath;
+  return null;
+}
+async function useStorySkills() {
+  const rootDir = getPath_default("skills");
+  const mainSkill = [];
+  for (const fileName of STORY_SKILLS) {
+    const filePath = resolveStorySkill(rootDir, fileName);
+    if (!filePath) continue;
+    const raw = await import_fs8.default.promises.readFile(filePath, "utf8");
+    mainSkill.push({ path: filePath, ...parseFrontmatter(raw) });
+  }
+  return {
+    prompt: mainSkill.length ? buildSkillPrompt(mainSkill) : "",
+    tools: mainSkill.length ? createSkillTools(
+      mainSkill,
+      {
+        mainSkill,
+        secondarySkills: [],
+        tertiarySkills: []
+      },
+      rootDir
+    ) : {}
+  };
+}
+var import_fs8, import_path11, STORY_SKILLS;
+var init_skills = __esm({
+  "src/agents/storyAgent/skills.ts"() {
+    "use strict";
+    import_fs8 = __toESM(require("fs"));
+    import_path11 = __toESM(require("path"));
+    init_getPath();
+    init_skillsTools();
+    STORY_SKILLS = [
+      "story_concept_brainstorm.md",
+      "story_bible_generation.md",
+      "story_outline_generation.md",
+      "story_script_writing.md",
+      "story_revision_from_annotations.md",
+      "story_script_review.md"
+    ];
+  }
+});
+
+// src/agents/storyAgent/index.ts
+function fallbackPrompt() {
+  return `You are Toonflow Story Agent.
+Help the user develop ideas, story bibles, outlines, scripts, and revisions.
+The main interaction is chat. When you produce an official story document, call create_artifact.
+When the user asks to revise according to annotations, first read the artifact and open annotations, then call revise_artifact_with_annotations with the complete revised text.
+Only call publish_artifact_to_script after explicit user confirmation.
+Respond in the user's language.`;
+}
+async function readDecisionPrompt() {
+  const candidates = [import_path12.default.join(utils_default.getPath("skills"), "story_agent_decision.md"), import_path12.default.resolve("data", "skills", "story_agent_decision.md")];
+  for (const filePath of candidates) {
+    try {
+      return await import_fs9.default.promises.readFile(filePath, "utf8");
+    } catch {
+    }
+  }
+  return fallbackPrompt();
+}
+function buildMemPrompt3(mem) {
+  const parts = [];
+  if (mem.rag.length) parts.push(`[Relevant memory]
+${mem.rag.map((r) => r.content).join("\n")}`);
+  if (mem.summaries.length) parts.push(`[History summaries]
+${mem.summaries.map((s, i) => `${i + 1}. ${s.content}`).join("\n")}`);
+  if (mem.shortTerm.length) parts.push(`[Recent chat]
+${mem.shortTerm.map((m) => `${m.role}: ${m.content}`).join("\n")}`);
+  return parts.length ? `## Memory
+${parts.join("\n\n")}` : "";
+}
+async function buildArtifactContext(projectId, artifactId, includeOpenAnnotations) {
+  if (!artifactId) return "";
+  const artifact = await utils_default.db("o_storyArtifact").where({ id: artifactId, projectId }).first();
+  if (!artifact) return "";
+  const annotations = includeOpenAnnotations ? await utils_default.db("o_storyAnnotation").where({ artifactId, projectId, status: "open" }).orderBy("createTime", "asc") : [];
+  return [
+    "## Current Artifact",
+    `id: ${artifact.id}`,
+    `type: ${artifact.type}`,
+    `title: ${artifact.title}`,
+    `version: ${artifact.version}`,
+    artifact.content || "",
+    annotations.length ? `
+## Open User Annotations
+${annotations.map(
+      (item, index) => [
+        `${index + 1}. id=${item.id}`,
+        `selectedText: ${item.selectedText || ""}`,
+        `comment: ${item.comment || ""}`,
+        item.blockId ? `blockId: ${item.blockId}` : "",
+        item.startOffset != null || item.endOffset != null ? `range: ${item.startOffset ?? ""}-${item.endOffset ?? ""}` : ""
+      ].filter(Boolean).join("\n")
+    ).join("\n\n")}` : ""
+  ].filter(Boolean).join("\n");
+}
+async function runDecisionAI3(ctx) {
+  const { isolationKey, text: text2, userMessageTime, abortSignal, resTool } = ctx;
+  const projectId = Number(resTool.data.projectId);
+  const memory = new memory_default("storyAgent", isolationKey);
+  await memory.add("user", text2, { createTime: userMessageTime });
+  const [prompt, mem, project, storySkills, artifactContext] = await Promise.all([
+    readDecisionPrompt(),
+    memory.get(text2),
+    utils_default.db("o_project").where("id", projectId).first(),
+    useStorySkills(),
+    buildArtifactContext(projectId, ctx.artifactId, ctx.includeOpenAnnotations)
+  ]);
+  const projectInfo = [
+    "## Project",
+    `id: ${projectId}`,
+    `name: ${project?.name ?? "unknown"}`,
+    `type: ${project?.type ?? "unknown"}`,
+    `intro: ${project?.intro ?? ""}`,
+    `artStyle: ${project?.artStyle ?? ""}`
+  ].join("\n");
+  const { fullStream } = await utils_default.Ai.Text("storyAgent:decisionAgent", ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
+    messages: [
+      { role: "system", content: `${prompt}
+
+${storySkills.prompt}` },
+      { role: "assistant", content: [projectInfo, buildMemPrompt3(mem), artifactContext].filter(Boolean).join("\n\n") },
+      { role: "user", content: text2 }
+    ],
+    abortSignal,
+    tools: {
+      ...memory.getTools(),
+      ...storySkills.tools,
+      ...useStoryTools(projectId)
+    },
+    onFinish: async (completion) => {
+      await memory.add("assistant:decision", removeAllXmlTags3(completion.text));
+    }
+  });
+  await consumeFullStream3(fullStream, ctx.msg);
+}
+async function consumeFullStream3(fullStream, msg) {
+  const text2 = msg.text();
+  let thinking = null;
+  let thinkTime = 0;
+  let fullResponse = "";
+  try {
+    for await (const chunk of fullStream) {
+      if (chunk.type === "reasoning-start") {
+        thinkTime = Date.now();
+        thinking = msg.thinking("Thinking...");
+      } else if (chunk.type === "reasoning-delta") {
+        thinking?.appendText(chunk.text);
+      } else if (chunk.type === "reasoning-end") {
+        const title = `Thinking complete (${((Date.now() - thinkTime) / 1e3).toFixed(1)}s)`;
+        thinking?.updateTitle(title);
+        thinking?.complete();
+        thinking = null;
+      } else if (chunk.type === "text-delta") {
+        text2.append(chunk.text);
+        fullResponse += chunk.text;
+      } else if (chunk.type === "error") {
+        throw chunk.error;
+      }
+    }
+    text2.complete();
+    msg.complete();
+  } catch (err) {
+    thinking?.complete();
+    const errMsg = err?.message ?? String(err);
+    text2.append(errMsg);
+    text2.error();
+    msg.error();
+    throw err;
+  }
+  return fullResponse;
+}
+function removeAllXmlTags3(text2) {
+  return text2.replace(/<([a-zA-Z][\w-]*)(\s+[^>]*)?>([\s\S]*?)<\/\1>/g, "").replace(/<([a-zA-Z][\w-]*)(\s+[^>]*)?\/>/g, "").replace(/<\/?[a-zA-Z][\w-]*(\s+[^>]*)?>/g, "").trim();
+}
+var import_fs9, import_path12;
+var init_storyAgent = __esm({
+  "src/agents/storyAgent/index.ts"() {
+    "use strict";
+    import_fs9 = __toESM(require("fs"));
+    import_path12 = __toESM(require("path"));
+    init_utils3();
+    init_memory();
+    init_tools3();
+    init_skills();
+  }
+});
+
+// src/socket/routes/storyAgent.ts
+async function verifyToken3(rawToken) {
+  const setting = await utils_default.db("o_setting").where("key", "tokenKey").select("value").first();
+  if (!setting) return false;
+  const { value: tokenKey } = setting;
+  if (!rawToken) return false;
+  const token = rawToken.replace("Bearer ", "");
+  try {
+    import_jsonwebtoken4.default.verify(token, tokenKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+var import_jsonwebtoken4, storyAgent_default;
+var init_storyAgent2 = __esm({
+  "src/socket/routes/storyAgent.ts"() {
+    "use strict";
+    import_jsonwebtoken4 = __toESM(require_jsonwebtoken());
+    init_utils3();
+    init_storyAgent();
+    init_resTool();
+    storyAgent_default = (nsp) => {
+      nsp.on("connection", async (socket) => {
+        const token = socket.handshake.auth.token;
+        if (!token || !await verifyToken3(token)) {
+          console.log("[storyAgent] connection rejected: invalid token");
+          socket.disconnect();
+          return;
+        }
+        const isolationKey = socket.handshake.auth.isolationKey;
+        if (!isolationKey) {
+          console.log("[storyAgent] connection rejected: missing isolationKey");
+          socket.disconnect();
+          return;
+        }
+        const resTool = new resTool_default(socket, {
+          projectId: socket.handshake.auth.projectId
+        });
+        let abortController = null;
+        const thinkConfig = {
+          think: false,
+          thinlLevel: 0
+        };
+        socket.on(
+          "chat",
+          async (data) => {
+            abortController?.abort();
+            abortController = new AbortController();
+            const currentController = abortController;
+            const msg = resTool.newMessage("assistant", "Story Agent");
+            const projectId = Number(data.projectId ?? socket.handshake.auth.projectId);
+            if (!Number.isFinite(projectId)) {
+              msg.error("Missing projectId");
+              return;
+            }
+            resTool.data.projectId = projectId;
+            const ctx = {
+              socket,
+              isolationKey,
+              text: data.content,
+              artifactId: data.artifactId,
+              includeOpenAnnotations: data.includeOpenAnnotations,
+              userMessageTime: new Date(msg.datetime).getTime() - 1,
+              abortSignal: currentController.signal,
+              resTool,
+              msg,
+              thinkConfig
+            };
+            try {
+              await runDecisionAI3(ctx);
+            } catch (err) {
+              if (err.name !== "AbortError" && !currentController.signal.aborted) {
+                console.error("[storyAgent] chat error:", utils_default.error(err).message);
+                msg.error(utils_default.error(err).message);
+              }
+            } finally {
+              if (abortController === currentController) {
+                abortController = null;
+              }
+            }
+          }
+        );
+        socket.on("updateThinkConfig", (data) => {
+          thinkConfig.think = data.think;
+          thinkConfig.thinlLevel = data.thinlLevel;
+        });
+        socket.on("stop", () => {
+          abortController?.abort();
+          abortController = null;
+        });
+      });
+    };
+  }
+});
+
 // src/runtime/agentSocketBridge.ts
 var agentSocketBridge_exports = {};
 __export(agentSocketBridge_exports, {
@@ -195336,8 +196813,10 @@ __export(agentSocketBridge_exports, {
 function attachAgentSocketBridge(port) {
   const productionNamespace = new VirtualNamespace();
   const scriptNamespace = new VirtualNamespace();
+  const storyNamespace = new VirtualNamespace();
   productionAgent_default(productionNamespace);
   scriptAgent_default(scriptNamespace);
+  storyAgent_default(storyNamespace);
   const sockets = /* @__PURE__ */ new Map();
   const onMessage = (event) => {
     const message = event?.data ?? event;
@@ -195349,7 +196828,7 @@ function attachAgentSocketBridge(port) {
         message.auth || {}
       );
       sockets.set(message.connectionId, socket2);
-      const namespace = message.kind === "productionAgent" ? productionNamespace : scriptNamespace;
+      const namespace = message.kind === "productionAgent" ? productionNamespace : message.kind === "storyAgent" ? storyNamespace : scriptNamespace;
       import_node_events.EventEmitter.prototype.emit.call(namespace, "connection", socket2);
       return;
     }
@@ -195372,14 +196851,15 @@ function attachAgentSocketBridge(port) {
     sockets.clear();
   };
 }
-var import_node_events, import_node_crypto8, VirtualSocket, VirtualNamespace;
+var import_node_events, import_node_crypto10, VirtualSocket, VirtualNamespace;
 var init_agentSocketBridge = __esm({
   "src/runtime/agentSocketBridge.ts"() {
     "use strict";
     import_node_events = require("node:events");
-    import_node_crypto8 = require("node:crypto");
+    import_node_crypto10 = require("node:crypto");
     init_productionAgent2();
     init_scriptAgent2();
+    init_storyAgent2();
     VirtualSocket = class extends import_node_events.EventEmitter {
       id;
       handshake;
@@ -195398,7 +196878,7 @@ var init_agentSocketBridge = __esm({
         let callbackId;
         if (typeof possibleCallback === "function") {
           args.pop();
-          callbackId = (0, import_node_crypto8.randomUUID)();
+          callbackId = (0, import_node_crypto10.randomUUID)();
           this.callbacks.set(callbackId, possibleCallback);
         }
         this.port.postMessage({
@@ -195475,14 +196955,18 @@ function startRuntimeMetrics(role, publish) {
 
 // src/runtime/agentProcess.ts
 init_runtimeProtocol();
+init_logger();
 process.env.TOONFLOW_UTILITY = "1";
 process.env.TOONFLOW_RUNTIME_ROLE = "agent";
+initLogger({ role: "agent", hijackConsole: true });
+var runtimeLog = createLogger("runtime-agent");
 var parentPort = process.parentPort;
 var apiPort = null;
 var detachAgentBridge;
 parentPort?.on("message", (event) => {
   const data = event?.data ?? event;
   if (data?.type === "runtime:attach" && event?.ports?.[0]) {
+    runtimeLog.info("Agent attached to API runtime port", { event: "runtime.attach", peerRole: data.role });
     detachAgentBridge?.();
     apiPort?.close?.();
     const port = event.ports[0];
@@ -195494,6 +196978,7 @@ parentPort?.on("message", (event) => {
     port.start?.();
   }
   if (data?.type === "shutdown") {
+    runtimeLog.info("Agent shutdown requested", { event: "shutdown" });
     stopMetrics();
     stopHeartbeat();
     detachAgentBridge?.();
@@ -195507,6 +196992,7 @@ var stopMetrics = startRuntimeMetrics("agent", (metric) => {
   parentPort?.postMessage({ type: "runtime:metric", metric });
   apiPort?.postMessage({ type: "runtime:metric", metric });
 });
+runtimeLog.info("Agent utility process ready", { event: "ready" });
 parentPort?.postMessage({ type: "runtime:ready", role: "agent", pid: process.pid });
 /*! Bundled license information:
 

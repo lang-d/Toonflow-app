@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { buildStoryboardVideoFact } from "@/services/storyboardFacts";
 const router = express.Router();
 
 export default router.post(
@@ -29,11 +30,31 @@ export default router.post(
       .limit(limit);
     const data = await Promise.all(
       storyboardData.map(async (i: any) => {
+        const fact = buildStoryboardVideoFact(i, []);
         return {
           id: i.id,
           prompt: i.prompt,
           state: i.state,
           src: i.filePath ? await u.oss.getSmallImageUrl(i.filePath!) : "",
+          groupKey: i.groupKey,
+          groupName: i.groupName,
+          groupIntent: i.groupIntent,
+          beatId: i.beatId,
+          scene: fact.scene,
+          picture: fact.picture,
+          action: fact.action,
+          shotSize: fact.shotSize,
+          cameraMove: fact.cameraMove,
+          dialogue: fact.dialogue,
+          sound: fact.sound,
+          visibleEmotion: fact.visibleEmotion,
+          location: fact.location,
+          timeOfDay: fact.timeOfDay,
+          sceneContinuityId: i.sceneContinuityId,
+          tableRowJson: i.tableRowJson,
+          factSource: fact.factSource,
+          factStatus: fact.factStatus,
+          duration: fact.duration == null ? undefined : Number(fact.duration),
         };
       }),
     );

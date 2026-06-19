@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import productionAgent from "@/socket/routes/productionAgent";
 import scriptAgent from "@/socket/routes/scriptAgent";
+import storyAgent from "@/socket/routes/storyAgent";
 
 class VirtualSocket extends EventEmitter {
   id: string;
@@ -66,8 +67,10 @@ class VirtualNamespace extends EventEmitter {}
 export function attachAgentSocketBridge(port: any) {
   const productionNamespace = new VirtualNamespace();
   const scriptNamespace = new VirtualNamespace();
+  const storyNamespace = new VirtualNamespace();
   productionAgent(productionNamespace as any);
   scriptAgent(scriptNamespace as any);
+  storyAgent(storyNamespace as any);
   const sockets = new Map<string, VirtualSocket>();
 
   const onMessage = (event: any) => {
@@ -80,7 +83,12 @@ export function attachAgentSocketBridge(port: any) {
         message.auth || {},
       );
       sockets.set(message.connectionId, socket);
-      const namespace = message.kind === "productionAgent" ? productionNamespace : scriptNamespace;
+      const namespace =
+        message.kind === "productionAgent"
+          ? productionNamespace
+          : message.kind === "storyAgent"
+            ? storyNamespace
+            : scriptNamespace;
       EventEmitter.prototype.emit.call(namespace, "connection", socket);
       return;
     }

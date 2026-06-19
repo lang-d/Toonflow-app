@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import u from "@/utils";
-import getPath from "@/utils/getPath";
 import dreaminaCli, { type QueueConfig } from "@/utils/dreaminaCli";
 import {
   resolveQueuedWorkbenchReferences,
@@ -12,6 +11,7 @@ import {
 } from "@/services/workbenchReference";
 import type { ReferenceList } from "@/utils/ai";
 import { adoptLegacyTask, updateUnifiedTask } from "@/services/taskCoordinator";
+import { createLogger } from "@/logger";
 
 type QueueStatus = "queued" | "submitting" | "confirming" | "processing" | "completed" | "failed" | "cancelled";
 type QueueState = "排队中" | "提交中" | "生成中" | "已完成" | "生成失败" | "已取消";
@@ -88,8 +88,7 @@ const SCHEDULER_LEASE_KEY = "runtime:video-queue-scheduler-lease";
 const SCHEDULER_LEASE_TTL_MS = 90_000;
 const submissionModels = new Set<string>();
 const pollingTasks = new Set<number>();
-const queueLogDir = getPath(["logs", "video-queue"]);
-const queueLogReady = fs.mkdir(queueLogDir, { recursive: true });
+const videoQueueLog = createLogger("video-queue");
 let timer: NodeJS.Timeout | null = null;
 let tickRunning = false;
 let schedulerStarted = false;
@@ -99,20 +98,10 @@ const schedulerOwner = `${process.pid}:${randomUUID()}`;
 type QueueLogLevel = "info" | "warn" | "error";
 
 function queueLog(event: string, details: Record<string, unknown> = {}, level: QueueLogLevel = "info") {
-  const payload = {
-    time: new Date().toISOString(),
-    processId: process.pid,
+  videoQueueLog[level](`video-queue ${event}`, {
     event,
     ...details,
-  };
-  const message = `[video-queue] ${JSON.stringify(payload)}`;
-  if (level === "error") console.error(message);
-  else if (level === "warn") console.warn(message);
-  else console.info(message);
-  const fileName = `${payload.time.slice(0, 10)}.log`;
-  void queueLogReady
-    .then(() => fs.appendFile(path.join(queueLogDir, fileName), `${message}\n`, "utf8"))
-    .catch((err) => console.warn(`[video-queue] failed to write log file: ${String(err)}`));
+  });
 }
 
 function taskLogDetails(row: Pick<QueueRow, "id" | "videoId" | "model" | "providerModelKey" | "submitId">) {
@@ -895,7 +884,7 @@ async function cleanupLegacyReferences(row: QueueRow) {
     const dirs = new Set(
       (request.legacyReferences || [])
         .map((item) => path.dirname(item.filePath))
-        .filter((dir) => dir.startsWith(getPath(["temp", "video-queue-legacy"]))),
+        .filter((dir) => dir.startsWith(u.getPath(["temp", "video-queue-legacy"]))),
     );
     await Promise.all([...dirs].map((dir) => fs.rm(dir, { recursive: true, force: true })));
   } catch {}

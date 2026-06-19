@@ -13,6 +13,8 @@ coverage
 
 # logs
 logs
+!src/routes/diagnostics/logs/
+!src/routes/diagnostics/logs/*.ts
 _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 

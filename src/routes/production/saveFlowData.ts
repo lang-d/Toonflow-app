@@ -1,10 +1,16 @@
 import express from "express";
-import u from "@/utils";
 import { z } from "zod";
+import u from "@/utils";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+
 const router = express.Router();
-import { flowDataSchema } from "@/agents/productionAgent/tools";
+
+function flowWorkspaceState(data: any) {
+  return {
+    scriptPlan: typeof data?.scriptPlan === "string" ? data.scriptPlan : "",
+  };
+}
 
 export default router.post(
   "/",
@@ -14,52 +20,36 @@ export default router.post(
     data: z.any(),
   }),
   async (req, res) => {
-    const {
-      data,
-      projectId,
-      episodesId,
-    }: {
-      data: z.infer<typeof flowDataSchema>;
-      projectId: number;
-      episodesId: number;
-    } = req.body;
-    const sqlData = await u.db("o_agentWorkData").where("projectId", String(projectId)).andWhere("episodesId", String(episodesId)).first();
-    if (data.storyboard && data.storyboard.length) {
-      const filterDatas = data?.storyboard.filter((i) => !i.id);
-      if (!filterDatas.length) {
-        try {
-          await Promise.all(
-            data.storyboard
-              .filter((i) => i.id)
-              .map(async (i, index) => {
-                await u.db("o_storyboard").where("id", i.id).update({
-                  index: index,
-                });
-              }),
-          );
-        } catch (error) {
-          console.error("更新分镜排序失败", error);
+    const { data, projectId, episodesId } = req.body;
+    if (Array.isArray(data?.storyboard) && data.storyboard.length) {
+      await u.db.transaction(async (trx: any) => {
+        for (const [index, item] of data.storyboard.entries()) {
+          if (item?.id) await trx("o_storyboard").where("id", item.id).update({ index });
         }
-      }
+      });
     }
-
-    if (!sqlData) {
+    const storageData = JSON.stringify(flowWorkspaceState(data));
+    const existing = await u
+      .db("o_agentWorkData")
+      .where("projectId", String(projectId))
+      .andWhere("episodesId", String(episodesId))
+      .andWhere("key", "productionAgent")
+      .first();
+    if (existing) {
+      await u
+        .db("o_agentWorkData")
+        .where("id", existing.id)
+        .update({ data: storageData, updateTime: Date.now() });
+    } else {
       await u.db("o_agentWorkData").insert({
         projectId,
         episodesId,
         key: "productionAgent",
-        data: JSON.stringify(data),
+        data: storageData,
+        createTime: Date.now(),
+        updateTime: Date.now(),
       });
-    } else {
-      await u
-        .db("o_agentWorkData")
-        .where("projectId", String(projectId))
-        .where("key", "productionAgent")
-        .andWhere("episodesId", String(episodesId))
-        .update({
-          data: JSON.stringify(data),
-        });
     }
-    return res.status(200).send(success());
+    return res.status(200).send(success({ warnings: [] }));
   },
 );

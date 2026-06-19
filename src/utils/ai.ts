@@ -7,7 +7,9 @@ import u from "@/utils";
 type AiType =
   | "scriptAgent"
   | "productionAgent"
+  | "storyAgent"
   | "universalAi"
+  | "storyAgent:decisionAgent"
   | "scriptAgent:decisionAgent"
   | "scriptAgent:supervisionAgent"
   | "scriptAgent:storySkeletonAgent"
@@ -27,7 +29,9 @@ type FnName = "textRequest" | "imageRequest" | "videoRequest" | "ttsRequest";
 const AiTypeValues: AiType[] = [
   "scriptAgent",
   "productionAgent",
+  "storyAgent",
   "universalAi",
+  "storyAgent:decisionAgent",
   "scriptAgent:decisionAgent",
   "scriptAgent:supervisionAgent",
   "scriptAgent:storySkeletonAgent",

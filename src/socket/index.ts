@@ -1,6 +1,7 @@
 import { Server } from "socket.io";
 import productionAgent from "./routes/productionAgent";
 import scriptAgent from "./routes/scriptAgent";
+import storyAgent from "./routes/storyAgent";
 import taskStatus from "./routes/taskStatus";
 import agentProxy from "./routes/agentProxy";
 
@@ -9,6 +10,7 @@ export default (io: Server) => {
   const routes: Record<string, (nsp: ReturnType<Server["of"]>) => void> = {
     productionAgent: isolatedAgent ? agentProxy("productionAgent") : productionAgent,
     scriptAgent: isolatedAgent ? agentProxy("scriptAgent") : scriptAgent,
+    storyAgent: isolatedAgent ? agentProxy("storyAgent") : storyAgent,
     task: taskStatus,
   };
 

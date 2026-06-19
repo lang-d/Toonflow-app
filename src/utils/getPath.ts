@@ -17,9 +17,8 @@ export default (fileName?: string[] | string) => {
 
 export function isEletron() {
   if (typeof process.versions?.electron !== "undefined" && process.env.TOONFLOW_UTILITY !== "1") {
-    const { app } = require("electron");
+    require("electron");
     return true;
-  } else {
-    return false;
   }
+  return false;
 }

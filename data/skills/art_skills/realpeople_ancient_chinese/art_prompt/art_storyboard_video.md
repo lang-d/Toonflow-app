@@ -4,8 +4,14 @@
 
 | 模式 | 风格标签 |
 |------|----------|
-| **通用多参模式（英文）** | `Chinese period drama, photorealistic, cinematic, high contrast, ultra-fine detail` |
-| **通用首尾帧模式（英文）** | `Chinese period drama, photorealistic, cinematic, high contrast, ultra-fine detail, shallow depth of field` |
-| **Seedance 2.0（中文）** | `古风写实摄影，电影风格，强对比度，极致细节` |
+| **通用多参模式（英文）** | `Chinese period drama, photorealistic live-action, restrained camera language` |
+| **通用首尾帧模式（英文）** | `Chinese period drama, photorealistic live-action, restrained camera language, shallow depth of field when supported by references` |
+| **Seedance 2.0（中文）** | `古风写实摄影，真人实拍质感，克制镜头语言` |
 
+---
 
+### 使用边界
+
+- 风格标签只提供视觉基准，不覆盖分镜图、场景图、角色图和上游分镜事实。
+- 不新增剧情、时间、地点、光影色调、人物关系、站位或朝向。
+- 画内音效由视频模板处理；BGM/配乐/非画内音乐只作为后期建议，不写入视频提示词。

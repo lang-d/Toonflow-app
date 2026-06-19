@@ -22,6 +22,7 @@ export type RuntimeMessage =
   | { type: "runtime:heartbeat"; role: RuntimeRole; pid: number; timestamp: number }
   | { type: "runtime:stopped"; role: RuntimeRole; pid: number }
   | { type: "runtime:error"; role: RuntimeRole; pid: number; message: string }
+  | { type: "runtime:log"; role: RuntimeRole; pid: number; message: string; level?: "debug" | "info" | "warn" | "error" }
   | { type: "runtime:supervisor"; snapshot: RuntimeSupervisorSnapshot };
 
 export const RUNTIME_API_HOST = "127.0.0.1";

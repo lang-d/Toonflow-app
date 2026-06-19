@@ -110,7 +110,7 @@ async function resolveOne(input: WorkbenchReferenceInput, options: ResolveOption
       name: `P${Number(row.index ?? 0) + 1}`,
       prompt: row.prompt || "",
       index: row.index ?? undefined,
-      videoDesc: row.videoDesc || "",
+      videoDesc: "",
       duration: row.duration ?? undefined,
       track: row.track || "",
       shouldGenerateImage: row.shouldGenerateImage ?? undefined,

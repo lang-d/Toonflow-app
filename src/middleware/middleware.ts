@@ -1,10 +1,13 @@
 import { Request, Response, NextFunction } from "express";
 import { z, ZodTypeAny } from "zod";
 import { error } from "@/lib/responseFormat";
+import { createLogger } from "@/logger";
 
 import { zhCN } from "zod/locales";
 
 z.config(zhCN());
+
+const validationLog = createLogger("validation");
 
 export function validateFields(
   shape: Record<string, ZodTypeAny>,
@@ -21,7 +24,13 @@ export function validateFields(
         message: issue.message,
         code: issue.code,
       }));
-      console.error(issues);
+      validationLog.warn("Request validation failed", {
+        event: "request.validation.failed",
+        requestId: (req as any).requestId,
+        path: req.path,
+        source,
+        issues,
+      });
       return res.status(400).send(error("参数错误", { issues }));
     }
     (req as any)[source] = parseResult.data;

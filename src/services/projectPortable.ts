@@ -97,6 +97,12 @@ async function collectProjectTables(database: any, projectId: number): Promise<S
       "o_videoTrack",
       "o_workbenchMergedReference",
       "o_directorAsset",
+      "o_storyArtifact",
+      "o_storyAnnotation",
+      "o_storyRevisionMap",
+      "o_productionReviewSuggestion",
+      "o_productionReviewFeedback",
+      "o_textAsset",
       "o_editImageTask",
     ];
     tables.o_project = await read("o_project", (query) => query.where("id", projectId));
@@ -306,10 +312,19 @@ function nextIdFactory() {
 
 function rewritePath(value: unknown, oldProjectId: number, newProjectId: number) {
   if (typeof value !== "string") return value;
-  return value.replace(
-    new RegExp(`^(\\/?)${oldProjectId}(?=[/\\\\])`),
-    (_match, slash) => `${slash}${newProjectId}`,
-  );
+  return value
+    .replace(
+      new RegExp(`^(\\/?)${oldProjectId}(?=[/\\\\])`),
+      (_match, slash) => `${slash}${newProjectId}`,
+    )
+    .replace(
+      new RegExp(`^projects[/\\\\]${oldProjectId}(?=[/\\\\])`),
+      `projects/${newProjectId}`,
+    )
+    .replace(
+      new RegExp(`^textAssets[/\\\\]${oldProjectId}[/\\\\](.+)$`),
+      (_match, rest) => `projects/${newProjectId}/text/${rest}`,
+    );
 }
 
 export async function importPortableProject(sourceDirectory: string, database: any = db) {
@@ -345,6 +360,12 @@ export async function importPortableProject(sourceDirectory: string, database: a
     "o_videoTrack",
     "o_workbenchMergedReference",
     "o_directorAsset",
+    "o_storyArtifact",
+    "o_storyAnnotation",
+    "o_storyRevisionMap",
+    "o_productionReviewSuggestion",
+    "o_productionReviewFeedback",
+    "o_textAsset",
     "o_imageFlow",
     "o_editImageTask",
     "o_videoGenerationTask",
@@ -428,6 +449,11 @@ export async function importPortableProject(sourceDirectory: string, database: a
       ["assetsAudioId", "o_assets"],
       ["imageId", "o_image"],
       ["directorAssetId", "o_directorAsset"],
+      ["artifactId", "o_storyArtifact"],
+      ["sourceArtifactId", "o_storyArtifact"],
+      ["newArtifactId", "o_storyArtifact"],
+      ["suggestionId", "o_productionReviewSuggestion"],
+      ["parentId", "o_productionReviewSuggestion"],
       ["storyboardId", "o_storyboard"],
       ["flowId", "o_imageFlow"],
       ["trackId", "o_videoTrack"],
@@ -447,9 +473,23 @@ export async function importPortableProject(sourceDirectory: string, database: a
       else if (businessType === "video-track-prompt") row.businessId = mapId("o_videoTrack", row.businessId);
     }
     if (row.targetId != null) {
-      row.targetId = /storyboard/i.test(String(row.targetType))
-        ? mapId("o_storyboard", row.targetId)
-        : mapId("o_assets", row.targetId);
+      if (table === "o_productionReviewSuggestion") {
+        const targetType = String(row.targetType || "");
+        if (targetType === "storyboard" || targetType === "storyboardImage") {
+          row.targetId = mapId("o_storyboard", row.targetId);
+        } else if (targetType === "asset" || targetType === "deriveAsset") {
+          row.targetId = mapId("o_assets", row.targetId);
+        } else if (targetType === "videoPrompt" || targetType === "storyboardGroup" || targetType === "bgmSuggestion") {
+          const numeric = Number(row.targetId);
+          row.targetId = Number.isFinite(numeric) ? mapId("o_videoTrack", numeric) : row.targetId;
+        } else if (targetType === "videoResult") {
+          row.targetId = mapId("o_video", row.targetId);
+        }
+      } else {
+        row.targetId = /storyboard/i.test(String(row.targetType))
+          ? mapId("o_storyboard", row.targetId)
+          : mapId("o_assets", row.targetId);
+      }
     }
     if (row.taskId && taskIds.has(row.taskId)) row.taskId = taskIds.get(row.taskId);
     if (row.filePath) row.filePath = rewritePath(row.filePath, oldProjectId, newProjectId);
@@ -458,6 +498,11 @@ export async function importPortableProject(sourceDirectory: string, database: a
       "flowData",
       "referenceImages",
       "sourceRefs",
+      "musicPlanJson",
+      "reviewIssuesJson",
+      "contentJson",
+      "annotationIds",
+      "proposedPatch",
       "references",
       "requestJson",
       "payloadJson",
@@ -501,6 +546,12 @@ export async function importPortableProject(sourceDirectory: string, database: a
     "o_image",
     "o_assets",
     "o_directorAsset",
+    "o_storyArtifact",
+    "o_storyAnnotation",
+    "o_storyRevisionMap",
+    "o_productionReviewSuggestion",
+    "o_productionReviewFeedback",
+    "o_textAsset",
     "o_videoTrack",
     "o_storyboard",
     "o_video",
@@ -569,6 +620,12 @@ export async function importPortableProject(sourceDirectory: string, database: a
   const targetMedia = projectMediaDirectory(newProjectId);
   await fs.mkdir(path.dirname(targetMedia), { recursive: true });
   await fs.cp(sourceMedia, targetMedia, { recursive: true, force: false }).catch((error: any) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
+  const sourceText = path.join(sourceDirectory, "text");
+  const targetText = path.join(projectDirectory(newProjectId), "text");
+  await fs.mkdir(path.dirname(targetText), { recursive: true });
+  await fs.cp(sourceText, targetText, { recursive: true, force: false }).catch((error: any) => {
     if (error?.code !== "ENOENT") throw error;
   });
   const result = await generateProjectSnapshot(newProjectId, database);

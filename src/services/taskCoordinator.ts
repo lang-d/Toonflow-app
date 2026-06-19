@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import db from "@/utils/db";
 import { toLegacyTaskState, toTaskStatus, type TaskStatus } from "@/lib/taskStatus";
 import { normalizeTaskResultSync } from "@/services/mediaRef";
+import { createLogger } from "@/logger";
 
 export type UnifiedTaskType =
   | "image"
@@ -58,6 +59,7 @@ export interface CreateUnifiedTaskInput {
   describe?: string;
   relatedObjects?: unknown;
 }
+const taskLog = createLogger("task");
 
 function compactJson(value: unknown, maxBytes = 64 * 1024): string | null {
   if (value == null) return null;
@@ -149,6 +151,16 @@ export async function createUnifiedTask(input: CreateUnifiedTaskInput, database:
     const id = Number(rawId);
     const task = await trx("o_tasks").where("id", id).first();
     const [eventId] = await trx("o_taskEvent").insert(taskEventRow(task, resultJson));
+    taskLog.info("Unified task created", {
+      event: "task.created",
+      taskId,
+      businessId: id,
+      projectId: input.projectId,
+      scriptId: input.scriptId,
+      taskType: input.taskType,
+      status,
+      handler: input.handler,
+    });
     return { id, legacyTaskId: id, taskId, eventId: Number(eventId), status };
   });
 }
@@ -202,6 +214,15 @@ export async function adoptLegacyTask(
     if (task?.taskId === taskId) await trx("o_taskEvent").insert(taskEventRow(task));
   });
   const saved = await database("o_tasks").where("id", legacyTaskId).first();
+  taskLog.info("Legacy task adopted", {
+    event: "task.adopted",
+    taskId: saved.taskId,
+    businessId: legacyTaskId,
+    projectId: saved.projectId,
+    scriptId: saved.scriptId,
+    taskType: saved.taskType,
+    status: saved.status,
+  });
   return { id: legacyTaskId, legacyTaskId, taskId: saved.taskId, status: saved.status };
 }
 
@@ -250,6 +271,18 @@ export async function updateUnifiedTask(taskIdOrLegacyId: string | number, patch
     await trx("o_tasks").where("id", current.id).update(update);
     const task = { ...current, ...update };
     const [eventId] = await trx("o_taskEvent").insert(taskEventRow(task, resultJson, patch.reason));
+    taskLog.info("Unified task updated", {
+      event: "task.updated",
+      taskId: task.taskId,
+      businessId: task.id,
+      projectId: task.projectId,
+      scriptId: task.scriptId,
+      taskType: task.taskType,
+      status: task.status,
+      phase: task.phase,
+      progress: task.progress,
+      reason: patch.reason,
+    });
     return { eventId: Number(eventId), taskId: task.taskId, version: nextVersion, status: task.status };
   });
 }
@@ -280,6 +313,15 @@ export async function claimUnifiedTask(workerId: string, leaseMs = 120_000, data
   if (!claimed) return null;
   const task = await database("o_tasks").where("id", candidate.id).first();
   await database("o_taskEvent").insert(taskEventRow(task));
+  taskLog.info("Unified task claimed", {
+    event: "task.claimed",
+    taskId: task.taskId,
+    businessId: task.id,
+    projectId: task.projectId,
+    scriptId: task.scriptId,
+    taskType: task.taskType,
+    workerId,
+  });
   return task;
 }
 
@@ -295,6 +337,14 @@ export async function cancelUnifiedTask(taskId: string, database: any = db) {
     .update({ status: "cancelled" });
   if (!changed) return { ok: false as const, statusCode: 409, message: "任务状态已发生变化" };
   await updateUnifiedTask(task.id, { status: "cancelled", phase: "cancelled", reason: "用户取消", clearLease: true }, database);
+  taskLog.info("Unified task cancelled", {
+    event: "task.cancelled",
+    taskId,
+    businessId: task.id,
+    projectId: task.projectId,
+    scriptId: task.scriptId,
+    taskType: task.taskType,
+  });
   return { ok: true as const, taskId, legacyTaskId: task.id, status: "cancelled" as const };
 }
 

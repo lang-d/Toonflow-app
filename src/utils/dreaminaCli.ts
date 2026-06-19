@@ -4,6 +4,9 @@ import path from "path";
 import os from "node:os";
 import { spawn } from "child_process";
 import getPath from "@/utils/getPath";
+import { createLogger, writeDiagnosticFile } from "@/logger";
+
+const dreaminaLog = createLogger("dreamina-cli", { provider: "dreamina" });
 
 type TaskState = "idle" | "running" | "qr" | "device" | "success" | "failed";
 
@@ -213,15 +216,12 @@ function runRaw(args: string[], timeoutMs = 120000): Promise<CliResult> {
   const command = normalizedArgs[0] || "-h";
   if (!ALLOWED_COMMANDS.has(command)) throw new Error(`不允许执行的即梦 CLI 命令: ${command}`);
   const startedAt = Date.now();
-  console.info(
-    `[dreamina-cli] ${JSON.stringify({
-      time: new Date().toISOString(),
-      event: "command.started",
-      command,
-      timeoutMs,
-      argCount: normalizedArgs.length - 1,
-    })}`,
-  );
+  dreaminaLog.info("Dreamina CLI command started", {
+    event: "command.started",
+    command,
+    timeoutMs,
+    argCount: normalizedArgs.length - 1,
+  });
 
   return new Promise((resolve, reject) => {
     const child = spawn(cliPath(), normalizedArgs, {
@@ -237,14 +237,11 @@ function runRaw(args: string[], timeoutMs = 120000): Promise<CliResult> {
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill();
-      console.warn(
-        `[dreamina-cli] ${JSON.stringify({
-          time: new Date().toISOString(),
-          event: "command.timeout",
-          command,
-          elapsedMs: Date.now() - startedAt,
-        })}`,
-      );
+      dreaminaLog.warn("Dreamina CLI command timeout", {
+        event: "command.timeout",
+        command,
+        elapsedMs: Date.now() - startedAt,
+      });
       reject(new Error(`即梦 CLI 执行超时: dreamina ${command}`));
     }, timeoutMs);
 
@@ -257,31 +254,25 @@ function runRaw(args: string[], timeoutMs = 120000): Promise<CliResult> {
     child.on("error", (err) => {
       if (child.pid) activeCliProcesses.delete(child.pid);
       clearTimeout(timer);
-      console.error(
-        `[dreamina-cli] ${JSON.stringify({
-          time: new Date().toISOString(),
-          event: "command.error",
-          command,
-          elapsedMs: Date.now() - startedAt,
-          message: err.message,
-        })}`,
-      );
+      dreaminaLog.error("Dreamina CLI command error", {
+        event: "command.error",
+        command,
+        elapsedMs: Date.now() - startedAt,
+        error: err,
+      });
       reject(err);
     });
     child.on("close", (code) => {
       if (child.pid) activeCliProcesses.delete(child.pid);
       clearTimeout(timer);
-      const message = `[dreamina-cli] ${JSON.stringify({
-        time: new Date().toISOString(),
+      dreaminaLog[code === 0 ? "info" : "warn"]("Dreamina CLI command finished", {
         event: "command.finished",
         command,
         code,
         elapsedMs: Date.now() - startedAt,
         stdoutBytes: Buffer.byteLength(stdout),
         stderrBytes: Buffer.byteLength(stderr),
-      })}`;
-      if (code === 0) console.info(message);
-      else console.warn(message);
+      });
       resolve({ stdout, stderr, code });
     });
   });
@@ -668,10 +659,37 @@ async function runRawWithLogs(args: string[], timeoutMs: number) {
   const offsets = snapshotLogOffsets();
   const result = await runRaw(args, timeoutMs);
   await new Promise((resolve) => setTimeout(resolve, 250));
+  const logs = readLogDelta(offsets);
+  if (logs || result.stdout || result.stderr) {
+    const command = args[0] || "unknown";
+    const diagnosticFile = writeDiagnosticFile(
+      `${command}-${result.code ?? "unknown"}`,
+      [
+        `command: dreamina ${args.join(" ")}`,
+        `code: ${result.code}`,
+        "----- stdout -----",
+        result.stdout,
+        "----- stderr -----",
+        result.stderr,
+        "----- cli logs -----",
+        logs,
+      ].join("\n"),
+      { provider: "dreamina", event: "command.diagnostic", model: args.find((arg) => arg.startsWith("--model_version=")) },
+    );
+    dreaminaLog.info("Dreamina CLI diagnostic captured", {
+      event: "command.diagnostic",
+      command,
+      code: result.code,
+      diagnosticFile,
+      stdoutBytes: Buffer.byteLength(result.stdout || ""),
+      stderrBytes: Buffer.byteLength(result.stderr || ""),
+      logBytes: Buffer.byteLength(logs || ""),
+    });
+  }
   return {
     ...result,
     result,
-    logs: readLogDelta(offsets),
+    logs,
   };
 }
 

@@ -1,13 +1,21 @@
 import express from "express";
-import u from "@/utils";
 import { z } from "zod";
+import u from "@/utils";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { resolveStoryboardReferences, serializeStoryboardReferences } from "@/services/storyboardEditor";
+import { deriveStoryboardGroupMeta, syncVideoTracksForStoryboards } from "@/services/storyboardGroupPlanner";
 import {
-  resolveStoryboardReferences,
-  serializeStoryboardReferences,
-} from "@/services/storyboardEditor";
+  assetIdsFromStoryboardRow,
+  buildStoryboardDraftRow,
+  storyboardRowToDbPatch,
+  storyboardTableRowV2Schema,
+} from "@/services/storyboardTableContract";
+import { buildStoryboardVideoFact } from "@/services/storyboardFacts";
+import { getProjectDefaultVideoPolicy } from "@/services/videoModelPolicy";
+
 const router = express.Router();
+
 export default router.post(
   "/",
   validateFields({
@@ -15,13 +23,34 @@ export default router.post(
       z.object({
         prompt: z.string(),
         duration: z.number(),
-        track: z.string(),
+        track: z.string().optional(),
         state: z.string(),
         src: z.string().nullable(),
-        videoDesc: z.string(),
+        videoDesc: z.string().optional(),
         shouldGenerateImage: z.number(),
-        associateAssetsIds: z.array(z.number()),
+        associateAssetsIds: z.array(z.number()).default([]),
         referenceImages: z.array(z.any()).default([]),
+        groupKey: z.string().optional(),
+        groupName: z.string().optional(),
+        groupIntent: z.string().optional(),
+        beatId: z.string().optional(),
+        scene: z.string().optional(),
+        location: z.string().optional(),
+        timeOfDay: z.string().optional(),
+        sceneContinuityId: z.string().optional(),
+        picture: z.string().optional(),
+        action: z.string().optional(),
+        shotSize: z.string().optional(),
+        cameraMove: z.string().optional(),
+        cameraAngle: z.string().optional(),
+        transitionFromPrevious: z.string().optional(),
+        dialogue: z.union([z.string(), z.array(z.any())]).optional(),
+        sound: z.string().optional(),
+        soundEffects: z.array(z.string()).optional(),
+        visibleEmotion: z.string().optional(),
+        characters: z.array(z.any()).optional(),
+        requiredAssets: z.array(z.any()).optional(),
+        tableRowJson: z.any().optional(),
       }),
     ),
     scriptId: z.number(),
@@ -29,91 +58,112 @@ export default router.post(
   }),
   async (req, res) => {
     const { data, scriptId, projectId } = req.body;
-    if (!data.length) return res.status(400).send(error("数据不能为空"));
-    for (const item of data) {
-      const [id] = await u.db("o_storyboard").insert({
-        prompt: item.prompt,
-        duration: String(item.duration),
-        state: item.state,
-        scriptId,
-        projectId,
-        track: item.track,
-        videoDesc: item.videoDesc,
-        shouldGenerateImage: item.shouldGenerateImage,
-        createTime: Date.now(),
-        referenceImages: serializeStoryboardReferences(item.referenceImages || []),
-      });
-      if (item.associateAssetsIds?.length) {
-        await u.db("o_assets2Storyboard").insert(
-          item.associateAssetsIds.map((assetId: number) => ({
-            assetId,
-            storyboardId: id,
-          })),
+    if (!data.length) return res.status(400).send(error("Storyboard data cannot be empty"));
+    const durationPolicy = await getProjectDefaultVideoPolicy(projectId);
+
+    await u.db.transaction(async (trx: any) => {
+      const countRow = await trx("o_storyboard")
+        .where({ scriptId, projectId })
+        .count({ count: "*" })
+        .first();
+      const startIndex = Number(countRow?.count || 0);
+      for (const [offset, item] of data.entries()) {
+        const index = startIndex + offset;
+        const groupMeta = deriveStoryboardGroupMeta(item, index);
+        const factObject = buildStoryboardDraftRow(
+          {
+            ...(item.tableRowJson && typeof item.tableRowJson === "object" ? item.tableRowJson : {}),
+            ...item,
+            index,
+            durationSec: item.duration,
+            groupKey: item.groupKey || groupMeta.groupKey,
+            groupName: item.groupName || groupMeta.groupName,
+            groupIntent: item.groupIntent || groupMeta.groupIntent,
+            beatId: item.beatId || groupMeta.beatId,
+            soundEffects: item.soundEffects ?? item.sound,
+          },
+          index,
         );
+        const parsed = storyboardTableRowV2Schema.safeParse(factObject);
+        const [id] = await trx("o_storyboard").insert({
+          ...(parsed.success
+            ? storyboardRowToDbPatch(parsed.data, 1)
+            : {
+                tableRowJson: JSON.stringify(factObject),
+                factStatus: "draft",
+                factVersion: 1,
+                factRevision: 1,
+                duration: String(item.duration),
+                videoDesc: "",
+                groupKey: groupMeta.groupKey,
+                groupName: groupMeta.groupName,
+                groupIntent: groupMeta.groupIntent,
+                beatId: groupMeta.beatId || null,
+              }),
+          projectId,
+          scriptId,
+          index,
+          prompt: item.prompt,
+          state: item.state,
+          filePath: item.src ? u.replaceUrl(item.src) : "",
+          shouldGenerateImage: item.shouldGenerateImage,
+          referenceImages: serializeStoryboardReferences(item.referenceImages),
+          createTime: Date.now(),
+        });
+        const assetIds = [
+          ...new Set([
+            ...item.associateAssetsIds,
+            ...(parsed.success ? assetIdsFromStoryboardRow(parsed.data) : []),
+          ]),
+        ];
+        if (assetIds.length) {
+          await trx("o_assets2Storyboard").insert(assetIds.map((assetId) => ({ assetId, storyboardId: id })));
+        }
       }
-      item.id = id;
-    }
-    const lastStoryboard = await u.db("o_storyboard").where("scriptId", scriptId);
-    if (!lastStoryboard || !lastStoryboard.length) return res.status(400).send(error("未查到分镜数据"));
-    //根据track分组
-    const storyboardGroupByTrack: Record<string, number[]> = {};
-    lastStoryboard.forEach((item: any) => {
-      if (!storyboardGroupByTrack[item.track]) {
-        storyboardGroupByTrack[item.track] = [];
-      }
-      storyboardGroupByTrack[item.track].push(item.id);
+      const storyboards = await trx("o_storyboard").where({ scriptId, projectId }).orderBy("index", "asc");
+      await syncVideoTracksForStoryboards(trx, { projectId, scriptId, storyboards, durationPolicy });
     });
 
-    //循环：先查询数据库中是否已存在相同track名称的trackId，有则复用，没有则新建
-    for (const track in storyboardGroupByTrack) {
-      const storyboardIds = storyboardGroupByTrack[track] ?? [];
-
-      // 计算该track下所有分镜的duration总和
-      const trackDuration = lastStoryboard
-        .filter((item: any) => item.track == track)
-        .reduce((sum: number, item: any) => sum + Number(item.duration), 0);
-
-      // 查找该scriptId下是否已有相同track名称且已分配trackId的分镜记录
-      const existingStoryboard = await u.db("o_storyboard").where({ scriptId, track }).whereNotNull("trackId").first();
-
-      let trackId: number;
-      if (existingStoryboard?.trackId) {
-        // 已存在相同track名称的trackId，直接复用，并更新duration
-        trackId = existingStoryboard.trackId;
-        await u.db("o_videoTrack").where("id", trackId).update({ duration: trackDuration });
-      } else {
-        // 不存在，新建videoTrack
-        const newTrackId = Date.now()
-        await u.db("o_videoTrack").insert({
-          id: newTrackId,
-          scriptId,
-          projectId,
-          duration: trackDuration,
-        });
-        trackId = newTrackId;
-      }
-
-      await u.db("o_storyboard").whereIn("id", storyboardIds).update({ trackId });
-    }
-
-    const storyboardData = await Promise.all(
-      lastStoryboard.map(async (i) => {
+    const rows = await u.db("o_storyboard").where({ scriptId, projectId }).orderBy("index", "asc");
+    const result = await Promise.all(
+      rows.map(async (item: any) => {
+        const assetIds = await u
+          .db("o_assets2Storyboard")
+          .where("storyboardId", item.id)
+          .orderBy("rowid")
+          .pluck("assetId");
+        const normalizedAssetIds = assetIds.map(Number).filter(Number.isFinite);
+        const fact = buildStoryboardVideoFact(item, normalizedAssetIds);
         return {
-          associateAssetsIds: await u.db("o_assets2Storyboard").where("storyboardId", i.id).orderBy("rowid").select("assetId").pluck("assetId"),
-          src: i.filePath ? await u.oss.getSmallImageUrl(i.filePath) : "",
-          id: i.id,
-          trackId: i.trackId,
-          prompt: i.prompt,
-          duration: Number(i.duration),
-          state: i.state,
-          scriptId: i.scriptId,
-          reason: i.reason,
-          videoDesc: i.videoDesc,
-          flowId: i.flowId,
-          referenceImages: await resolveStoryboardReferences(i.referenceImages),
+          id: item.id,
+          index: item.index,
+          trackId: item.trackId,
+          prompt: item.prompt,
+          duration: Number(fact.duration || 0),
+          state: item.state,
+          src: item.filePath ? await u.oss.getSmallImageUrl(item.filePath) : "",
+          associateAssetsIds: normalizedAssetIds,
+          tableRowJson: item.tableRowJson,
+          factStatus: fact.factStatus,
+          factSource: fact.factSource,
+          scene: fact.scene,
+          location: fact.location,
+          timeOfDay: fact.timeOfDay,
+          picture: fact.picture,
+          action: fact.action,
+          shotSize: fact.shotSize,
+          cameraMove: fact.cameraMove,
+          dialogue: fact.dialogue,
+          sound: fact.sound,
+          visibleEmotion: fact.visibleEmotion,
+          groupKey: fact.groupKey,
+          groupName: fact.groupName,
+          groupIntent: fact.groupIntent,
+          beatId: fact.beatId,
+          referenceImages: await resolveStoryboardReferences(item.referenceImages),
         };
       }),
     );
-    return res.status(200).send(success(storyboardData));
+    return res.status(200).send(success(result));
   },
 );

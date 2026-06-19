@@ -51,6 +51,488 @@ var init_runtimeProtocol = __esm({
   }
 });
 
+// node_modules/is-path-inside/index.js
+function isPathInside(childPath, parentPath) {
+  const relation = import_node_path.default.relative(parentPath, childPath);
+  return Boolean(
+    relation && relation !== ".." && !relation.startsWith(`..${import_node_path.default.sep}`) && relation !== import_node_path.default.resolve(childPath)
+  );
+}
+var import_node_path;
+var init_is_path_inside = __esm({
+  "node_modules/is-path-inside/index.js"() {
+    "use strict";
+    import_node_path = __toESM(require("node:path"), 1);
+  }
+});
+
+// src/services/storagePaths.ts
+function absolute(value, fallback) {
+  return import_node_path2.default.resolve(value?.trim() || fallback);
+}
+function appDataRoot() {
+  return absolute(process.env.TOONFLOW_APP_DATA_DIR, import_node_path2.default.join(process.cwd(), "data"));
+}
+function storageMode() {
+  return process.env.TOONFLOW_STORAGE_MODE === "workspace" ? "workspace" : "legacy";
+}
+function legacyDataRoot() {
+  return absolute(
+    process.env.TOONFLOW_LEGACY_DATA_DIR || process.env.TOONFLOW_DATA_DIR,
+    import_node_path2.default.join(process.cwd(), "data")
+  );
+}
+function workspaceRoot() {
+  return absolute(process.env.TOONFLOW_WORKSPACE_DIR, legacyDataRoot());
+}
+function runtimeConfigPath(root2 = appDataRoot()) {
+  return import_node_path2.default.join(root2, "runtime.json");
+}
+function writeRuntimeStorageConfig(config3, root2 = appDataRoot()) {
+  import_node_fs.default.mkdirSync(root2, { recursive: true });
+  const target = runtimeConfigPath(root2);
+  const temp = `${target}.tmp`;
+  import_node_fs.default.writeFileSync(temp, JSON.stringify(config3, null, 2), "utf8");
+  import_node_fs.default.renameSync(temp, target);
+}
+function systemDataPath(...parts) {
+  return import_node_path2.default.join(
+    absolute(process.env.TOONFLOW_SYSTEM_DATA_DIR, import_node_path2.default.join(appDataRoot(), "system")),
+    ...parts
+  );
+}
+function userDataPath(...parts) {
+  return import_node_path2.default.join(appDataRoot(), "user", ...parts);
+}
+function cacheDataPath(...parts) {
+  return import_node_path2.default.join(appDataRoot(), "cache", ...parts);
+}
+function workspaceDataPath(...parts) {
+  return import_node_path2.default.join(workspaceRoot(), ...parts);
+}
+function profileDatabasePath() {
+  return import_node_path2.default.join(appDataRoot(), "profile.sqlite");
+}
+function workspaceDatabasePath() {
+  return storageMode() === "workspace" ? workspaceDataPath("workspace.sqlite") : import_node_path2.default.join(legacyDataRoot(), "db2.sqlite");
+}
+function projectDirectory(projectId) {
+  return workspaceDataPath("projects", String(projectId));
+}
+function projectMediaDirectory(projectId) {
+  return import_node_path2.default.join(projectDirectory(projectId), "media");
+}
+function resolveMediaFilePath(userPath) {
+  const normalized = userPath.replace(/^[/\\]+/, "").replace(/[\\/]+/g, import_node_path2.default.sep);
+  if (storageMode() !== "workspace") return import_node_path2.default.resolve(legacyDataRoot(), "oss", normalized);
+  const segments = normalized.split(import_node_path2.default.sep).filter(Boolean);
+  if (segments[0]?.toLowerCase() === "smallimage") {
+    return import_node_path2.default.resolve(cacheDataPath("thumbnails"), ...segments.slice(1));
+  }
+  if (/^\d+$/.test(segments[0] || "")) {
+    return import_node_path2.default.resolve(projectMediaDirectory(segments[0]), ...segments.slice(1));
+  }
+  return import_node_path2.default.resolve(workspaceDataPath("shared"), ...segments);
+}
+function isSafeMediaFilePath(filePath) {
+  const resolved = import_node_path2.default.resolve(filePath);
+  const roots = storageMode() === "workspace" ? [workspaceRoot(), cacheDataPath("thumbnails")] : [import_node_path2.default.join(legacyDataRoot(), "oss")];
+  return roots.some((root2) => resolved === import_node_path2.default.resolve(root2) || isPathInside(resolved, import_node_path2.default.resolve(root2)));
+}
+function getDataPath(fileName) {
+  if (storageMode() === "legacy") {
+    const base = legacyDataRoot();
+    return fileName == null ? base : import_node_path2.default.resolve(base, ...Array.isArray(fileName) ? fileName : [fileName]);
+  }
+  if (fileName == null) return appDataRoot();
+  const parts = Array.isArray(fileName) ? fileName : [fileName];
+  const [head, ...tail] = parts;
+  const mapping = {
+    "db2.sqlite": workspaceDatabasePath(),
+    "workspace.sqlite": workspaceDatabasePath(),
+    oss: workspaceRoot(),
+    backups: workspaceDataPath("backups"),
+    vendor: userDataPath("vendor"),
+    skills: userDataPath("skills"),
+    modelPrompt: userDataPath("modelPrompt"),
+    bin: userDataPath("bin"),
+    models: systemDataPath("models"),
+    serve: systemDataPath("serve"),
+    web: systemDataPath("web"),
+    assets: systemDataPath("assets"),
+    logs: import_node_path2.default.join(appDataRoot(), "logs"),
+    temp: import_node_path2.default.join(appDataRoot(), "temp"),
+    cache: import_node_path2.default.join(appDataRoot(), "cache"),
+    "version.txt": systemDataPath("version.txt")
+  };
+  const root2 = mapping[head] || userDataPath(head);
+  return import_node_path2.default.resolve(root2, ...tail);
+}
+var import_node_fs, import_node_path2, PROFILE_TABLES;
+var init_storagePaths = __esm({
+  "src/services/storagePaths.ts"() {
+    "use strict";
+    import_node_fs = __toESM(require("node:fs"));
+    import_node_path2 = __toESM(require("node:path"));
+    init_is_path_inside();
+    PROFILE_TABLES = /* @__PURE__ */ new Set([
+      "o_user",
+      "o_artStyle",
+      "o_agentDeploy",
+      "o_setting",
+      "o_prompt",
+      "o_modelPrompt",
+      "o_vendorConfig",
+      "o_skillList",
+      "o_skillAttribution"
+    ]);
+  }
+});
+
+// src/logger.ts
+function dateKey(time4 = Date.now()) {
+  return new Date(time4).toISOString().slice(0, 10);
+}
+function ensureDir(dir) {
+  import_node_fs2.default.mkdirSync(dir, { recursive: true });
+}
+function streamKey(role, channel) {
+  return `${dateKey()}:${role}:${channel}`;
+}
+function logFilePath(role, channel = role) {
+  return import_node_path3.default.join(rootLogDir, dateKey(), `${channel}.jsonl`);
+}
+function getStream(role, channel = role) {
+  const key = streamKey(role, channel);
+  const existing = writeStreams.get(key);
+  if (existing && !existing.destroyed) return existing;
+  const file3 = logFilePath(role, channel);
+  ensureDir(import_node_path3.default.dirname(file3));
+  const stream4 = import_node_fs2.default.createWriteStream(file3, { flags: "a", encoding: "utf8" });
+  writeStreams.set(key, stream4);
+  return stream4;
+}
+function byteLength(value) {
+  return Buffer.byteLength(value, "utf8");
+}
+function stringifyError(error50) {
+  if (!error50) return void 0;
+  if (error50 instanceof Error) {
+    return {
+      name: error50.name,
+      message: error50.message,
+      stack: error50.stack
+    };
+  }
+  return sanitizeValue(error50, 0);
+}
+function truncateString(value, maxBytes = MAX_FIELD_BYTES) {
+  const clean = value.replace(BASE64_PATTERN, "[base64 omitted]");
+  if (byteLength(clean) <= maxBytes) return clean;
+  let size = 0;
+  let output = "";
+  for (const char of clean) {
+    const next = byteLength(char);
+    if (size + next > maxBytes) break;
+    output += char;
+    size += next;
+  }
+  return `${output}...[truncated ${byteLength(clean) - size} bytes]`;
+}
+function sanitizeValue(value, depth = 0) {
+  if (depth > 5) return "[max depth]";
+  if (value == null) return value;
+  if (typeof value === "string") return truncateString(value);
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Error) return stringifyError(value);
+  if (Buffer.isBuffer(value)) return `[buffer ${value.length} bytes]`;
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => sanitizeValue(item, depth + 1));
+  if (typeof value === "object") {
+    const output = {};
+    for (const [key, item] of Object.entries(value).slice(0, 100)) {
+      output[key] = SENSITIVE_KEYS.test(key) ? "[redacted]" : sanitizeValue(item, depth + 1);
+    }
+    return output;
+  }
+  return String(value);
+}
+function compactLine(entry) {
+  let line = `${JSON.stringify(entry)}
+`;
+  if (byteLength(line) <= MAX_LINE_BYTES) return { line };
+  const diagnosticFile = writeDiagnosticFile("oversize-log-entry", JSON.stringify(entry, null, 2));
+  const compact = {
+    time: entry.time,
+    level: entry.level,
+    role: entry.role,
+    pid: entry.pid,
+    module: entry.module,
+    event: entry.event,
+    message: truncateString(String(entry.message || "oversize log entry"), 2048),
+    diagnosticFile
+  };
+  line = `${JSON.stringify(compact)}
+`;
+  return { line, diagnosticFile };
+}
+function consoleMethod(level) {
+  if (level === "error") return "error";
+  if (level === "warn") return "warn";
+  if (level === "debug") return "debug";
+  return "info";
+}
+function formatConsole(level, entry) {
+  const moduleName = entry.module ? `[${entry.module}]` : "";
+  const eventName = entry.event ? ` ${entry.event}` : "";
+  const message = entry.message ? ` ${entry.message}` : "";
+  return `[${entry.role}] [${level}]${moduleName}${eventName}${message}`;
+}
+function writeLog(level, message, context2 = {}) {
+  if (!initialized) initLogger();
+  const role = context2.role || currentRole;
+  const channel = context2.module === "video-queue" ? "video-queue" : role;
+  const entry = {
+    time: (/* @__PURE__ */ new Date()).toISOString(),
+    level,
+    role,
+    pid: process.pid,
+    module: context2.module || "app",
+    event: context2.event || "log",
+    message: truncateString(message)
+  };
+  for (const [key, value] of Object.entries(context2)) {
+    if (["role", "module", "event", "error"].includes(key)) continue;
+    entry[key] = SENSITIVE_KEYS.test(key) ? "[redacted]" : sanitizeValue(value);
+  }
+  if (context2.error) entry.error = stringifyError(context2.error);
+  const { line, diagnosticFile } = compactLine(entry);
+  if (diagnosticFile) entry.diagnosticFile = diagnosticFile;
+  getStream(role, channel).write(line);
+  const original = originalConsole[consoleMethod(level)];
+  if (original) {
+    writingRaw = true;
+    try {
+      original(formatConsole(level, entry));
+    } finally {
+      writingRaw = false;
+    }
+  }
+}
+function createLogger(moduleName, defaults2 = {}) {
+  const write = (level, message, context2 = {}) => writeLog(level, message, { ...defaults2, ...context2, module: context2.module || defaults2.module || moduleName });
+  return {
+    debug: (message, context2) => write("debug", message, context2),
+    info: (message, context2) => write("info", message, context2),
+    warn: (message, context2) => write("warn", message, context2),
+    error: (message, context2) => write("error", message, context2)
+  };
+}
+function writeRaw(level, chunk) {
+  if (writingRaw) return;
+  const value = typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+  const text3 = value.replace(ANSI_PATTERN, "").trim();
+  if (!text3) return;
+  writingRaw = true;
+  try {
+    writeLog(level, text3, { module: "stdout", event: level === "error" ? "stderr" : "stdout" });
+  } finally {
+    writingRaw = false;
+  }
+}
+function hijackConsole() {
+  if (hijacked) return;
+  for (const method of ["log", "info", "warn", "error", "debug"]) {
+    originalConsole[method] = console[method].bind(console);
+    console[method] = (...args) => {
+      const level = method === "log" ? "info" : method;
+      writeLog(level, args.map((item) => typeof item === "string" ? item : JSON.stringify(sanitizeValue(item))).join(" "), {
+        module: "console",
+        event: method
+      });
+    };
+  }
+  originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  originalStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stdout.write = ((chunk, ...rest) => {
+    writeRaw("info", chunk);
+    return originalStdoutWrite(chunk, ...rest);
+  });
+  process.stderr.write = ((chunk, ...rest) => {
+    writeRaw("error", chunk);
+    return originalStderrWrite(chunk, ...rest);
+  });
+  hijacked = true;
+}
+function initLogger(options = {}) {
+  currentRole = options.role || process.env.TOONFLOW_RUNTIME_ROLE || currentRole;
+  rootLogDir = options.logDir || import_node_path3.default.join(appDataRoot(), "logs");
+  retentionDays = options.retentionDays || DEFAULT_RETENTION_DAYS;
+  ensureDir(rootLogDir);
+  for (const method of ["log", "info", "warn", "error", "debug"]) {
+    if (!originalConsole[method]) originalConsole[method] = console[method].bind(console);
+  }
+  if (options.hijackConsole) hijackConsole();
+  initialized = true;
+  return logger;
+}
+function closeLogger() {
+  for (const stream4 of writeStreams.values()) stream4.end();
+  writeStreams.clear();
+  if (hijacked) {
+    for (const method of ["log", "info", "warn", "error", "debug"]) {
+      const original = originalConsole[method];
+      if (original) console[method] = original;
+    }
+    if (originalStdoutWrite) process.stdout.write = originalStdoutWrite;
+    if (originalStderrWrite) process.stderr.write = originalStderrWrite;
+    originalConsole = {};
+    originalStdoutWrite = null;
+    originalStderrWrite = null;
+    hijacked = false;
+  }
+  initialized = false;
+}
+function writeDiagnosticFile(name28, content, context2 = {}) {
+  if (!initialized) initLogger();
+  const provider = context2.provider || "app";
+  const safeName = name28.replace(/[^\w.-]+/g, "_").slice(0, 80) || "diagnostic";
+  const fileName = `${Date.now()}-${safeName}.log`;
+  const file3 = import_node_path3.default.join(rootLogDir, "provider", String(provider), dateKey(), fileName);
+  ensureDir(import_node_path3.default.dirname(file3));
+  import_node_fs2.default.writeFileSync(file3, content, typeof content === "string" ? "utf8" : void 0);
+  return file3;
+}
+function walkFiles(dir) {
+  if (!import_node_fs2.default.existsSync(dir)) return [];
+  const files = [];
+  const walk = (current) => {
+    for (const entry of import_node_fs2.default.readdirSync(current, { withFileTypes: true })) {
+      const file3 = import_node_path3.default.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(file3);
+      } else if (entry.isFile()) {
+        const stat = import_node_fs2.default.statSync(file3);
+        files.push({ path: file3, relativePath: import_node_path3.default.relative(dir, file3), size: stat.size, mtimeMs: stat.mtimeMs });
+      }
+    }
+  };
+  walk(dir);
+  return files;
+}
+function readRecentErrors(files) {
+  const errors = [];
+  for (const file3 of files.filter((item) => item.path.endsWith(".jsonl")).sort((a, b) => b.path.localeCompare(a.path))) {
+    if (errors.length >= 50) break;
+    try {
+      const lines = import_node_fs2.default.readFileSync(file3.path, "utf8").trim().split(/\r?\n/).slice(-300);
+      for (const line of lines.reverse()) {
+        if (errors.length >= 50) break;
+        const parsed = JSON.parse(line);
+        if (parsed.level === "error" || parsed.level === "warn") {
+          errors.push({
+            time: parsed.time,
+            level: parsed.level,
+            role: parsed.role,
+            module: parsed.module,
+            event: parsed.event,
+            message: parsed.message,
+            file: file3.relativePath
+          });
+        }
+      }
+    } catch {
+    }
+  }
+  return errors;
+}
+function getLoggerStatus() {
+  if (!initialized) initLogger();
+  const files = walkFiles(rootLogDir);
+  const totalSize = files.reduce((sum, item) => sum + item.size, 0);
+  const lastLogAtByRole = {};
+  for (const file3 of files) {
+    const name28 = import_node_path3.default.basename(file3.path, ".jsonl");
+    if (!lastLogAtByRole[name28] || lastLogAtByRole[name28] < file3.mtimeMs) lastLogAtByRole[name28] = file3.mtimeMs;
+  }
+  return {
+    logDir: rootLogDir,
+    retentionDays,
+    currentRole,
+    files,
+    totalSize,
+    recentErrors: readRecentErrors(files),
+    lastLogAtByRole
+  };
+}
+function cleanupLogs(days = retentionDays) {
+  if (!initialized) initLogger();
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1e3;
+  let removedFiles = 0;
+  let removedBytes = 0;
+  for (const file3 of walkFiles(rootLogDir)) {
+    if (file3.mtimeMs >= cutoff) continue;
+    try {
+      import_node_fs2.default.rmSync(file3.path, { force: true });
+      removedFiles += 1;
+      removedBytes += file3.size;
+    } catch {
+    }
+  }
+  pruneEmptyDirs(rootLogDir);
+  return { removedFiles, removedBytes, cutoff };
+}
+function pruneEmptyDirs(dir) {
+  if (!import_node_fs2.default.existsSync(dir)) return;
+  for (const entry of import_node_fs2.default.readdirSync(dir, { withFileTypes: true })) {
+    const child = import_node_path3.default.join(dir, entry.name);
+    if (entry.isDirectory()) pruneEmptyDirs(child);
+  }
+  if (dir !== rootLogDir && import_node_fs2.default.existsSync(dir) && import_node_fs2.default.readdirSync(dir).length === 0) {
+    try {
+      import_node_fs2.default.rmdirSync(dir);
+    } catch {
+    }
+  }
+}
+var import_node_fs2, import_node_path3, DEFAULT_RETENTION_DAYS, MAX_FIELD_BYTES, MAX_LINE_BYTES, SENSITIVE_KEYS, BASE64_PATTERN, ANSI_PATTERN, currentRole, rootLogDir, retentionDays, initialized, hijacked, writeStreams, originalConsole, originalStdoutWrite, originalStderrWrite, writingRaw, logger;
+var init_logger = __esm({
+  "src/logger.ts"() {
+    "use strict";
+    import_node_fs2 = __toESM(require("node:fs"));
+    import_node_path3 = __toESM(require("node:path"));
+    init_storagePaths();
+    DEFAULT_RETENTION_DAYS = 7;
+    MAX_FIELD_BYTES = 8 * 1024;
+    MAX_LINE_BYTES = 64 * 1024;
+    SENSITIVE_KEYS = /authorization|cookie|token|secret|password|credential|api[_-]?key|access[_-]?key|refresh[_-]?token/i;
+    BASE64_PATTERN = /data:[^;]+;base64,[A-Za-z0-9+/=\r\n]+/gi;
+    ANSI_PATTERN = /\x1B\[[0-9;]*m/g;
+    currentRole = process.env.TOONFLOW_RUNTIME_ROLE || "script";
+    rootLogDir = import_node_path3.default.join(appDataRoot(), "logs");
+    retentionDays = DEFAULT_RETENTION_DAYS;
+    initialized = false;
+    hijacked = false;
+    writeStreams = /* @__PURE__ */ new Map();
+    originalConsole = {};
+    originalStdoutWrite = null;
+    originalStderrWrite = null;
+    writingRaw = false;
+    logger = {
+      init: initLogger,
+      close: closeLogger,
+      create: createLogger,
+      diagnostic: writeDiagnosticFile,
+      status: getLoggerStatus,
+      cleanup: cleanupLogs,
+      debug: (message, context2) => writeLog("debug", message, context2),
+      info: (message, context2) => writeLog("info", message, context2),
+      warn: (message, context2) => writeLog("warn", message, context2),
+      error: (message, context2) => writeLog("error", message, context2)
+    };
+  }
+});
+
 // node_modules/axios/lib/helpers/bind.js
 function bind(fn, thisArg) {
   return function wrap() {
@@ -753,8 +1235,8 @@ var require_combined_stream = __commonJS({
         this._pipeNext(stream4);
         return;
       }
-      var getStream = stream4;
-      getStream(function(stream5) {
+      var getStream2 = stream4;
+      getStream2(function(stream5) {
         var isStreamLike = CombinedStream.isStreamLike(stream5);
         if (isStreamLike) {
           stream5.on("data", this._checkDataSize.bind(this));
@@ -9429,11 +9911,11 @@ var require_mime_types = __commonJS({
       }
       return exts[0];
     }
-    function lookup(path27) {
-      if (!path27 || typeof path27 !== "string") {
+    function lookup(path29) {
+      if (!path29 || typeof path29 !== "string") {
         return false;
       }
-      var extension2 = extname("x." + path27).toLowerCase().substr(1);
+      var extension2 = extname("x." + path29).toLowerCase().substr(1);
       if (!extension2) {
         return false;
       }
@@ -10548,11 +11030,11 @@ var require_form_data = __commonJS({
     "use strict";
     var CombinedStream = require_combined_stream();
     var util4 = require("util");
-    var path27 = require("path");
+    var path29 = require("path");
     var http3 = require("http");
     var https2 = require("https");
     var parseUrl2 = require("url").parse;
-    var fs23 = require("fs");
+    var fs25 = require("fs");
     var Stream = require("stream").Stream;
     var crypto7 = require("crypto");
     var mime = require_mime_types();
@@ -10619,7 +11101,7 @@ var require_form_data = __commonJS({
         if (value.end != void 0 && value.end != Infinity && value.start != void 0) {
           callback(null, value.end + 1 - (value.start ? value.start : 0));
         } else {
-          fs23.stat(value.path, function(err, stat) {
+          fs25.stat(value.path, function(err, stat) {
             if (err) {
               callback(err);
               return;
@@ -10676,11 +11158,11 @@ var require_form_data = __commonJS({
     FormData4.prototype._getContentDisposition = function(value, options) {
       var filename;
       if (typeof options.filepath === "string") {
-        filename = path27.normalize(options.filepath).replace(/\\/g, "/");
+        filename = path29.normalize(options.filepath).replace(/\\/g, "/");
       } else if (options.filename || value && (value.name || value.path)) {
-        filename = path27.basename(options.filename || value && (value.name || value.path));
+        filename = path29.basename(options.filename || value && (value.name || value.path));
       } else if (value && value.readable && hasOwn(value, "httpVersion")) {
-        filename = path27.basename(value.client._httpMessage.path || "");
+        filename = path29.basename(value.client._httpMessage.path || "");
       }
       if (filename) {
         return 'filename="' + filename + '"';
@@ -10878,9 +11360,9 @@ function isVisitable(thing) {
 function removeBrackets(key) {
   return utils_default.endsWith(key, "[]") ? key.slice(0, -2) : key;
 }
-function renderKey(path27, key, dots) {
-  if (!path27) return key;
-  return path27.concat(key).map(function each(token, i) {
+function renderKey(path29, key, dots) {
+  if (!path29) return key;
+  return path29.concat(key).map(function each(token, i) {
     token = removeBrackets(token);
     return !dots && i ? "[" + token + "]" : token;
   }).join(dots ? "." : "");
@@ -10930,13 +11412,13 @@ function toFormData(obj, formData, options) {
     }
     return value;
   }
-  function defaultVisitor(value, key, path27) {
+  function defaultVisitor(value, key, path29) {
     let arr = value;
     if (utils_default.isReactNative(formData) && utils_default.isReactNativeBlob(value)) {
-      formData.append(renderKey(path27, key, dots), convertValue(value));
+      formData.append(renderKey(path29, key, dots), convertValue(value));
       return false;
     }
-    if (value && !path27 && typeof value === "object") {
+    if (value && !path29 && typeof value === "object") {
       if (utils_default.endsWith(key, "{}")) {
         key = metaTokens ? key : key.slice(0, -2);
         value = JSON.stringify(value);
@@ -10955,7 +11437,7 @@ function toFormData(obj, formData, options) {
     if (isVisitable(value)) {
       return true;
     }
-    formData.append(renderKey(path27, key, dots), convertValue(value));
+    formData.append(renderKey(path29, key, dots), convertValue(value));
     return false;
   }
   const stack = [];
@@ -10964,16 +11446,16 @@ function toFormData(obj, formData, options) {
     convertValue,
     isVisitable
   });
-  function build(value, path27) {
+  function build(value, path29) {
     if (utils_default.isUndefined(value)) return;
     if (stack.indexOf(value) !== -1) {
-      throw Error("Circular reference detected in " + path27.join("."));
+      throw Error("Circular reference detected in " + path29.join("."));
     }
     stack.push(value);
     utils_default.forEach(value, function each(el, key) {
-      const result = !(utils_default.isUndefined(el) || el === null) && visitor.call(formData, el, utils_default.isString(key) ? key.trim() : key, path27, exposedHelpers);
+      const result = !(utils_default.isUndefined(el) || el === null) && visitor.call(formData, el, utils_default.isString(key) ? key.trim() : key, path29, exposedHelpers);
       if (result === true) {
-        build(el, path27 ? path27.concat(key) : [key]);
+        build(el, path29 ? path29.concat(key) : [key]);
       }
     });
     stack.pop();
@@ -11250,7 +11732,7 @@ var init_platform = __esm({
 // node_modules/axios/lib/helpers/toURLEncodedForm.js
 function toURLEncodedForm(data, options) {
   return toFormData_default(data, new platform_default.classes.URLSearchParams(), {
-    visitor: function(value, key, path27, helpers) {
+    visitor: function(value, key, path29, helpers) {
       if (platform_default.isNode && utils_default.isBuffer(value)) {
         this.append(key, value.toString("base64"));
         return false;
@@ -11288,11 +11770,11 @@ function arrayToObject(arr) {
   return obj;
 }
 function formDataToJSON(formData) {
-  function buildPath(path27, value, target, index) {
-    let name28 = path27[index++];
+  function buildPath(path29, value, target, index) {
+    let name28 = path29[index++];
     if (name28 === "__proto__") return true;
     const isNumericKey = Number.isFinite(+name28);
-    const isLast = index >= path27.length;
+    const isLast = index >= path29.length;
     name28 = !name28 && utils_default.isArray(target) ? target.length : name28;
     if (isLast) {
       if (utils_default.hasOwnProp(target, name28)) {
@@ -11305,7 +11787,7 @@ function formDataToJSON(formData) {
     if (!target[name28] || !utils_default.isObject(target[name28])) {
       target[name28] = [];
     }
-    const result = buildPath(path27, value, target[name28], index);
+    const result = buildPath(path29, value, target[name28], index);
     if (result && utils_default.isArray(target[name28])) {
       target[name28] = arrayToObject(target[name28]);
     }
@@ -14215,9 +14697,9 @@ var init_http = __esm({
           auth = urlUsername + ":" + urlPassword;
         }
         auth && headers.delete("authorization");
-        let path27;
+        let path29;
         try {
-          path27 = buildURL(
+          path29 = buildURL(
             parsed.pathname + parsed.search,
             config3.params,
             config3.paramsSerializer
@@ -14235,7 +14717,7 @@ var init_http = __esm({
           false
         );
         const options = {
-          path: path27,
+          path: path29,
           method,
           headers: headers.toJSON(),
           agents: { http: config3.httpAgent, https: config3.httpsAgent },
@@ -14499,14 +14981,14 @@ var init_cookies = __esm({
     cookies_default = platform_default.hasStandardBrowserEnv ? (
       // Standard browser envs support document.cookie
       {
-        write(name28, value, expires, path27, domain3, secure, sameSite) {
+        write(name28, value, expires, path29, domain3, secure, sameSite) {
           if (typeof document === "undefined") return;
           const cookie = [`${name28}=${encodeURIComponent(value)}`];
           if (utils_default.isNumber(expires)) {
             cookie.push(`expires=${new Date(expires).toUTCString()}`);
           }
-          if (utils_default.isString(path27)) {
-            cookie.push(`path=${path27}`);
+          if (utils_default.isString(path29)) {
+            cookie.push(`path=${path29}`);
           }
           if (utils_default.isString(domain3)) {
             cookie.push(`domain=${domain3}`);
@@ -20242,11 +20724,11 @@ var require_baseGet = __commonJS({
     "use strict";
     var castPath2 = require_castPath();
     var toKey2 = require_toKey();
-    function baseGet2(object4, path27) {
-      path27 = castPath2(path27, object4);
-      var index = 0, length = path27.length;
+    function baseGet2(object4, path29) {
+      path29 = castPath2(path29, object4);
+      var index = 0, length = path29.length;
       while (object4 != null && index < length) {
-        object4 = object4[toKey2(path27[index++])];
+        object4 = object4[toKey2(path29[index++])];
       }
       return index && index == length ? object4 : void 0;
     }
@@ -20259,8 +20741,8 @@ var require_get2 = __commonJS({
   "node_modules/lodash/get.js"(exports2, module2) {
     "use strict";
     var baseGet2 = require_baseGet();
-    function get2(object4, path27, defaultValue) {
-      var result = object4 == null ? void 0 : baseGet2(object4, path27);
+    function get2(object4, path29, defaultValue) {
+      var result = object4 == null ? void 0 : baseGet2(object4, path29);
       return result === void 0 ? defaultValue : result;
     }
     module2.exports = get2;
@@ -20847,26 +21329,26 @@ var require_flatten = __commonJS({
 var require_fs = __commonJS({
   "node_modules/knex/lib/migrations/util/fs.js"(exports2, module2) {
     "use strict";
-    var fs23 = require("fs");
+    var fs25 = require("fs");
     var flatten = require_flatten();
     var os2 = require("os");
-    var path27 = require("path");
+    var path29 = require("path");
     var { promisify } = require("util");
-    var stat = promisify(fs23.stat);
-    var readFile2 = promisify(fs23.readFile);
-    var writeFile2 = promisify(fs23.writeFile);
-    var readdir = promisify(fs23.readdir);
-    var mkdir = promisify(fs23.mkdir);
-    function existsSync(path28) {
+    var stat = promisify(fs25.stat);
+    var readFile2 = promisify(fs25.readFile);
+    var writeFile2 = promisify(fs25.writeFile);
+    var readdir = promisify(fs25.readdir);
+    var mkdir = promisify(fs25.mkdir);
+    function existsSync(path30) {
       try {
-        fs23.accessSync(path28);
+        fs25.accessSync(path30);
         return true;
       } catch (e) {
         return false;
       }
     }
     function createTemp() {
-      return promisify(fs23.mkdtemp)(`${os2.tmpdir()}${path27.sep}`);
+      return promisify(fs25.mkdtemp)(`${os2.tmpdir()}${path29.sep}`);
     }
     function ensureDirectoryExists(dir) {
       return stat(dir).catch(() => mkdir(dir, { recursive: true }));
@@ -20876,7 +21358,7 @@ var require_fs = __commonJS({
       return flatten(
         await Promise.all(
           pathsList.sort().map(async (currentPath) => {
-            const currentFile = path27.resolve(dir, currentPath);
+            const currentFile = path29.resolve(dir, currentPath);
             const statFile = await stat(currentFile);
             if (statFile && statFile.isDirectory()) {
               if (recursive) {
@@ -21362,11 +21844,11 @@ var require_hasPath = __commonJS({
     var isIndex2 = require_isIndex();
     var isLength2 = require_isLength();
     var toKey2 = require_toKey();
-    function hasPath2(object4, path27, hasFunc) {
-      path27 = castPath2(path27, object4);
-      var index = -1, length = path27.length, result = false;
+    function hasPath2(object4, path29, hasFunc) {
+      path29 = castPath2(path29, object4);
+      var index = -1, length = path29.length, result = false;
       while (++index < length) {
-        var key = toKey2(path27[index]);
+        var key = toKey2(path29[index]);
         if (!(result = object4 != null && hasFunc(object4, key))) {
           break;
         }
@@ -21388,8 +21870,8 @@ var require_hasIn = __commonJS({
     "use strict";
     var baseHasIn2 = require_baseHasIn();
     var hasPath2 = require_hasPath();
-    function hasIn2(object4, path27) {
-      return object4 != null && hasPath2(object4, path27, baseHasIn2);
+    function hasIn2(object4, path29) {
+      return object4 != null && hasPath2(object4, path29, baseHasIn2);
     }
     module2.exports = hasIn2;
   }
@@ -21408,13 +21890,13 @@ var require_baseMatchesProperty = __commonJS({
     var toKey2 = require_toKey();
     var COMPARE_PARTIAL_FLAG7 = 1;
     var COMPARE_UNORDERED_FLAG5 = 2;
-    function baseMatchesProperty2(path27, srcValue) {
-      if (isKey2(path27) && isStrictComparable2(srcValue)) {
-        return matchesStrictComparable2(toKey2(path27), srcValue);
+    function baseMatchesProperty2(path29, srcValue) {
+      if (isKey2(path29) && isStrictComparable2(srcValue)) {
+        return matchesStrictComparable2(toKey2(path29), srcValue);
       }
       return function(object4) {
-        var objValue = get2(object4, path27);
-        return objValue === void 0 && objValue === srcValue ? hasIn2(object4, path27) : baseIsEqual2(srcValue, objValue, COMPARE_PARTIAL_FLAG7 | COMPARE_UNORDERED_FLAG5);
+        var objValue = get2(object4, path29);
+        return objValue === void 0 && objValue === srcValue ? hasIn2(object4, path29) : baseIsEqual2(srcValue, objValue, COMPARE_PARTIAL_FLAG7 | COMPARE_UNORDERED_FLAG5);
       };
     }
     module2.exports = baseMatchesProperty2;
@@ -21439,9 +21921,9 @@ var require_basePropertyDeep = __commonJS({
   "node_modules/lodash/_basePropertyDeep.js"(exports2, module2) {
     "use strict";
     var baseGet2 = require_baseGet();
-    function basePropertyDeep2(path27) {
+    function basePropertyDeep2(path29) {
       return function(object4) {
-        return baseGet2(object4, path27);
+        return baseGet2(object4, path29);
       };
     }
     module2.exports = basePropertyDeep2;
@@ -21456,8 +21938,8 @@ var require_property = __commonJS({
     var basePropertyDeep2 = require_basePropertyDeep();
     var isKey2 = require_isKey();
     var toKey2 = require_toKey();
-    function property2(path27) {
-      return isKey2(path27) ? baseProperty2(toKey2(path27)) : basePropertyDeep2(path27);
+    function property2(path29) {
+      return isKey2(path29) ? baseProperty2(toKey2(path29)) : basePropertyDeep2(path29);
     }
     module2.exports = property2;
   }
@@ -21716,10 +22198,10 @@ var require_sortBy = __commonJS({
 var require_is_node_modules = __commonJS({
   "node_modules/get-package-type/is-node-modules.cjs"(exports2, module2) {
     "use strict";
-    var path27 = require("path");
+    var path29 = require("path");
     function isNodeModules(directory) {
-      let basename = path27.basename(directory);
-      if (path27.sep === "\\") {
+      let basename = path29.basename(directory);
+      if (path29.sep === "\\") {
         basename = basename.toLowerCase();
       }
       return basename === "node_modules";
@@ -21740,7 +22222,7 @@ var require_cache = __commonJS({
 var require_async2 = __commonJS({
   "node_modules/get-package-type/async.cjs"(exports2, module2) {
     "use strict";
-    var path27 = require("path");
+    var path29 = require("path");
     var { promisify } = require("util");
     var readFile2 = promisify(require("fs").readFile);
     var isNodeModules = require_is_node_modules();
@@ -21751,10 +22233,10 @@ var require_async2 = __commonJS({
         return "commonjs";
       }
       try {
-        return JSON.parse(await readFile2(path27.resolve(directory, "package.json"))).type || "commonjs";
+        return JSON.parse(await readFile2(path29.resolve(directory, "package.json"))).type || "commonjs";
       } catch (_) {
       }
-      const parent = path27.dirname(directory);
+      const parent = path29.dirname(directory);
       if (parent === directory) {
         return "commonjs";
       }
@@ -21775,7 +22257,7 @@ var require_async2 = __commonJS({
       return result;
     }
     function getPackageType(filename) {
-      return getDirectoryType(path27.resolve(path27.dirname(filename)));
+      return getDirectoryType(path29.resolve(path29.dirname(filename)));
     }
     module2.exports = getPackageType;
   }
@@ -21785,7 +22267,7 @@ var require_async2 = __commonJS({
 var require_sync = __commonJS({
   "node_modules/get-package-type/sync.cjs"(exports2, module2) {
     "use strict";
-    var path27 = require("path");
+    var path29 = require("path");
     var { readFileSync: readFileSync2 } = require("fs");
     var isNodeModules = require_is_node_modules();
     var resultsCache = require_cache();
@@ -21794,10 +22276,10 @@ var require_sync = __commonJS({
         return "commonjs";
       }
       try {
-        return JSON.parse(readFileSync2(path27.resolve(directory, "package.json"))).type || "commonjs";
+        return JSON.parse(readFileSync2(path29.resolve(directory, "package.json"))).type || "commonjs";
       } catch (_) {
       }
-      const parent = path27.dirname(directory);
+      const parent = path29.dirname(directory);
       if (parent === directory) {
         return "commonjs";
       }
@@ -21812,7 +22294,7 @@ var require_sync = __commonJS({
       return result;
     }
     function getPackageTypeSync(filename) {
-      return getDirectoryType(path27.resolve(path27.dirname(filename)));
+      return getDirectoryType(path29.resolve(path29.dirname(filename)));
     }
     module2.exports = getPackageTypeSync;
   }
@@ -21855,7 +22337,7 @@ var require_import_file = __commonJS({
 var require_MigrationsLoader = __commonJS({
   "node_modules/knex/lib/migrations/common/MigrationsLoader.js"(exports2, module2) {
     "use strict";
-    var path27 = require("path");
+    var path29 = require("path");
     var DEFAULT_LOAD_EXTENSIONS = Object.freeze([
       ".co",
       ".coffee",
@@ -21877,8 +22359,8 @@ var require_MigrationsLoader = __commonJS({
         this.loadExtensions = loadExtensions || DEFAULT_LOAD_EXTENSIONS;
       }
       getFile(migrationsInfo) {
-        const absoluteDir = path27.resolve(process.cwd(), migrationsInfo.directory);
-        const _path = path27.join(absoluteDir, migrationsInfo.file);
+        const absoluteDir = path29.resolve(process.cwd(), migrationsInfo.directory);
+        const _path = path29.join(absoluteDir, migrationsInfo.file);
         const importFile = require_import_file();
         return importFile(_path);
       }
@@ -21894,7 +22376,7 @@ var require_MigrationsLoader = __commonJS({
 var require_fs_migrations = __commonJS({
   "node_modules/knex/lib/migrations/migrate/sources/fs-migrations.js"(exports2, module2) {
     "use strict";
-    var path27 = require("path");
+    var path29 = require("path");
     var sortBy = require_sortBy();
     var { readdir } = require_fs();
     var { AbstractMigrationsLoader } = require_MigrationsLoader();
@@ -21905,7 +22387,7 @@ var require_fs_migrations = __commonJS({
        */
       getMigrations(loadExtensions) {
         const readMigrationsPromises = this.migrationsPaths.map((configDir) => {
-          const absoluteDir = path27.resolve(process.cwd(), configDir);
+          const absoluteDir = path29.resolve(process.cwd(), configDir);
           return readdir(absoluteDir).then((files) => ({
             files,
             configDir,
@@ -21946,7 +22428,7 @@ var require_fs_migrations = __commonJS({
     function filterMigrations(migrationSource, migrations, loadExtensions) {
       return migrations.filter((migration) => {
         const migrationName = migrationSource.getMigrationName(migration);
-        const extension = path27.extname(migrationName);
+        const extension = path29.extname(migrationName);
         return loadExtensions.includes(extension);
       });
     }
@@ -22260,7 +22742,7 @@ var require_migrator_configuration_merger = __commonJS({
       disableMigrationsListValidation: false,
       sortDirsSeparately: false
     });
-    function getMergedConfig(config3, currentConfig, logger2 = defaultLogger) {
+    function getMergedConfig(config3, currentConfig, logger3 = defaultLogger) {
       const mergedConfig = Object.assign(
         {},
         CONFIG_DEFAULT,
@@ -22271,7 +22753,7 @@ var require_migrator_configuration_merger = __commonJS({
       // clear specified migrationSource to avoid ambiguity
       (config3.directory || config3.sortDirsSeparately !== void 0 || config3.loadExtensions)) {
         if (config3.migrationSource) {
-          logger2.warn(
+          logger3.warn(
             "FS-related option specified for migration configuration. This resets migrationSource to default FsMigrations"
           );
         }
@@ -22308,18 +22790,18 @@ var require_timestamp = __commonJS({
 var require_MigrationGenerator = __commonJS({
   "node_modules/knex/lib/migrations/migrate/MigrationGenerator.js"(exports2, module2) {
     "use strict";
-    var path27 = require("path");
+    var path29 = require("path");
     var { writeJsFileUsingTemplate } = require_template2();
     var { getMergedConfig } = require_migrator_configuration_merger();
     var { ensureDirectoryExists } = require_fs();
     var { yyyymmddhhmmss } = require_timestamp();
     var MigrationGenerator = class {
-      constructor(migrationConfig, logger2) {
-        this.config = getMergedConfig(migrationConfig, void 0, logger2);
+      constructor(migrationConfig, logger3) {
+        this.config = getMergedConfig(migrationConfig, void 0, logger3);
       }
       // Creates a new migration, with a given name.
-      async make(name28, config3, logger2) {
-        this.config = getMergedConfig(config3, this.config, logger2);
+      async make(name28, config3, logger3) {
+        this.config = getMergedConfig(config3, this.config, logger3);
         if (!name28) {
           return Promise.reject(
             new Error("A name must be specified for the generated migration")
@@ -22337,7 +22819,7 @@ var require_MigrationGenerator = __commonJS({
         return Promise.all(promises);
       }
       _getStubPath() {
-        return this.config.stub || path27.join(__dirname, "stub", this.config.extension + ".stub");
+        return this.config.stub || path29.join(__dirname, "stub", this.config.extension + ".stub");
       }
       _getNewMigrationName(name28) {
         if (name28[0] === "-") name28 = name28.slice(1);
@@ -22347,7 +22829,7 @@ var require_MigrationGenerator = __commonJS({
         const fileName = this._getNewMigrationName(name28);
         const dirs = this._absoluteConfigDirs();
         const dir = dirs.slice(-1)[0];
-        return path27.join(dir, fileName);
+        return path29.join(dir, fileName);
       }
       // Write a new migration to disk, using the config and generated filename,
       // passing any `variables` given in the config to the template.
@@ -22369,7 +22851,7 @@ var require_MigrationGenerator = __commonJS({
               "Failed to resolve config file, knex cannot determine where to generate migrations"
             );
           }
-          return path27.resolve(process.cwd(), directory);
+          return path29.resolve(process.cwd(), directory);
         });
       }
     };
@@ -22847,9 +23329,9 @@ var require_Migrator = __commonJS({
         return c.name === migrationSource.getMigrationName(a);
       });
     }
-    function checkPromise(logger2, migrationPromise, name28) {
+    function checkPromise(logger3, migrationPromise, name28) {
       if (!migrationPromise || typeof migrationPromise.then !== "function") {
-        logger2.warn(`migration ${name28} did not return a promise`);
+        logger3.warn(`migration ${name28} did not return a promise`);
       }
       return migrationPromise;
     }
@@ -23011,25 +23493,25 @@ var require_includes = __commonJS({
 var require_fs_seeds = __commonJS({
   "node_modules/knex/lib/migrations/seed/sources/fs-seeds.js"(exports2, module2) {
     "use strict";
-    var path27 = require("path");
+    var path29 = require("path");
     var flatten = require_flatten();
     var includes = require_includes();
     var { AbstractMigrationsLoader } = require_MigrationsLoader();
     var { getFilepathsInFolder } = require_fs();
     var filterByLoadExtensions = (extensions) => (value) => {
-      const extension = path27.extname(value);
+      const extension = path29.extname(value);
       return includes(extensions, extension);
     };
     var FsSeeds = class extends AbstractMigrationsLoader {
-      _getConfigDirectories(logger2) {
+      _getConfigDirectories(logger3) {
         const directories = this.migrationsPaths;
         return directories.map((directory) => {
           if (!directory) {
-            logger2.warn(
+            logger3.warn(
               "Empty value passed as a directory for Seeder, this is not supported."
             );
           }
-          return path27.resolve(process.cwd(), directory);
+          return path29.resolve(process.cwd(), directory);
         });
       }
       async getSeeds(config3) {
@@ -23046,7 +23528,7 @@ var require_fs_seeds = __commonJS({
           files.sort();
         }
         if (specific) {
-          files = files.filter((file3) => path27.basename(file3) === specific);
+          files = files.filter((file3) => path29.basename(file3) === specific);
           if (files.length === 0) {
             throw new Error(
               `Invalid argument provided: the specific seed "${specific}" does not exist.`
@@ -23084,21 +23566,21 @@ var require_seeder_configuration_merger = __commonJS({
       recursive: false,
       sortDirsSeparately: false
     });
-    function getMergedConfig(config3, currentConfig, logger2 = defaultLogger) {
+    function getMergedConfig(config3, currentConfig, logger3 = defaultLogger) {
       const mergedConfig = Object.assign(
         {},
         CONFIG_DEFAULT,
         currentConfig || {},
         config3,
         {
-          logger: logger2
+          logger: logger3
         }
       );
       if (config3 && // If user specifies any FS related config,
       // clear specified migrationSource to avoid ambiguity
       (config3.directory || config3.sortDirsSeparately !== void 0 || config3.loadExtensions)) {
         if (config3.seedSource) {
-          logger2.warn(
+          logger3.warn(
             "FS-related option specified for seed configuration. This resets seedSource to default FsMigrations"
           );
         }
@@ -23123,7 +23605,7 @@ var require_seeder_configuration_merger = __commonJS({
 var require_Seeder = __commonJS({
   "node_modules/knex/lib/migrations/seed/Seeder.js"(exports2, module2) {
     "use strict";
-    var path27 = require("path");
+    var path29 = require("path");
     var { ensureDirectoryExists } = require_fs();
     var { writeJsFileUsingTemplate } = require_template2();
     var { yyyymmddhhmmss } = require_timestamp();
@@ -23174,7 +23656,7 @@ var require_Seeder = __commonJS({
         return filepath;
       }
       _getStubPath() {
-        return this.config.stub || path27.join(__dirname, "stub", this.config.extension + ".stub");
+        return this.config.stub || path29.join(__dirname, "stub", this.config.extension + ".stub");
       }
       _getNewStubFileName(name28) {
         if (name28[0] === "-") name28 = name28.slice(1);
@@ -23189,7 +23671,7 @@ var require_Seeder = __commonJS({
           this.config.logger
         );
         const dir = dirs.slice(-1)[0];
-        return path27.join(dir, fileName);
+        return path29.join(dir, fileName);
       }
       // Write a new seed to disk, using the config and generated filename,
       // passing any `variables` given in the config to the template.
@@ -26435,11 +26917,11 @@ var require_querybuilder = __commonJS({
       }
       jsonExtract() {
         const column = arguments[0];
-        let path27;
+        let path29;
         let alias;
         let singleValue = true;
         if (arguments.length >= 2) {
-          path27 = arguments[1];
+          path29 = arguments[1];
         }
         if (arguments.length >= 3) {
           alias = arguments[2];
@@ -26452,32 +26934,32 @@ var require_querybuilder = __commonJS({
         }
         return this._json("jsonExtract", {
           column,
-          path: path27,
+          path: path29,
           alias,
           singleValue
           // boolean used only in MSSQL to use function for extract value instead of object/array.
         });
       }
-      jsonSet(column, path27, value, alias) {
+      jsonSet(column, path29, value, alias) {
         return this._json("jsonSet", {
           column,
-          path: path27,
+          path: path29,
           value,
           alias
         });
       }
-      jsonInsert(column, path27, value, alias) {
+      jsonInsert(column, path29, value, alias) {
         return this._json("jsonInsert", {
           column,
-          path: path27,
+          path: path29,
           value,
           alias
         });
       }
-      jsonRemove(column, path27, alias) {
+      jsonRemove(column, path29, alias) {
         return this._json("jsonRemove", {
           column,
-          path: path27,
+          path: path29,
           alias
         });
       }
@@ -26516,12 +26998,12 @@ var require_querybuilder = __commonJS({
       orWhereNotJsonObject(column, value) {
         return this._bool("or").whereNotJsonObject(column, value);
       }
-      whereJsonPath(column, path27, operator, value) {
-        this._whereJsonWrappedValue("whereJsonPath", column, value, operator, path27);
+      whereJsonPath(column, path29, operator, value) {
+        this._whereJsonWrappedValue("whereJsonPath", column, value, operator, path29);
         return this;
       }
-      orWhereJsonPath(column, path27, operator, value) {
-        return this._bool("or").whereJsonPath(column, path27, operator, value);
+      orWhereJsonPath(column, path29, operator, value) {
+        return this._bool("or").whereJsonPath(column, path29, operator, value);
       }
       // Json superset wheres
       whereJsonSupersetOf(column, value) {
@@ -27416,8 +27898,8 @@ var require_has = __commonJS({
     "use strict";
     var baseHas = require_baseHas();
     var hasPath2 = require_hasPath();
-    function has(object4, path27) {
-      return object4 != null && hasPath2(object4, path27, baseHas);
+    function has(object4, path29) {
+      return object4 != null && hasPath2(object4, path29, baseHas);
     }
     module2.exports = has;
   }
@@ -27448,14 +27930,14 @@ var require_baseSet = __commonJS({
     var isIndex2 = require_isIndex();
     var isObject5 = require_isObject();
     var toKey2 = require_toKey();
-    function baseSet(object4, path27, value, customizer) {
+    function baseSet(object4, path29, value, customizer) {
       if (!isObject5(object4)) {
         return object4;
       }
-      path27 = castPath2(path27, object4);
-      var index = -1, length = path27.length, lastIndex = length - 1, nested = object4;
+      path29 = castPath2(path29, object4);
+      var index = -1, length = path29.length, lastIndex = length - 1, nested = object4;
       while (nested != null && ++index < length) {
-        var key = toKey2(path27[index]), newValue = value;
+        var key = toKey2(path29[index]), newValue = value;
         if (key === "__proto__" || key === "constructor" || key === "prototype") {
           return object4;
         }
@@ -27463,7 +27945,7 @@ var require_baseSet = __commonJS({
           var objValue = nested[key];
           newValue = customizer ? customizer(objValue, key, nested) : void 0;
           if (newValue === void 0) {
-            newValue = isObject5(objValue) ? objValue : isIndex2(path27[index + 1]) ? [] : {};
+            newValue = isObject5(objValue) ? objValue : isIndex2(path29[index + 1]) ? [] : {};
           }
         }
         assignValue(nested, key, newValue);
@@ -27485,9 +27967,9 @@ var require_basePickBy = __commonJS({
     function basePickBy(object4, paths, predicate) {
       var index = -1, length = paths.length, result = {};
       while (++index < length) {
-        var path27 = paths[index], value = baseGet2(object4, path27);
-        if (predicate(value, path27)) {
-          baseSet(result, castPath2(path27, object4), value);
+        var path29 = paths[index], value = baseGet2(object4, path29);
+        if (predicate(value, path29)) {
+          baseSet(result, castPath2(path29, object4), value);
         }
       }
       return result;
@@ -27512,8 +27994,8 @@ var require_pickBy = __commonJS({
         return [prop];
       });
       predicate = baseIteratee2(predicate);
-      return basePickBy(object4, props, function(value, path27) {
-        return predicate(value, path27[0]);
+      return basePickBy(object4, props, function(value, path29) {
+        return predicate(value, path29[0]);
       });
     }
     module2.exports = pickBy;
@@ -30965,15 +31447,15 @@ var require_pg_connection_string = __commonJS({
       if (config3.sslcert || config3.sslkey || config3.sslrootcert || config3.sslmode) {
         config3.ssl = {};
       }
-      const fs23 = config3.sslcert || config3.sslkey || config3.sslrootcert ? require("fs") : null;
+      const fs25 = config3.sslcert || config3.sslkey || config3.sslrootcert ? require("fs") : null;
       if (config3.sslcert) {
-        config3.ssl.cert = fs23.readFileSync(config3.sslcert).toString();
+        config3.ssl.cert = fs25.readFileSync(config3.sslcert).toString();
       }
       if (config3.sslkey) {
-        config3.ssl.key = fs23.readFileSync(config3.sslkey).toString();
+        config3.ssl.key = fs25.readFileSync(config3.sslkey).toString();
       }
       if (config3.sslrootcert) {
-        config3.ssl.ca = fs23.readFileSync(config3.sslrootcert).toString();
+        config3.ssl.ca = fs25.readFileSync(config3.sslrootcert).toString();
       }
       switch (config3.sslmode) {
         case "disable": {
@@ -31981,27 +32463,27 @@ var require_sqlite_viewcompiler = __commonJS({
 var require_tokenizer = __commonJS({
   "node_modules/knex/lib/dialects/sqlite3/schema/internal/tokenizer.js"(exports2, module2) {
     "use strict";
-    function tokenize(text2, tokens) {
+    function tokenize(text3, tokens) {
       const compiledRegex = new RegExp(
         Object.entries(tokens).map(([type, regex]) => `(?<${type}>${regex.source})`).join("|"),
         "yi"
       );
       let index = 0;
       const ast = [];
-      while (index < text2.length) {
+      while (index < text3.length) {
         compiledRegex.lastIndex = index;
-        const result = text2.match(compiledRegex);
+        const result = text3.match(compiledRegex);
         if (result !== null) {
-          const [type, text3] = Object.entries(result.groups).find(
+          const [type, text4] = Object.entries(result.groups).find(
             ([name28, group]) => group !== void 0
           );
-          index += text3.length;
+          index += text4.length;
           if (!type.startsWith("_")) {
-            ast.push({ type, text: text3 });
+            ast.push({ type, text: text4 });
           }
         } else {
           throw new Error(
-            `No matching tokenizer rule found at: [${text2.substring(index)}]`
+            `No matching tokenizer rule found at: [${text3.substring(index)}]`
           );
         }
       }
@@ -32546,7 +33028,7 @@ var require_parser = __commonJS({
       return s(
         [
           t({ text: "CREATE" }, (v) => null),
-          unique,
+          unique2,
           t({ text: "INDEX" }, (v) => null),
           exists,
           schema,
@@ -32562,7 +33044,7 @@ var require_parser = __commonJS({
         (v) => Object.assign({}, ...v.filter((x) => x !== null))
       )(ctx);
     }
-    function unique(ctx) {
+    function unique2(ctx) {
       return o(t({ text: "UNIQUE" }), (v) => ({ unique: v !== null }))(ctx);
     }
     function exists(ctx) {
@@ -32898,7 +33380,7 @@ var require_compiler2 = __commonJS({
       return ast.name !== null ? `CONSTRAINT ${identifier(ast.name, wrap)} ` : "";
     }
     function createIndex(ast, wrap) {
-      return `CREATE${unique(ast, wrap)} INDEX${exists(ast, wrap)} ${schema(
+      return `CREATE${unique2(ast, wrap)} INDEX${exists(ast, wrap)} ${schema(
         ast,
         wrap
       )}${index(ast, wrap)} on ${table(ast, wrap)} (${indexedColumnList(
@@ -32906,7 +33388,7 @@ var require_compiler2 = __commonJS({
         wrap
       )})${where(ast, wrap)}`;
     }
-    function unique(ast, wrap) {
+    function unique2(ast, wrap) {
       return ast.unique ? " UNIQUE" : "";
     }
     function exists(ast, wrap) {
@@ -34628,26 +35110,26 @@ var require_postgres = __commonJS({
         });
       }
       setSchemaSearchPath(connection, searchPath) {
-        let path27 = searchPath || this.searchPath;
-        if (!path27) return Promise.resolve(true);
-        if (!Array.isArray(path27) && !isString2(path27)) {
+        let path29 = searchPath || this.searchPath;
+        if (!path29) return Promise.resolve(true);
+        if (!Array.isArray(path29) && !isString2(path29)) {
           throw new TypeError(
-            `knex: Expected searchPath to be Array/String, got: ${typeof path27}`
+            `knex: Expected searchPath to be Array/String, got: ${typeof path29}`
           );
         }
-        if (isString2(path27)) {
-          if (path27.includes(",")) {
-            const parts = path27.split(",");
+        if (isString2(path29)) {
+          if (path29.includes(",")) {
+            const parts = path29.split(",");
             const arraySyntax = `[${parts.map((searchPath2) => `'${searchPath2}'`).join(", ")}]`;
             this.logger.warn(
-              `Detected comma in searchPath "${path27}".If you are trying to specify multiple schemas, use Array syntax: ${arraySyntax}`
+              `Detected comma in searchPath "${path29}".If you are trying to specify multiple schemas, use Array syntax: ${arraySyntax}`
             );
           }
-          path27 = [path27];
+          path29 = [path29];
         }
-        path27 = path27.map((schemaName) => `"${schemaName}"`).join(",");
+        path29 = path29.map((schemaName) => `"${schemaName}"`).join(",");
         return new Promise(function(resolver, rejecter) {
-          connection.query(`set search_path to ${path27}`, function(err) {
+          connection.query(`set search_path to ${path29}`, function(err) {
             if (err) return rejecter(err);
             resolver(true);
           });
@@ -37929,14 +38411,14 @@ var require_utils3 = __commonJS({
           this.limit = 30;
         }
       }
-      generateCombinedName(logger2, postfix, name28, subNames) {
+      generateCombinedName(logger3, postfix, name28, subNames) {
         const crypto7 = require("crypto");
         if (!Array.isArray(subNames)) subNames = subNames ? [subNames] : [];
         const table = name28.replace(/\.|-/g, "_");
         const subNamesPart = subNames.join("_");
         let result = `${table}_${subNamesPart.length ? subNamesPart + "_" : ""}${postfix}`.toLowerCase();
         if (result.length > this.limit) {
-          logger2.warn(
+          logger3.warn(
             `Automatically generated name "${result}" exceeds ${this.limit} character limit for Oracle Database ${this.oracleVersion}. Using base64 encoded sha1 of that name instead.`
           );
           result = crypto7.createHash("sha1").update(result).digest("base64").replace("=", "");
@@ -38038,55 +38520,55 @@ var require_trigger = __commonJS({
       constructor(oracleVersion) {
         this.nameHelper = new NameHelper(oracleVersion);
       }
-      renameColumnTrigger(logger2, tableName, columnName, to) {
+      renameColumnTrigger(logger3, tableName, columnName, to) {
         const triggerName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "autoinc_trg",
           tableName
         );
         const sequenceName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "seq",
           tableName
         );
         return `DECLARE PK_NAME VARCHAR(200); IS_AUTOINC NUMBER := 0; BEGIN  EXECUTE IMMEDIATE ('ALTER TABLE "${tableName}" RENAME COLUMN "${columnName}" TO "${to}"');  SELECT COUNT(*) INTO IS_AUTOINC from "USER_TRIGGERS" where trigger_name = '${triggerName}';  IF (IS_AUTOINC > 0) THEN    SELECT cols.column_name INTO PK_NAME    FROM all_constraints cons, all_cons_columns cols    WHERE cons.constraint_type = 'P'    AND cons.constraint_name = cols.constraint_name    AND cons.owner = cols.owner    AND cols.table_name = '${tableName}';    IF ('${to}' = PK_NAME) THEN      EXECUTE IMMEDIATE ('DROP TRIGGER "${triggerName}"');      EXECUTE IMMEDIATE ('create or replace trigger "${triggerName}"      BEFORE INSERT on "${tableName}" for each row        declare        checking number := 1;        begin          if (:new."${to}" is null) then            while checking >= 1 loop              select "${sequenceName}".nextval into :new."${to}" from dual;              select count("${to}") into checking from "${tableName}"              where "${to}" = :new."${to}";            end loop;          end if;        end;');    end if;  end if;END;`;
       }
-      createAutoIncrementTrigger(logger2, tableName, schemaName) {
+      createAutoIncrementTrigger(logger3, tableName, schemaName) {
         const tableQuoted = `"${tableName}"`;
         const tableUnquoted = tableName;
         const schemaQuoted = schemaName ? `"${schemaName}".` : "";
         const constraintOwner = schemaName ? `'${schemaName}'` : "cols.owner";
         const triggerName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "autoinc_trg",
           tableName
         );
         const sequenceNameUnquoted = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "seq",
           tableName
         );
         const sequenceNameQuoted = `"${sequenceNameUnquoted}"`;
         return `DECLARE PK_NAME VARCHAR(200); BEGIN  EXECUTE IMMEDIATE ('CREATE SEQUENCE ${schemaQuoted}${sequenceNameQuoted}');  SELECT cols.column_name INTO PK_NAME  FROM all_constraints cons, all_cons_columns cols  WHERE cons.constraint_type = 'P'  AND cons.constraint_name = cols.constraint_name  AND cons.owner = ${constraintOwner}  AND cols.table_name = '${tableUnquoted}';  execute immediate ('create or replace trigger ${schemaQuoted}"${triggerName}"  BEFORE INSERT on ${schemaQuoted}${tableQuoted}  for each row  declare  checking number := 1;  begin    if (:new."' || PK_NAME || '" is null) then      while checking >= 1 loop        select ${schemaQuoted}${sequenceNameQuoted}.nextval into :new."' || PK_NAME || '" from dual;        select count("' || PK_NAME || '") into checking from ${schemaQuoted}${tableQuoted}        where "' || PK_NAME || '" = :new."' || PK_NAME || '";      end loop;    end if;  end;'); END;`;
       }
-      renameTableAndAutoIncrementTrigger(logger2, tableName, to) {
+      renameTableAndAutoIncrementTrigger(logger3, tableName, to) {
         const triggerName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "autoinc_trg",
           tableName
         );
         const sequenceName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "seq",
           tableName
         );
         const toTriggerName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "autoinc_trg",
           to
         );
         const toSequenceName = this.nameHelper.generateCombinedName(
-          logger2,
+          logger3,
           "seq",
           to
         );
@@ -40678,144 +41160,6 @@ var init_dist_node = __esm({
   }
 });
 
-// node_modules/is-path-inside/index.js
-function isPathInside(childPath, parentPath) {
-  const relation = import_node_path.default.relative(parentPath, childPath);
-  return Boolean(
-    relation && relation !== ".." && !relation.startsWith(`..${import_node_path.default.sep}`) && relation !== import_node_path.default.resolve(childPath)
-  );
-}
-var import_node_path;
-var init_is_path_inside = __esm({
-  "node_modules/is-path-inside/index.js"() {
-    "use strict";
-    import_node_path = __toESM(require("node:path"), 1);
-  }
-});
-
-// src/services/storagePaths.ts
-function absolute(value, fallback) {
-  return import_node_path2.default.resolve(value?.trim() || fallback);
-}
-function appDataRoot() {
-  return absolute(process.env.TOONFLOW_APP_DATA_DIR, import_node_path2.default.join(process.cwd(), "data"));
-}
-function storageMode() {
-  return process.env.TOONFLOW_STORAGE_MODE === "workspace" ? "workspace" : "legacy";
-}
-function legacyDataRoot() {
-  return absolute(
-    process.env.TOONFLOW_LEGACY_DATA_DIR || process.env.TOONFLOW_DATA_DIR,
-    import_node_path2.default.join(process.cwd(), "data")
-  );
-}
-function workspaceRoot() {
-  return absolute(process.env.TOONFLOW_WORKSPACE_DIR, legacyDataRoot());
-}
-function runtimeConfigPath(root2 = appDataRoot()) {
-  return import_node_path2.default.join(root2, "runtime.json");
-}
-function writeRuntimeStorageConfig(config3, root2 = appDataRoot()) {
-  import_node_fs.default.mkdirSync(root2, { recursive: true });
-  const target = runtimeConfigPath(root2);
-  const temp = `${target}.tmp`;
-  import_node_fs.default.writeFileSync(temp, JSON.stringify(config3, null, 2), "utf8");
-  import_node_fs.default.renameSync(temp, target);
-}
-function systemDataPath(...parts) {
-  return import_node_path2.default.join(
-    absolute(process.env.TOONFLOW_SYSTEM_DATA_DIR, import_node_path2.default.join(appDataRoot(), "system")),
-    ...parts
-  );
-}
-function userDataPath(...parts) {
-  return import_node_path2.default.join(appDataRoot(), "user", ...parts);
-}
-function cacheDataPath(...parts) {
-  return import_node_path2.default.join(appDataRoot(), "cache", ...parts);
-}
-function workspaceDataPath(...parts) {
-  return import_node_path2.default.join(workspaceRoot(), ...parts);
-}
-function profileDatabasePath() {
-  return import_node_path2.default.join(appDataRoot(), "profile.sqlite");
-}
-function workspaceDatabasePath() {
-  return storageMode() === "workspace" ? workspaceDataPath("workspace.sqlite") : import_node_path2.default.join(legacyDataRoot(), "db2.sqlite");
-}
-function projectDirectory(projectId) {
-  return workspaceDataPath("projects", String(projectId));
-}
-function projectMediaDirectory(projectId) {
-  return import_node_path2.default.join(projectDirectory(projectId), "media");
-}
-function resolveMediaFilePath(userPath) {
-  const normalized = userPath.replace(/^[/\\]+/, "").replace(/[\\/]+/g, import_node_path2.default.sep);
-  if (storageMode() !== "workspace") return import_node_path2.default.resolve(legacyDataRoot(), "oss", normalized);
-  const segments = normalized.split(import_node_path2.default.sep).filter(Boolean);
-  if (segments[0]?.toLowerCase() === "smallimage") {
-    return import_node_path2.default.resolve(cacheDataPath("thumbnails"), ...segments.slice(1));
-  }
-  if (/^\d+$/.test(segments[0] || "")) {
-    return import_node_path2.default.resolve(projectMediaDirectory(segments[0]), ...segments.slice(1));
-  }
-  return import_node_path2.default.resolve(workspaceDataPath("shared"), ...segments);
-}
-function isSafeMediaFilePath(filePath) {
-  const resolved = import_node_path2.default.resolve(filePath);
-  const roots = storageMode() === "workspace" ? [workspaceRoot(), cacheDataPath("thumbnails")] : [import_node_path2.default.join(legacyDataRoot(), "oss")];
-  return roots.some((root2) => resolved === import_node_path2.default.resolve(root2) || isPathInside(resolved, import_node_path2.default.resolve(root2)));
-}
-function getDataPath(fileName) {
-  if (storageMode() === "legacy") {
-    const base = legacyDataRoot();
-    return fileName == null ? base : import_node_path2.default.resolve(base, ...Array.isArray(fileName) ? fileName : [fileName]);
-  }
-  if (fileName == null) return appDataRoot();
-  const parts = Array.isArray(fileName) ? fileName : [fileName];
-  const [head, ...tail] = parts;
-  const mapping = {
-    "db2.sqlite": workspaceDatabasePath(),
-    "workspace.sqlite": workspaceDatabasePath(),
-    oss: workspaceRoot(),
-    backups: workspaceDataPath("backups"),
-    vendor: userDataPath("vendor"),
-    skills: userDataPath("skills"),
-    modelPrompt: userDataPath("modelPrompt"),
-    bin: userDataPath("bin"),
-    models: systemDataPath("models"),
-    serve: systemDataPath("serve"),
-    web: systemDataPath("web"),
-    assets: systemDataPath("assets"),
-    logs: import_node_path2.default.join(appDataRoot(), "logs"),
-    temp: import_node_path2.default.join(appDataRoot(), "temp"),
-    cache: import_node_path2.default.join(appDataRoot(), "cache"),
-    "version.txt": systemDataPath("version.txt")
-  };
-  const root2 = mapping[head] || userDataPath(head);
-  return import_node_path2.default.resolve(root2, ...tail);
-}
-var import_node_fs, import_node_path2, PROFILE_TABLES;
-var init_storagePaths = __esm({
-  "src/services/storagePaths.ts"() {
-    "use strict";
-    import_node_fs = __toESM(require("node:fs"));
-    import_node_path2 = __toESM(require("node:path"));
-    init_is_path_inside();
-    PROFILE_TABLES = /* @__PURE__ */ new Set([
-      "o_user",
-      "o_artStyle",
-      "o_agentDeploy",
-      "o_setting",
-      "o_prompt",
-      "o_modelPrompt",
-      "o_vendorConfig",
-      "o_skillList",
-      "o_skillAttribution"
-    ]);
-  }
-});
-
 // src/utils/getPath.ts
 var getPath_default;
 var init_getPath = __esm({
@@ -40858,9 +41202,9 @@ async function initEmbedding() {
   const modelFolder = modelOnnxFile[0];
   extractor = await (0, import_transformers.pipeline)("feature-extraction", modelFolder, { dtype: modelDtype });
 }
-async function getEmbedding(text2) {
+async function getEmbedding(text3) {
   if (!extractor) await initEmbedding();
-  const output = await extractor(text2, { pooling: "mean", normalize: true });
+  const output = await extractor(text3, { pooling: "mean", normalize: true });
   return Array.from(output.data);
 }
 var import_transformers, import_path, import_fs, extractor;
@@ -41448,564 +41792,14 @@ description: \u4E13\u6CE8\u4E8E\u4ECE\u5267\u672C\u5185\u5BB9\u4E2D\u63D0\u53D6\
               {
                 name: "\u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210",
                 type: "videoPromptGeneration",
-                data: `# \u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210 Skill
-
-\u4F60\u662F**\u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210 Agent**\uFF0C\u4E13\u95E8\u8D1F\u8D23\u6839\u636E\u6307\u5B9A\u7684 AI \u89C6\u9891\u6A21\u578B\uFF0C\u8BFB\u53D6\u5206\u955C\u4FE1\u606F\u5E76\u8F93\u51FA\u8BE5\u6A21\u578B\u5BF9\u5E94\u683C\u5F0F\u7684\u89C6\u9891\u63D0\u793A\u8BCD\u3002
-
----
-
-## \u8F93\u5165\u683C\u5F0F
-
-### 1. \u6A21\u578B\u4E0E\u6A21\u5F0F\uFF08\u5FC5\u9009\uFF09
-
-
-#### \u6A21\u5F0F\u8DEF\u7531\u89C4\u5219
-
-| \u6761\u4EF6 | \u5339\u914D\u6A21\u5F0F | \u8BF4\u660E |
-|------|----------|------|
-| \u6A21\u578B\u540D\u4E3A \`Seedance2.0\` / \`seedance 2.0\` / \`\u5373\u68A62.0\` | **Seedance 2.0** | \u56FA\u5B9A\u6A21\u5F0F\uFF0C\u65E0\u8BBA\u591A\u53C2\u6807\u5FD7\u5982\u4F55 |
-| \u6A21\u578B\u540D\u4E3A \`Wan2.6\` / \`wan 2.6\` / \`\u4E07\u8C612.6\` | **Wan 2.6** | \u56FA\u5B9A\u6A21\u5F0F\uFF0C\u5355\u56FE\uFF08\u9996\u5E27\uFF09+ \u53D9\u4E8B\u6587\u672C\uFF0C\u65E0\u5C3E\u5E27 |
-| \u5176\u4ED6\u4EFB\u4F55\u6A21\u578B + \`\u591A\u53C2:\u662F\` | **\u901A\u7528\u591A\u53C2\u6A21\u5F0F** | \u652F\u6301\u89D2\u8272/\u573A\u666F/\u5206\u955C\u56FE\u591A\u53C2\u5F15\u7528 |
-| \u5176\u4ED6\u4EFB\u4F55\u6A21\u578B + \`\u591A\u53C2:\u5426\` | **\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F** | \u9996\u5E27/\u9996\u5C3E\u5E27 + \u7EAF\u6587\u672C\u63CF\u8FF0 |
-
-> \u6A21\u578B\u540D\u4EC5\u7528\u4E8E\u8BB0\u5F55\uFF0C\u5B9E\u9645\u63D0\u793A\u8BCD\u683C\u5F0F\u7531\u5339\u914D\u5230\u7684\u6A21\u5F0F\u51B3\u5B9A\u3002Seedance 2.0 \u548C Wan 2.6 \u662F\u6307\u5B9A\u6A21\u578B\u540D\u5373\u786E\u5B9A\u6A21\u5F0F\u7684\u7279\u4F8B\u3002
-
-### 2. \u8D44\u4EA7\u4FE1\u606F
-
-\`\`\`
-\u8D44\u4EA7\u4FE1\u606F[id, type, name], [id, type, name], ...
-\`\`\`
-
-- \`id\`\uFF1A\u8D44\u4EA7\u552F\u4E00\u6807\u8BC6\uFF08\u5982 \`A001\`\uFF09
-- \`type\`\uFF1A\u8D44\u4EA7\u7C7B\u578B\uFF0C\u53D6\u503C \`character\`\uFF08\u89D2\u8272\uFF09/ \`scene\`\uFF08\u573A\u666F\uFF09/ \`prop\`\uFF08\u9053\u5177\uFF09
-- \`name\`\uFF1A\u8D44\u4EA7\u540D\u79F0\uFF08\u5982 \`\u6C88\u8F9E\`\u3001\`\u57CE\u697C\`\u3001\`\u957F\u5251\`\uFF09
-
-### 3. \u5206\u955C\u4FE1\u606F
-
-\u5206\u955C\u4EE5 \`<storyboardItem>\` XML \u6807\u7B7E\u5217\u8868\u7684\u5F62\u5F0F\u4F20\u5165\uFF0C\u6BCF\u6761\u5206\u955C\u7ED3\u6784\u5982\u4E0B\uFF1A
-
-\`\`\`xml
-<storyboardItem
-  videoDesc='\uFF08\u753B\u9762\u63CF\u8FF0\u3001\u573A\u666F\u3001\u5173\u8054\u8D44\u4EA7\u540D\u79F0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u3001\u5173\u8054\u8D44\u4EA7ID\uFF09'
-  prompt='\u5F85\u751F\u6210'
-  track='\u5206\u7EC4'
-  duration='\u89C6\u9891\u63A8\u8350\u65F6\u95F4'
-  associateAssetsIds="[\u8BE5\u5206\u955C\u6240\u9700\u7684\u8D44\u4EA7ID\u5217\u8868]"
-  shouldGenerateImage="true"
-></storyboardItem>
-\`\`\`
-
-#### \u8F93\u5165\u5B57\u6BB5\u8BF4\u660E
-
-| \u5C5E\u6027 | \u8BF4\u660E | \u6765\u6E90 |
-|------|------|------|
-| \`videoDesc\` | **\u6838\u5FC3\u8F93\u5165**\uFF1A\u5206\u955C\u7684\u7ED3\u6784\u5316\u753B\u9762\u63CF\u8FF0\uFF0C\u5305\u542B\u753B\u9762\u63CF\u8FF0\u3001\u573A\u666F\u3001\u5173\u8054\u8D44\u4EA7\u540D\u79F0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u3001\u5173\u8054\u8D44\u4EA7ID | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`prompt\` | **\u5DF2\u6709\u5B57\u6BB5**\uFF1A\u4E0A\u6E38\u751F\u6210\u7684\u5206\u955C\u56FE\u63D0\u793A\u8BCD\uFF0C\u4F5C\u4E3A\u8F85\u52A9\u53C2\u8003\u4E0A\u4E0B\u6587\uFF0C**\u4E0D\u4FEE\u6539** | \u4E0A\u6E38\u7CFB\u7EDF\u5DF2\u586B\u5199 |
-| \`track\` | \u5206\u955C\u5206\u7EC4\u6807\u8BC6 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`duration\` | \u89C6\u9891\u63A8\u8350\u65F6\u957F\uFF08\u79D2\uFF09 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`associateAssetsIds\` | \u8BE5\u5206\u955C\u5173\u8054\u7684\u8D44\u4EA7ID\u5217\u8868 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`shouldGenerateImage\` | \u662F\u5426\u9700\u8981\u751F\u6210\u5206\u955C\u56FE\u7247\uFF0C\u9ED8\u8BA4 \`true\` | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-
----
-
-## \u4EFB\u52A1\u76EE\u6807
-
-\u8BFB\u53D6\u6240\u6709 \`<storyboardItem>\` \u7684\u5C5E\u6027\uFF0C\u7ED3\u5408\u8D44\u4EA7\u4FE1\u606F\uFF0C\u6839\u636E\u6307\u5B9A\u6A21\u578B\u7684\u63D0\u793A\u8BCD\u683C\u5F0F\uFF0C\u5C06\u5168\u90E8\u5206\u955C\u6574\u5408\u4E3A\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD\u3002
-
----
-
-## \u8F93\u51FA\u683C\u5F0F
-
-\u5C06\u6240\u6709\u5206\u955C\u6574\u5408\u4E3A**\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD**\u8F93\u51FA\uFF08\u975E\u9010\u6761\u72EC\u7ACB\uFF09\uFF1A
-
-| \u6A21\u5F0F | \u6574\u5408\u65B9\u5F0F |
-|------|----------|
-| **\u901A\u7528\u591A\u53C2\u6A21\u5F0F** | \`[References]\` \u6C47\u603B\u6240\u6709 \`@\u56FEN \` \u5F15\u7528\uFF1B\`[Instruction]\` \u6309\u65F6\u95F4\u987A\u5E8F\u63CF\u8FF0\u5B8C\u6574\u53D9\u4E8B |
-| **\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F** | \u7EAF\u6587\u672C\u4E94\u7EF4\u5EA6\uFF08Visual / Motion / Camera / Audio / Narrative\uFF09\uFF0C\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528\uFF0C\u6309\u65F6\u95F4\u8F74\u8FDE\u7EED\u7F16\u6392\uFF08\`[Motion]\` 0s \u2192 \u603B\u65F6\u957F\uFF0C\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF09\uFF0C\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934\uFF0C\u4E0D\u5207\u955C |
-| **Seedance 2.0** | \`\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B N \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891\`\uFF0C\u6BCF\u6761\u5BF9\u5E94 \`\u5206\u955CN<duration-ms>\` \u6BB5\u843D |
-| **Wan 2.6** | \u5355\u56FE\u9996\u5E27\u6A21\u5F0F\uFF0C\u6BCF\u6B21\u4EC5\u8F93\u5165\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u53D9\u4E8B\u5F0F\u82F1\u6587\u63D0\u793A\u8BCD\uFF08\u4E09\u6BB5\u5F0F\uFF1A\u98CE\u683C\u57FA\u8C03 \u2192 \u4E3B\u4F53\u52A8\u4F5C+\u573A\u666F\u73AF\u5883+\u5149\u7EBF\u6C1B\u56F4 \u2192 \u955C\u5934\u6536\u5C3E\uFF09\uFF0C\u4E0D\u4F7F\u7528 \`@\u56FEN \` \u5F15\u7528 |
-
-- \u4EC5\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD\u6587\u672C\uFF0C\u4E0D\u8F93\u51FA XML \u6807\u7B7E\uFF0C\u4E0D\u9644\u52A0\u89E3\u91CA
-
----
-
-## videoDesc \u89E3\u6790\u89C4\u5219
-
-\u4ECE \`videoDesc\` \u62EC\u53F7\u5185\u6309\u987F\u53F7\u5206\u9694\u63D0\u53D6\u4EE5\u4E0B\u7ED3\u6784\u5316\u5B57\u6BB5\uFF1A
-
-\`\`\`
-\uFF08{\u753B\u9762\u63CF\u8FF0}\u3001{\u573A\u666F}\u3001{\u5173\u8054\u8D44\u4EA7\u540D\u79F0}\u3001{\u65F6\u957F}\u3001{\u666F\u522B}\u3001{\u8FD0\u955C}\u3001{\u89D2\u8272\u52A8\u4F5C}\u3001{\u60C5\u7EEA}\u3001{\u5149\u5F71\u6C1B\u56F4}\u3001{\u53F0\u8BCD}\u3001{\u97F3\u6548}\u3001{\u5173\u8054\u8D44\u4EA7ID}\uFF09
-\`\`\`
-
-| \u5E8F\u53F7 | \u5B57\u6BB5 | \u7528\u9014 | \u793A\u4F8B |
-|------|------|------|------|
-| 1 | \u753B\u9762\u63CF\u8FF0 | prompt \u7684\u53D9\u4E8B\u4E3B\u5E72 | \u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730 |
-| 2 | \u573A\u666F | \u5339\u914D\u573A\u666F\u8D44\u4EA7 | \u57CE\u697C |
-| 3 | \u5173\u8054\u8D44\u4EA7\u540D\u79F0 | \u5339\u914D\u89D2\u8272/\u9053\u5177\u8D44\u4EA7 | \u6C88\u8F9E/\u57CE\u697C |
-| 4 | \u65F6\u957F | \u63A7\u5236\u65F6\u957F\u53C2\u6570 | 4s |
-| 5 | \u666F\u522B | \u63A7\u5236\u955C\u5934\u666F\u522B | \u5168\u666F |
-| 6 | \u8FD0\u955C | \u63A7\u5236\u8FD0\u955C\u65B9\u5F0F | \u9759\u6B62 |
-| 7 | \u89D2\u8272\u52A8\u4F5C | prompt \u52A8\u4F5C\u63CF\u5199 | \u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C |
-| 8 | \u60C5\u7EEA | prompt \u60C5\u7EEA\u6C1B\u56F4 | \u575A\u5B9A\u51B3\u7EDD |
-| 9 | \u5149\u5F71\u6C1B\u56F4 | prompt \u5149\u5F71\u63CF\u5199 | \u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149 |
-| 10 | \u53F0\u8BCD | prompt \u53F0\u8BCD/\u97F3\u9891\u6BB5 | \u65E0\u53F0\u8BCD / \u5177\u4F53\u53F0\u8BCD\u5185\u5BB9 |
-| 11 | \u97F3\u6548 | prompt \u97F3\u6548\u63CF\u5199 | \u98CE\u58F0\u8863\u8882\u58F0 |
-| 12 | \u5173\u8054\u8D44\u4EA7ID | \u7528\u4E8E\u8D44\u4EA7ID\u2194\u89D2\u8272\u6807\u7B7E\u6620\u5C04 | A001/A002 |
-
----
-
-## \u8D44\u4EA7\u5F15\u7528\u7F16\u53F7\u89C4\u5219
-
-\u6240\u6709\u6A21\u578B\u7EDF\u4E00\u4F7F\u7528 \`@\u56FEN \` \u683C\u5F0F\u5F15\u7528\u8D44\u4EA7\u548C\u5206\u955C\u56FE\uFF0C\u7F16\u53F7\u6309\u8F93\u5165\u987A\u5E8F\u8FDE\u7EED\u9012\u589E\uFF1A
-
-1. **\u8D44\u4EA7**\uFF1A\u6309\u8D44\u4EA7\u4FE1\u606F\u4E2D \`[id, type, name]\` \u7684\u51FA\u73B0\u987A\u5E8F\uFF0C\u4ECE \`@\u56FE1 \` \u5F00\u59CB\u7F16\u53F7\uFF08\u4E0D\u533A\u5206 character / scene / prop\uFF09
-2. **\u5206\u955C\u56FE**\uFF1A\u6BCF\u6761 \`<storyboardItem>\` \u5BF9\u5E94\u4E00\u5F20\u5206\u955C\u56FE\uFF0C\u7F16\u53F7\u63A5\u7EED\u8D44\u4EA7\u4E4B\u540E
-3. **\u8DF3\u8FC7\u65E0\u5206\u955C\u56FE\u7684\u6761\u76EE**\uFF1A\u5F53 \`shouldGenerateImage="false"\` \u65F6\uFF0C\u8BE5\u5206\u955C\u672A\u751F\u6210\u56FE\u7247\uFF0C**\u4E0D\u5206\u914D**\u5206\u955C\u56FE\u7F16\u53F7\uFF0C\u540E\u7EED\u7F16\u53F7\u987A\u5EF6
-
-#### \u793A\u4F8B
-
-\u8F93\u5165 3 \u4E2A\u8D44\u4EA7 + 2 \u6761\u5206\u955C\uFF1A
-\`\`\`
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A002, character, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem ...>  <!-- \u5206\u955C1 -->
-<storyboardItem ...>  <!-- \u5206\u955C2 -->
-\`\`\`
-
-\u7F16\u53F7\u7ED3\u679C\uFF1A
-
-| \u8F93\u5165\u9879 | \u5F15\u7528\u6807\u7B7E | \u8BF4\u660E |
-|--------|----------|------|
-| [A001, character, \u6C88\u8F9E] | \`@\u56FE1 \` | \u89D2\u8272\xB7\u6C88\u8F9E \u53C2\u8003\u56FE |
-| [A002, character, \u82CF\u9526] | \`@\u56FE2 \` | \u89D2\u8272\xB7\u82CF\u9526 \u53C2\u8003\u56FE |
-| [A003, scene, \u57CE\u697C] | \`@\u56FE3 \` | \u573A\u666F\xB7\u57CE\u697C \u53C2\u8003\u56FE |
-| storyboardItem \u7B2C1\u6761 | \`@\u56FE4 \` | \u5206\u955C\u56FE1 |
-| storyboardItem \u7B2C2\u6761 | \`@\u56FE5 \` | \u5206\u955C\u56FE2 |
-
----
-
-## \u6A21\u578B\u63D0\u793A\u8BCD\u751F\u6210\u89C4\u5219
-
-### \u4E00\u3001\u901A\u7528\u591A\u53C2\u6A21\u5F0F
-
-#### \u6838\u5FC3\u539F\u5219
-- MVL \u591A\u6A21\u6001\u878D\u5408\uFF1A\u81EA\u7136\u8BED\u8A00 + \u56FE\u50CF\u5F15\u7528\u5728\u540C\u4E00\u8BED\u4E49\u7A7A\u95F4
-- \u5206\u955C\u56FE\u5E8F\u5217\u8D1F\u8D23\u52A8\u4F5C/\u65F6\u95F4\u8F74/\u6784\u56FE\uFF0C\u573A\u666F\u53C2\u8003\u56FE\u8D1F\u8D23\u73AF\u5883\u4E00\u81F4\u6027
-- \u6240\u6709\u8D44\u4EA7\u548C\u5206\u955C\u56FE\u7EDF\u4E00\u7528 \`@\u56FEN \` \u5F15\u7528
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 Instruction \u4E2D\u4F53\u73B0\u53F0\u8BCD\u76F8\u5173\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO\uFF09\uFF0C\u5728 Instruction \u4E2D\u7528\u62EC\u53F7\u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-\`\`\`
-[References]
-@\u56FE1 : [{\u89D2\u8272A\u540D}\u53C2\u8003\u56FE]
-@\u56FE2 : [{\u89D2\u8272B\u540D}\u53C2\u8003\u56FE]
-@\u56FE3 : [{\u573A\u666F\u540D}\u53C2\u8003\u56FE]
-@\u56FE4 : [\u5206\u955C\u56FE1]
-
-[Instruction]
-Based on the storyboard @\u56FE4 :
-@\u56FE1 {\u52A8\u4F5C/\u72B6\u6001\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09},
-@\u56FE2 {\u52A8\u4F5C/\u72B6\u6001\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09},
-set in the {\u573A\u666F\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09} of @\u56FE3 ,
-{\u955C\u5934/\u8FD0\u955C\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09},
-{\u60C5\u611F\u57FA\u8C03\uFF08\u82F1\u6587\uFF09},
-{\u53F0\u8BCD\u63CF\u8FF0\uFF08\u82F1\u6587\uFF0C\u542B dialogue/OS/VO \u6807\u6CE8\uFF09/ No dialogue},
-{\u97F3\u6548\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09}.
-\`\`\`
-
-#### \u751F\u6210\u7EA6\u675F
-1. **Instruction \u5FC5\u987B\u7528\u82F1\u6587**
-2. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-3. **\u89D2\u8272\u52A8\u4F5C**\u4ECE videoDesc \u7684\u300C\u89D2\u8272\u52A8\u4F5C\u300D\u5B57\u6BB5\u63D0\u53D6\uFF0C\u7FFB\u8BD1\u4E3A\u7B80\u6D01\u82F1\u6587\u52A8\u4F5C\u63CF\u8FF0
-4. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 Instruction \u4E2D\u4F53\u73B0\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-5. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`(dialogue)\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`(inner monologue, OS)\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`(voiceover, VO)\`
-6. **\u955C\u5934\u98CE\u683C**\u4F7F\u7528\u6807\u51C6\u6807\u7B7E\uFF1A\`cinematic\` / \`wide-angle\` / \`close-up\` / \`slow motion\` / \`surround shooting\` / \`handheld\`
-7. **\u7A7A\u95F4\u5173\u7CFB**\u4F7F\u7528\u6807\u51C6\u52A8\u8BCD\uFF1A\`wearing\` / \`holding\` / \`standing on\` / \`following behind\` / \`sitting in\`
-8. \u5355\u6761\u5206\u955C\u5BF9\u5E94\u5355\u4E2A \`@\u56FEN \`\uFF0C\u4E0D\u505A\u591A\u5E27\u8DE8\u955C\u63CF\u8FF0
-9. \u65E0\u9700\u63CF\u8FF0\u89D2\u8272\u5916\u89C2\uFF08\u7531\u53C2\u8003\u56FE\u8D1F\u8D23\uFF09
-10. \u65E0\u65F6\u957F\u6807\u6CE8\uFF08\u7531\u6A21\u578B\u63A8\u65AD\uFF09
-11. **\u65E0\u5206\u955C\u56FE\u65F6**\uFF1A\u5F53 \`shouldGenerateImage="false"\` \u65F6\uFF0C\u8BE5\u5206\u955C\u65E0\u5206\u955C\u56FE\uFF0C\`[References]\` \u4E2D\u4E0D\u5217\u51FA\u8BE5\u5206\u955C\u56FE\uFF0C\`[Instruction]\` \u4E2D\u4E0D\u4F7F\u7528 \`@\u56FEN \` \u5F15\u7528\u8BE5\u5206\u955C\u56FE\uFF0C\u6539\u4E3A\u7EAF\u6587\u672C\u63CF\u8FF0\u753B\u9762\u5185\u5BB9
-
-#### KlingOmni \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AKlingOmni
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A002, character, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u65E0\u53F0\u8BCD\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-[References]
-@\u56FE1 : [\u6C88\u8F9E\u53C2\u8003\u56FE]
-@\u56FE2 : [\u82CF\u9526\u53C2\u8003\u56FE]
-@\u56FE3 : [\u57CE\u697C\u53C2\u8003\u56FE]
-@\u56FE4 : [\u5206\u955C\u56FE1]
-@\u56FE5 : [\u5206\u955C\u56FE2]
-
-[Instruction]
-Based on the storyboard from @\u56FE4 to @\u56FE5 :
-@\u56FE1 standing alone atop the city wall, hands clasped behind back, robes billowing in the wind, gazing across the vast land,
-@\u56FE2 ascending the steps toward @\u56FE1 , expression worried,
-set in the ancient city wall environment of @\u56FE3 ,
-wide shot transitioning to medium tracking shot, cinematic,
-resolute determination shifting to concerned anticipation, dusk cold-toned side-backlit atmosphere fading,
-no dialogue,
-wind howling, fabric flapping, footsteps on stone.
-\`\`\`
-
----
-
-### \u4E8C\u3001\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u7EAF\u6587\u672C\u63D0\u793A\u8BCD**\uFF1A\u63D0\u793A\u8BCD\u5185**\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF08\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u4E5F\u4E0D\u5F15\u7528\u5206\u955C\u56FE\uFF09\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-- **\u4E94\u7EF4\u5EA6\u7ED3\u6784**\uFF1AVisual / Motion / Camera / Audio / Narrative
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 \`[Audio]\` \u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue, lip-sync active\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS, silent lips\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO, silent lips\uFF09\uFF0C\u5E76\u5728 \`[Audio]\` \u4E2D\u660E\u786E\u6807\u6CE8
-- **\u4E0D\u8BF4\u8BDD\u7684\u4E3B\u4F53\u6807\u6CE8 \`silent\`** \u2014 \u9632\u6B62\u8BEF\u751F\u53E3\u578B
-- **\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934**\uFF1A\u4ECE\u5934\u5230\u5C3E\u4E00\u4E2A\u955C\u5934\uFF0C\u4E0D\u5B58\u5728\u5207\u955C
-- **\u65F6\u95F4\u8F74\u5206\u6BB5**\uFF1A\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF0C\u7528 \`0s-Xs\` \u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-\`\`\`
-[Visual]
-{\u4E3B\u4F53A\u540D}: {\u5916\u89C2\u7B80\u8FF0}, {\u7AD9\u4F4D/\u59FF\u6001}, {\u8BF4\u8BDD\u72B6\u6001 speaking/silent}.
-{\u4E3B\u4F53B\u540D}: {\u5916\u89C2\u7B80\u8FF0}, {\u7AD9\u4F4D/\u59FF\u6001}, {\u8BF4\u8BDD\u72B6\u6001}.
-{\u573A\u666F\u63CF\u8FF0}, {\u9053\u5177\u63CF\u8FF0}.
-{\u89C6\u89C9\u98CE\u683C\u6807\u7B7E}.
-
-[Motion]
-0s-{X}s: {\u4E3B\u4F53A\u540D} {\u52A8\u4F5C\u63CF\u8FF0\u6BB51}.
-{X}s-{Y}s: {\u4E3B\u4F53B\u540D} {\u52A8\u4F5C\u63CF\u8FF0\u6BB52}.
-
-[Camera]
-{\u955C\u5934\u7C7B\u578B}, {\u8FD0\u955C\u65B9\u5F0F}, {\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934\u63CF\u8FF0}.
-
-[Audio]
-{Xs-Ys}: "{\u53F0\u8BCD\u5185\u5BB9}" \u2014 {\u8BF4\u8BDD\u8005\u540D} ({dialogue / inner monologue OS / voiceover VO}), {lip-sync active / silent lips}.
-{\u97F3\u6548\u63CF\u8FF0}.
-
-[Narrative]
-{\u60C5\u8282\u70B9\u6982\u8FF0}, {\u53D9\u4E8B\u4F4D\u7F6E}.
-\`\`\`
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u5168\u90E8\u7528\u82F1\u6587**
-2. **\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF1A\u63D0\u793A\u8BCD\u5185\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u5206\u955C\u56FE\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-3. **\u4E3B\u4F53\u7528\u6587\u5B57\u63CF\u8FF0**\uFF1A\u5728 [Visual] \u4E2D\u7B80\u8981\u63CF\u8FF0\u4E3B\u4F53\u5916\u89C2\u7279\u5F81\uFF08\u5982\u670D\u9970\u3001\u53D1\u578B\u7B49\u5173\u952E\u8FA8\u8BC6\u7279\u5F81\uFF09
-4. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-5. **\u6BCF\u4E2A\u4E3B\u4F53\u5FC5\u987B\u6807\u6CE8\u8BF4\u8BDD\u72B6\u6001**\uFF1A\`speaking\` / \`silent\` / \`speaking simultaneously\`
-6. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 \`[Audio]\` \u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-7. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`dialogue, lip-sync active\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`inner monologue (OS), silent lips\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`voiceover (VO), silent lips\`
-8. **Motion \u65F6\u95F4\u8F74**\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF0C\u4E0D\u8D85\u8FC7\u603B\u65F6\u957F
-9. **\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934**\uFF1ACamera \u6BB5\u843D\u63CF\u8FF0\u4ECE\u5934\u5230\u5C3E\u7684\u4E00\u4E2A\u955C\u5934\uFF0C\u7EDD\u4E0D\u5207\u955C
-10. **\u89C6\u89C9\u98CE\u683C**\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9
-11. **\u955C\u5934\u7C7B\u578B**\u4ECE\u4EE5\u4E0B\u9009\u53D6\uFF1A\`Wide establishing shot / Over-the-shoulder / Medium shot / Close-up / Wide shot / POV / Dutch angle / Crane up / Dolly right / Whip pan / Handheld / Slow motion\`
-
-#### Seedance 1.5 Pro \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1ASeedance1.5
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A002, character, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u65E0\u53F0\u8BCD\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-[Visual]
-Shen Ci: male, dark flowing robes, hair tied up, standing alone atop city wall, hands clasped behind back, robes billowing, silent.
-Su Jin: female, light-colored dress, hair partially down, ascending steps toward Shen Ci, expression worried, silent.
-Ancient city wall, vast open land beyond, dusk sky fading.
-Cinematic, photorealistic, 4K, high contrast, desaturated tones, shallow depth of field.
-
-[Motion]
-0s-4s: Shen Ci stands still on city wall edge, robes flutter in wind, hair sways gently. Gaze fixed on distant horizon.
-4s-8s: Su Jin climbs the last few steps onto the wall, walks toward Shen Ci. Shen Ci remains still, unaware. Su Jin slows as she approaches.
-
-[Camera]
-Wide establishing shot, static for first 4 seconds capturing the lone figure. Then smooth transition to medium tracking shot following the woman ascending steps, single continuous take throughout, no cuts.
-
-[Audio]
-0s-4s: Wind howling across wall, fabric flapping rhythmically. No dialogue.
-4s-8s: Footsteps on stone, robes rustling. No dialogue.
-Shen Ci \u2014 silent. Su Jin \u2014 silent.
-
-[Narrative]
-Lone figure on city wall, then arrival of a companion. Tension between determination and concern. Single continuous take.
-\`\`\`
-
----
-
-### \u4E09\u3001Seedance 2.0
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u7ED3\u6784\u531612\u7EF4\u7F16\u7801**\uFF1A\u7EDF\u4E00\u7528 \`@\u56FEN \` \u5F15\u7528\u8D44\u4EA7\u548C\u5206\u955C\u56FE\uFF0C\u65F6\u957F \`<duration-ms>\`
-- **\u97F3\u8272\u53C2\u65709\u7EF4\u5EA6\u7CBE\u7EC6\u63CF\u8FF0**\uFF08\u6709\u53F0\u8BCD\u65F6\u5FC5\u586B\uFF09
-- **\u6BEB\u79D2\u7EA7\u65F6\u957F\u63A7\u5236**\uFF1A\u5355\u5206\u955C\u65F6\u957F\u6700\u4F4E 1000ms\uFF081 \u79D2\uFF09
-- **\u4E2D\u6587\u63D0\u793A\u8BCD**
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u6BCF\u6761\u5206\u955C\u7684\u63CF\u8FF0\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u548C\u97F3\u8272\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08\u76F4\u63A5\u4F7F\u7528\u300C\u8BF4\uFF1A\u300D\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08\u4F7F\u7528\u300C\u5185\u5FC3OS\uFF1A\u300D\uFF09\u3001\u753B\u5916\u97F3\uFF08\u4F7F\u7528\u300C\u753B\u5916\u97F3VO\uFF1A\u300D\uFF09\uFF0C\u5E76\u5339\u914D\u5BF9\u5E94\u7684\u5634\u578B\u72B6\u6001\u63CF\u8FF0
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-**\u5355\u5206\u955C\u6A21\u677F\uFF1A**
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: {\u98CE\u683C}, {\u8272\u8C03}, {\u7C7B\u578B}
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B 1 \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: \u65E0
-
-\u5206\u955C1<duration-ms>{\u6BEB\u79D2\u6570}</duration-ms>: \u65F6\u95F4\uFF1A{\u65E5/\u591C/\u6668/\u9EC4\u660F}\uFF0C\u573A\u666F\u56FE\u7247\uFF1A@\u56FE{\u573A\u666F\u7F16\u53F7} \uFF0C\u955C\u5934\uFF1A{\u666F\u522B}\uFF0C{\u89D2\u5EA6}\uFF0C{\u8FD0\u955C}\uFF0C@\u56FE{\u89D2\u8272\u7F16\u53F7} {\u52A8\u4F5C/\u8868\u60C5/\u89C6\u7EBF\u671D\u5411/\u7AD9\u4F4D\u63CF\u8FF0}\u3002{\u53F0\u8BCD\u4E0E\u97F3\u8272\u63CF\u8FF0\uFF08\u5982\u6709\uFF09}\u3002{\u80CC\u666F\u73AF\u5883\u8865\u5145}\u3002{\u5149\u5F71\u6C1B\u56F4}\u3002{\u8FD0\u955C\u8865\u5145}\u3002
-\`\`\`
-
-**\u591A\u5206\u955C\u6A21\u677F\uFF1A**
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: {\u98CE\u683C}, {\u8272\u8C03}, {\u7C7B\u578B}
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B {N} \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: {\u5168\u5C40\u8FC7\u6E21\u63CF\u8FF0}
-
-\u5206\u955C1<duration-ms>{\u6BEB\u79D2\u6570}</duration-ms>: \u65F6\u95F4\uFF1A{...}\uFF0C\u573A\u666F\u56FE\u7247\uFF1A@\u56FE{\u573A\u666F\u7F16\u53F7} \uFF0C\u955C\u5934\uFF1A{...}\uFF0C@\u56FE{\u89D2\u8272\u7F16\u53F7} {...}\u3002{...}\u3002
-\u5206\u955C2<duration-ms>{\u6BEB\u79D2\u6570}</duration-ms>: ...
-...
-\`\`\`
-
-#### \u97F3\u8272\u751F\u6210\u89C4\u5219\uFF08\u6709\u53F0\u8BCD\u65F6\u5FC5\u586B\uFF09
-
-\u53F0\u8BCD\u683C\u5F0F\uFF1A\`@\u56FE{\u89D2\u8272\u7F16\u53F7} \u8BF4\uFF1A\u300C{\u53F0\u8BCD\u5185\u5BB9}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6\u63CF\u8FF0}\`
-
-9\u7EF4\u5EA6\u6309\u987A\u5E8F\u586B\u5199\uFF1A
-\`\`\`
-{\u6027\u522B}\uFF0C{\u5E74\u9F84\u97F3\u8272}\uFF0C{\u97F3\u8C03}\uFF0C{\u97F3\u8272\u8D28\u611F}\uFF0C{\u58F0\u97F3\u539A\u5EA6}\uFF0C{\u53D1\u97F3\u65B9\u5F0F}\uFF0C{\u6C14\u606F}\uFF0C{\u8BED\u901F}\uFF0C{\u7279\u6B8A\u8D28\u611F}
-\`\`\`
-
-> \u5F53 desc \u4E2D\u672A\u660E\u786E\u97F3\u8272\u4FE1\u606F\u65F6\uFF0C\u6839\u636E\u89D2\u8272\u7C7B\u578B\u4ECE\u4EE5\u4E0B\u53C2\u8003\u8868\u63A8\u65AD\uFF1A
-
-| \u89D2\u8272\u7C7B\u578B\u7279\u5F81 | \u9ED8\u8BA4\u97F3\u8272 |
-|------------|---------|
-| \u7537\u6027\u6743\u5A01/\u9738\u6C14\u89D2\u8272 | \u7537\u58F0\uFF0C\u4E2D\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4F4E\u6C89\uFF0C\u97F3\u8272\u6D51\u539A\u6709\u529B\uFF0C\u58F0\u97F3\u539A\u91CD\uFF0C\u53D1\u97F3\u6807\u51C6\uFF0C\u6C14\u606F\u6781\u5176\u6C89\u7A33\uFF0C\u8BED\u901F\u504F\u6162 |
-| \u5973\u6027\u6E29\u67D4/\u751C\u7F8E\u89D2\u8272 | \u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\u504F\u9AD8\uFF0C\u97F3\u8272\u8D28\u611F\u660E\u4EAE\u6E05\u8106\uFF0C\u58F0\u97F3\u6E05\u4EAE\u67D4\u548C\uFF0C\u6C14\u606F\u5145\u6C9B\u5E73\u7A33\uFF0C\u5E26\u6E29\u5A49\u771F\u8BDA\u611F |
-| \u7537\u6027\u5E74\u8F7B/\u666E\u901A\u89D2\u8272 | \u7537\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\uFF0C\u97F3\u8272\u5E72\u51C0\uFF0C\u58F0\u97F3\u539A\u5EA6\u9002\u4E2D\uFF0C\u53D1\u97F3\u6E05\u6670\uFF0C\u6C14\u606F\u5E73\u7A33\uFF0C\u8BED\u901F\u9002\u4E2D |
-| \u5973\u6027\u6D3B\u6CFC/\u5916\u5411\u89D2\u8272 | \u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u504F\u9AD8\uFF0C\u97F3\u8272\u6E05\u8106\u6D3B\u6CFC\uFF0C\u58F0\u97F3\u8F7B\u76C8\uFF0C\u6C14\u606F\u5145\u6C9B\uFF0C\u8BED\u901F\u504F\u5FEB\uFF0C\u5E26\u7B11\u610F\u548C\u611F\u67D3\u529B |
-| \u53CD\u6D3E/\u51B7\u9177\u89D2\u8272 | \u7537\u58F0\uFF0C\u4E2D\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4F4E\u6C89\uFF0C\u97F3\u8272\u8D28\u611F\u5E72\u71E5\u504F\u6697\uFF0C\u58F0\u97F3\u5E26\u6C99\u783E\u611F\uFF0C\u6C14\u606F\u5E73\u7A33\uFF0C\u8BED\u901F\u6781\u6162\uFF0C\u6709\u5A01\u80C1\u611F |
-
-#### \u65E0\u53F0\u8BCD\u5206\u955C\u5904\u7406
-- \u4E0D\u5199 \`\u8BF4\uFF1A\` \u548C\u97F3\u8272\u6BB5\u843D
-- \u5728\u52A8\u4F5C\u63CF\u8FF0\u540E\u6807\u6CE8 \`\u65E0\u53F0\u8BCD\`
-
-#### \u53F0\u8BCD\u7C7B\u578B\u683C\u5F0F
-
-| \u53F0\u8BCD\u7C7B\u578B | \u683C\u5F0F | \u5634\u578B\u63CF\u8FF0 |
-|----------|------|----------|
-| \u666E\u901A\u5BF9\u767D | \`@\u56FE{\u89D2\u8272\u7F16\u53F7} \u8BF4\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u5F00\u5408\u8BF4\u8BDD |
-| \u5185\u5FC3\u72EC\u767D | \`@\u56FE{\u89D2\u8272\u7F16\u53F7} \u5185\u5FC3OS\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u7D27\u95ED\u4E0D\u52A8 |
-| \u753B\u5916\u97F3 | \`@\u56FE{\u89D2\u8272\u7F16\u53F7} \u753B\u5916\u97F3VO\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u7D27\u95ED\u4E0D\u52A8\uFF08\u6216\u89D2\u8272\u4E0D\u5728\u753B\u9762\u4E2D\uFF09 |
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u4E2D\u6587\u63D0\u793A\u8BCD**
-2. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u6BCF\u6761\u5206\u955C\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-3. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u548C\u97F3\u8272
-4. **\u53F0\u8BCD\u7C7B\u578B\u6B63\u786E\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u7528\u300C\u8BF4\uFF1A\u300D\uFF0C\u5185\u5FC3\u72EC\u767D\u7528\u300C\u5185\u5FC3OS\uFF1A\u300D\uFF0C\u753B\u5916\u97F3\u7528\u300C\u753B\u5916\u97F3VO\uFF1A\u300D
-5. **\u5355\u5206\u955C\u65F6\u957F\u6700\u4F4E 1000ms\uFF081 \u79D2\uFF09**
-6. **\u65F6\u957F\u5355\u4F4D**\uFF1A\u5C06 videoDesc \u4E2D\u7684\u79D2 \xD7 1000 \u8F6C\u4E3A\u6BEB\u79D2\u586B\u5165 \`<duration-ms>\`
-
-#### Seedance 2.0 \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1ASeedance2.0
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A002, character, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u82CF\u9526\u8BF4\uFF1A\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: \u771F\u4EBA\u5199\u5B9E, \u7535\u5F71\u98CE\u683C, \u51B7\u8C03, \u53E4\u98CE
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B 2 \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: \u955C\u5934\u5E73\u6ED1\u5207\u6362\uFF0C\u4ECE\u5168\u666F\u8FC7\u6E21\u5230\u4E2D\u666F\u8DDF\u8E2A\uFF0C\u7126\u70B9\u4ECE\u6C88\u8F9E\u72EC\u5904\u8F6C\u5411\u82CF\u9526\u5230\u6765\u3002
-
-\u5206\u955C1<duration-ms>4000</duration-ms>: \u65F6\u95F4\uFF1A\u9EC4\u660F\uFF0C\u573A\u666F\u56FE\u7247\uFF1A@\u56FE3 \uFF0C\u955C\u5934\uFF1A\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u9759\u6B62\u955C\u5934\uFF0C@\u56FE1 \u72EC\u7ACB\u57CE\u697C\u4E4B\u4E0A\uFF0C\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u968F\u98CE\u98D8\u626C\uFF0C\u76EE\u5149\u8FDC\u773A\u82CD\u832B\u5927\u5730\uFF0C\u795E\u60C5\u8083\u7136\u9762\u5BB9\u6C89\u7740\uFF0C\u773C\u795E\u575A\u5B9A\u76EE\u5149\u6E05\u51BD\uFF0C\u7709\u773C\u6C89\u9759\u6C14\u8D28\u51DB\u7136\u3002\u65E0\u53F0\u8BCD\u3002\u80CC\u666F\u662F\u53E4\u57CE\u697C\u7816\u77F3\u7EB9\u7406\u6E05\u6670\uFF0C\u8FDC\u65B9\u5927\u5730\u82CD\u832B\u8FBD\u9614\uFF0C\u5929\u9645\u7EBF\u51B7\u6696\u4EA4\u66FF\u3002\u9EC4\u660F\u659C\u5C04\u4F59\u6656\u4FA7\u9006\u5149\uFF0C\u51B7\u8C03\u4E3A\u4E3B\uFF0C\u957F\u5F71\u62C9\u4F38\uFF0C\u8F6E\u5ED3\u5149\u5FAE\u52FE\u52D2\u4EBA\u7269\u8FB9\u7F18\uFF0C\u5149\u611F\u8BD7\u610F\u3002\u955C\u5934\u9759\u6B62\u3002
-
-\u5206\u955C2<duration-ms>4000</duration-ms>: \u65F6\u95F4\uFF1A\u9EC4\u660F\uFF0C\u573A\u666F\u56FE\u7247\uFF1A@\u56FE3 \uFF0C\u955C\u5934\uFF1A\u4E2D\u666F\uFF0C\u5E73\u89C6\uFF0C\u8DDF\u8E2A\u62CD\u6444\uFF0C@\u56FE2 \u62FE\u7EA7\u800C\u4E0A\uFF0C\u8D70\u5411\u57CE\u697C\u4E0A\u7684@\u56FE1 \uFF0C\u9762\u90E8\u671D\u5411@\u56FE1 \u65B9\u5411\uFF0C\u795E\u60C5\u5FAE\u6123\u9762\u8272\u5FAE\u53D8\uFF0C\u773C\u795E\u4E2D\u5E26\u7740\u62C5\u5FE7\uFF0C@\u56FE2 \u8BF4\uFF1A\u300C\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3002\u300D\u97F3\u8272\uFF1A\u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\u504F\u9AD8\uFF0C\u97F3\u8272\u8D28\u611F\u660E\u4EAE\u6E05\u8106\uFF0C\u58F0\u97F3\u6E05\u4EAE\u67D4\u548C\uFF0C\u53D1\u97F3\u65B9\u5F0F\u5E72\u51C0\uFF0C\u6C14\u606F\u5145\u6C9B\u5E73\u7A33\uFF0C\u8BED\u901F\u9002\u4E2D\uFF0C\u5E26\u6E29\u5A49\u771F\u8BDA\u611F\u3002\u80CC\u666F\u57CE\u697C\u53F0\u9636\u7EB9\u7406\u6E05\u6670\uFF0C\u4F59\u6656\u6E10\u6697\uFF0C\u5929\u9645\u7EBF\u51B7\u6696\u4EA4\u66FF\u52A0\u6DF1\u3002\u955C\u5934\u8DDF\u8E2A\u82CF\u9526\u79FB\u52A8\u3002
-\`\`\`
-
----
-
-### \u56DB\u3001Wan 2.6
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u5355\u56FE\u9996\u5E27\u6A21\u5F0F**\uFF1A\u5F52\u7C7B\u4E3A\u9996\u5C3E\u5E27\u6A21\u5F0F\uFF0C\u4F46\u4EC5\u6709\u9996\u5E27\uFF08\u5206\u955C\u56FE\uFF09\uFF0C\u65E0\u5C3E\u5E27
-- **\u5355\u6761\u5206\u955C\u8F93\u5165/\u8F93\u51FA**\uFF1A\u6BCF\u6B21\u4EC5\u8F93\u5165\u4E00\u6761 \`<storyboardItem>\` \u53CA\u5176\u5173\u8054\u8D44\u4EA7\u4FE1\u606F\uFF0C\u8F93\u51FA\u4E5F\u4EC5\u4E3A\u4E00\u6BB5\u5B8C\u6574\u7684\u53D9\u4E8B\u5F0F\u63D0\u793A\u8BCD
-- **\u53D9\u4E8B\u5F0F\u82F1\u6587\u63D0\u793A\u8BCD**\uFF1A\u50CF\u5199\u5C0F\u8BF4\u4E00\u6837\u63CF\u5199\u753B\u9762\uFF0C\u4E0D\u4F7F\u7528\u6807\u7B7E\u7F57\u5217\uFF08\u4E0D\u5199 \`4K, cinematic, high quality\` \u8FD9\u7C7B\u5806\u780C\uFF09
-- **\u4E09\u6BB5\u5F0F\u7ED3\u6784**\uFF1A\u98CE\u683C\u57FA\u8C03 \u2192 \u4E3B\u4F53\u52A8\u4F5C + \u573A\u666F\u73AF\u5883 + \u5149\u7EBF\u6C1B\u56F4 \u2192 \u955C\u5934\u6536\u5C3E
-- **\u7EAF\u6587\u672C\u63D0\u793A\u8BCD**\uFF1A\u63D0\u793A\u8BCD\u5185**\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u4F53\u73B0\u53F0\u8BCD\u76F8\u5173\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO\uFF09\uFF0C\u5728\u63D0\u793A\u8BCD\u4E2D\u7528\u62EC\u53F7\u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-\u6BCF\u6B21\u8F93\u5165\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u5B8C\u6574\u63D0\u793A\u8BCD\uFF08\u65E0\u7F16\u53F7\u524D\u7F00\uFF09\uFF0C\u683C\u5F0F\u5982\u4E0B\uFF1A
-
-\`\`\`
-{\u98CE\u683C\u57FA\u8C03\u4E00\u53E5\u8BDD\u5B9A\u6027},
-{\u4E3B\u4F53\u540D} {\u5916\u89C2\u7B80\u8FF0}, {\u5177\u4F53\u52A8\u4F5C/\u59FF\u6001\u63CF\u8FF0}, {\u60C5\u7EEA/\u8868\u60C5\u7528\u52A8\u4F5C\u6697\u793A}.
-{\u573A\u666F\u80CC\u666F\u4E3B\u4F53}, {\u5177\u4F53\u73AF\u5883\u7269\u4EF6}, {\u7A7A\u95F4\u611F}, {\u65F6\u95F4/\u5929\u6C14}.
-{\u5149\u7EBF\u65B9\u5411/\u8272\u6E29} {\u8D28\u611F\u63CF\u8FF0}, {\u60C5\u7EEA\u6697\u793A\u5149\u5F71}.
-{\u53F0\u8BCD\u63CF\u8FF0\uFF08\u5982\u6709\uFF0C\u542B dialogue/OS/VO \u6807\u6CE8\uFF09/ No dialogue}.
-{\u97F3\u6548\u63CF\u8FF0}.
-{\u62CD\u6444\u65B9\u5F0F}, {\u666F\u522B}, {\u89C6\u89D2}, {\u8FD0\u955C\u65B9\u5F0F}.
-\`\`\`
-
-#### \u53D9\u4E8B\u5F0F\u5199\u6CD5\u8981\u70B9
-
-| \u539F\u5219 | \u8BF4\u660E | \u793A\u4F8B |
-|------|------|------|
-| \u98CE\u683C\u57FA\u8C03\u653E\u6700\u524D | \u4E00\u53E5\u8BDD\u5B9A\u6027\u6574\u4F53\u6C14\u8D28 | \`A cinematic epic scene\` / \`A melancholic cinematic scene\` |
-| \u4E3B\u4F53+\u52A8\u4F5C\u7D27\u5BC6\u7ED1\u5B9A | \u4E3B\u4F53\u540E\u9762\u76F4\u63A5\u8DDF\u52A8\u4F5C\uFF0C\u5916\u89C2\u7EC6\u8282\u5D4C\u5165\u4E3B\u4F53\u63CF\u8FF0 | \`A young man in dark flowing robes stands alone atop the city wall, hands clasped behind back\` |
-| \u60C5\u7EEA\u7528\u52A8\u4F5C\u6697\u793A | \u4E0D\u76F4\u63A5\u9648\u8FF0\u300C\u4ED6\u5F88\u60B2\u4F24\u300D | \u274C \`He is sad.\` \u2192 \u2705 \`head drops slowly, shoulders slumped\` |
-| \u73AF\u5883\u878D\u5165\u53D9\u4E8B | \u4E0D\u7F57\u5217\u73AF\u5883\u5C5E\u6027 | \u274C \`The sky is blue. The grass is green.\` \u2192 \u2705 \`hazy blue sky stretches over the emerald valley\` |
-| \u5149\u7EBF\u5355\u72EC\u6210\u53E5 | \u5149\u7EBF\u65B9\u5411+\u8272\u6E29+\u8D28\u611F+\u60C5\u7EEA | \`Warm golden hour light streams from behind, casting long shadows across the stone floor\` |
-| \u955C\u5934\u8BED\u8A00\u6536\u5C3E | \u4E00\u53E5\u8BDD\u70B9\u775B | \`Captured in a wide establishing shot from a low-angle perspective, static camera\` |
-| \u7981\u6B62\u6807\u7B7E\u5806\u780C | \u4E0D\u5199 \`4K, cinematic, high quality\` | \`cinematic\` \u878D\u5165\u98CE\u683C\u57FA\u8C03\u5373\u53EF |
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u5168\u90E8\u7528\u82F1\u6587**
-2. **\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF1A\u63D0\u793A\u8BCD\u5185\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u5206\u955C\u56FE\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-3. **\u53D9\u4E8B\u5F0F\u63CF\u5199**\uFF1A\u50CF\u5199\u5C0F\u8BF4\u4E00\u6837\u6784\u5EFA\u753B\u9762\uFF0C\u7981\u6B62\u6807\u7B7E\u7F57\u5217\u548C\u914D\u7F6E\u6E05\u5355\u5F0F\u5199\u6CD5
-4. **\u4E3B\u4F53\u7528\u6587\u5B57\u63CF\u8FF0**\uFF1A\u7B80\u8981\u63CF\u8FF0\u4E3B\u4F53\u5916\u89C2\u7279\u5F81\uFF08\u5982\u670D\u9970\u3001\u53D1\u578B\u7B49\u5173\u952E\u8FA8\u8BC6\u7279\u5F81\uFF09\uFF0C\u5D4C\u5165\u4E3B\u4F53\u63CF\u8FF0\u4E2D
-5. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-6. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-7. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`(dialogue)\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`(inner monologue, OS)\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`(voiceover, VO)\`
-8. **\u5355\u6761\u8F93\u5165/\u8F93\u51FA**\uFF1A\u6BCF\u6B21\u4EC5\u5904\u7406\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u63D0\u793A\u8BCD\uFF0C\u65E0\u7F16\u53F7\u524D\u7F00
-9. **\u65E0\u9700\u6807\u6CE8\u65F6\u957F**\uFF1A\u65F6\u957F\u7531\u6A21\u578B\u4FA7\u63A7\u5236\uFF0C\u63D0\u793A\u8BCD\u4E2D\u4E0D\u5199\u65F6\u957F\u53C2\u6570
-10. **\u955C\u5934\u63CF\u8FF0\u878D\u5165\u53D9\u4E8B**\uFF1A\u4E0D\u7528\u65B9\u62EC\u53F7\u6807\u7B7E\uFF0C\u7528\u5B8C\u6574\u53E5\u5B50\u63CF\u8FF0\u955C\u5934
-11. **\u89C6\u89C9\u98CE\u683C**\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9
-
-#### Wan 2.6 \u5B8C\u6574\u793A\u4F8B
-
-**\u793A\u4F8B1\uFF1A\u65E0\u53F0\u8BCD\u5206\u955C**
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AWan2.6
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-A cinematic epic scene with a cold, desaturated palette,
-A lone man in dark flowing robes stands atop an ancient city wall, hands clasped behind his back, robes and hair billowing in the wind, gaze fixed on the vast land stretching to the horizon, jaw set firm, eyes unwavering.
-The weathered stone battlements frame the endless expanse below, rolling terrain fading into haze beneath a heavy dusk sky, clouds layered in muted golds and slate greys.
-Cold side-backlight from the setting sun carves a sharp silhouette, long shadows stretching across the stone floor, a faint warm rim outlining the figure against the cool atmosphere.
-No dialogue.
-Wind howling across the open wall, fabric flapping rhythmically.
-Captured in a wide establishing shot from a slightly low angle, static camera, single continuous take.
-\`\`\`
-
-**\u793A\u4F8B2\uFF1A\u6709\u53F0\u8BCD\u5206\u955C**
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AWan2.6
-\u8D44\u4EA7\u4FE1\u606F[A001, character, \u6C88\u8F9E], [A002, character, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u82CF\u9526\u8BF4\uFF1A\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-A melancholic cinematic scene, dusk tones deepening,
-A young woman in a light-colored dress ascends the final stone steps onto the city wall, her gaze locked on the lone figure ahead, brow slightly furrowed, pace slowing as she approaches, lips parting softly.
-The ancient city wall stretches behind her, weathered stairs leading up from below, the distant skyline dimming as the last traces of golden hour fade into twilight.
-Fading warm light mingles with rising cool blue tones, the contrast between the two figures softened by the diffused remnants of sunset.
-"\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3002" \u2014 Su Jin (dialogue).
-Footsteps on stone, wind sweeping across the battlements, fabric rustling.
-A medium tracking shot follows the woman from behind as she ascends and approaches, handheld camera with subtle movement, single continuous take.
-\`\`\`
-
----
-
-## \u666F\u522B \u2192 \u955C\u5934\u6807\u7B7E\u6620\u5C04
-
-| videoDesc \u4E2D\u7684\u666F\u522B | KlingOmni\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 1.5\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 2.0\uFF08\u4E2D\u6587\u63CF\u8FF0\uFF09 | Wan 2.6\uFF08\u82F1\u6587\u53D9\u4E8B\u5F0F\uFF09 |
-|------|------|------|------|------|
-| \u8FDC\u666F | extreme wide shot | Extreme wide shot | \u8FDC\u666F | an extreme wide shot capturing the vast expanse |
-| \u5168\u666F | wide shot | Wide establishing shot | \u5168\u666F | a wide establishing shot |
-| \u4E2D\u666F | medium shot | Medium shot | \u4E2D\u666F | a medium shot |
-| \u8FD1\u666F | close-up | Close-up | \u8FD1\u666F | a close-up shot |
-| \u7279\u5199 | close-up | Close-up | \u7279\u5199 | a close-up capturing fine detail |
-| \u5927\u7279\u5199 | extreme close-up | Extreme close-up | \u5927\u7279\u5199 | an extreme close-up |
-
-## \u8FD0\u955C \u2192 \u955C\u5934\u6807\u7B7E\u6620\u5C04
-
-| videoDesc \u4E2D\u7684\u8FD0\u955C | KlingOmni\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 1.5\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 2.0\uFF08\u4E2D\u6587\u63CF\u8FF0\uFF09 | Wan 2.6\uFF08\u82F1\u6587\u53D9\u4E8B\u5F0F\uFF09 |
-|------|------|------|------|------|
-| \u9759\u6B62 | static camera | Static, no camera movement | \u955C\u5934\u9759\u6B62 | static camera, locked off |
-| \u63A8\u8FDB | dolly in / push in | Slow dolly forward | \u955C\u5934\u7F13\u6162\u5411\u524D\u63A8\u8FDB | camera slowly pushing in |
-| \u62C9\u8FDC | dolly out / pull back | Slow dolly backward pull | \u955C\u5934\u7F13\u6162\u5411\u540E\u62C9\u8FDC | camera gently pulling back |
-| \u8DDF\u8E2A | tracking shot | Tracking shot, handheld | \u8DDF\u8E2A\u62CD\u6444 | tracking shot following the subject |
-| \u6447\u955C | pan left/right | Slow pan | \u955C\u5934\u7F13\u6162\u6447\u79FB | smooth pan across the scene |
-| \u7529\u955C | whip pan | Whip pan | \u5FEB\u901F\u7529\u955C | whip pan |
-| \u5347\u964D | crane up/down | Crane up/down | \u955C\u5934\u5347\u964D | crane rising / descending |
-| \u73AF\u7ED5 | surround shooting | Orbiting shot | \u73AF\u7ED5\u62CD\u6444 | orbiting around the subject |
-
----
-
-## \u6267\u884C\u6D41\u7A0B
-
-1. **\u89E3\u6790\u8F93\u5165**\uFF1A\u63D0\u53D6\u6A21\u578B\u540D\u548C\u591A\u53C2\u6807\u5FD7\uFF0C\u6309\u8DEF\u7531\u89C4\u5219\u5339\u914D\u6A21\u5F0F\uFF1B\u63D0\u53D6\u8D44\u4EA7\u5217\u8868
-2. **\u6784\u5EFA @\u56FEN \u7F16\u53F7\u8868**\uFF1A\u8D44\u4EA7\u6309\u8F93\u5165\u987A\u5E8F\u4ECE \`@\u56FE1 \` \u8D77\u7F16\u53F7\uFF0C\u5206\u955C\u56FE\u63A5\u7EED\u7F16\u53F7\uFF1B\`shouldGenerateImage="false"\` \u7684\u5206\u955C\u4E0D\u5206\u914D\u5206\u955C\u56FE\u7F16\u53F7
-3. **\u9010\u6761\u89E3\u6790 \`<storyboardItem>\`**\uFF1A\u6309 videoDesc \u89E3\u6790\u89C4\u5219\u63D0\u53D612\u4E2A\u5B57\u6BB5\uFF0C\u7ED3\u5408 \`duration\`\u3001\`associateAssetsIds\` \u5EFA\u7ACB\u6807\u7B7E\u6620\u5C04
-4. **\u6574\u5408\u4E3A\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD**\uFF1A\u6309\u76EE\u6807\u6A21\u578B\u683C\u5F0F\u7F16\u6392\u5168\u90E8\u5206\u955C
-5. **\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD**
-
----
-
-## \u7EA6\u675F
-
-- **\u4EC5\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD**\uFF1A\u4E0D\u9644\u52A0\u4EFB\u4F55\u89E3\u91CA\u3001\u6CE8\u91CA\u6216\u989D\u5916\u8BF4\u660E\uFF0C\u53EA\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD\u6587\u672C
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u5B8C\u6574\u4F53\u73B0\u53F0\u8BCD\u5185\u5BB9\uFF0C\u4E0D\u5F97\u9057\u6F0F
-- **\u53F0\u8BCD\u4FDD\u6301\u539F\u59CB\u8F93\u5165**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u53F0\u8BCD\u5185\u5BB9\u4E25\u7981\u7FFB\u8BD1\uFF0C\u5FC5\u987B\u4FDD\u6301 videoDesc \u4E2D\u7684\u539F\u59CB\u8BED\u8A00\u539F\u6837\u8F93\u51FA
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u5FC5\u987B\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue / \u8BF4\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08OS / \u5185\u5FC3OS\uFF09\u3001\u753B\u5916\u97F3\uFF08VO / \u753B\u5916\u97F3VO\uFF09\uFF0C\u5E76\u5728\u63D0\u793A\u8BCD\u4E2D\u6B63\u786E\u6807\u6CE8
-- **\u65F6\u95F4\u8DE8\u5EA6\u6700\u4F4E 1 \u79D2**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u6240\u6709\u6A21\u5F0F\u4E2D\u6D89\u53CA\u65F6\u95F4\u5206\u6BB5\uFF08Motion \u65F6\u95F4\u8F74 / duration-ms\uFF09\u7684\u6700\u5C0F\u7C92\u5EA6\u4E3A 1 \u79D2\uFF081000ms\uFF09\uFF0C\u7981\u6B62\u51FA\u73B0 0.5 \u79D2\u7B49\u4F4E\u4E8E 1 \u79D2\u7684\u95F4\u9694
-- **\u89C6\u89C9\u98CE\u683C**\uFF1A\u98CE\u683C\u76F8\u5173\u63CF\u8FF0\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9\uFF0C\u4E0D\u5728\u672C Skill \u5185\u81EA\u884C\u5B9A\u4E49\u98CE\u683C
-- **\u4E25\u683C\u6309\u5339\u914D\u5230\u7684\u6A21\u5F0F\u683C\u5F0F**\uFF0C\u4E0D\u6DF7\u7528\u4E0D\u540C\u6A21\u5F0F\u7684\u683C\u5F0F
-- **\u4E0D\u4FEE\u6539\u539F\u59CB\u8F93\u5165**\uFF1A\u4E0D\u6539\u5199 \`<storyboardItem>\` \u7684\u4EFB\u4F55\u5B57\u6BB5\uFF1B\`prompt\` \u5DF2\u6709\u7684\u5206\u955C\u56FE\u63D0\u793A\u8BCD\u4EC5\u4F5C\u753B\u9762\u53C2\u8003
-- **\u4E0D\u7F16\u9020\u8D44\u4EA7\u6216\u53F0\u8BCD**\uFF1A\u53EA\u4F7F\u7528\u8F93\u5165\u4E2D\u7684\u8D44\u4EA7\u4FE1\u606F\uFF1B\u65E0\u53F0\u8BCD\u5219\u6807\u6CE8\u300C\u65E0\u53F0\u8BCD\u300D/ \`No dialogue\`
-- **\u65F6\u957F\u5355\u4F4D\u8F6C\u6362**\uFF1ASeedance 2.0 \u7684 \`<duration-ms>\` \u9700\u5C06\u79D2 \xD7 1000 \u8F6C\u4E3A\u6BEB\u79D2
-`
+                data: [
+                  "# Video Prompt Generation Skill",
+                  "",
+                  "The backend provides structured <trackStoryboard ...> facts and visual references.",
+                  "Read only structured attributes: duration, location, timeOfDay, scene, picture, action, shotSize, cameraMove, dialogue, sound, visibleEmotion, groupKey, groupName, groupIntent, beatId, characters, requiredAssets.",
+                  "Do not parse or infer business facts from videoDesc, Markdown, XML text, image prompts, chat text, or any other prose.",
+                  "Generate the target model video prompt only. Dialogue, voice tone and diegetic sound effects must come from structured fields; BGM, score and OST are not valid video prompt content."
+                ].join("\\n")
               },
               {
                 name: "\u97F3\u8272\u7ED1\u5B9A",
@@ -42146,6 +41940,13 @@ A medium tracking shot follows the woman from behind as she ascends and approach
             table.text("reason");
             table.text("track");
             table.text("videoDesc");
+            table.text("location");
+            table.text("timeOfDay");
+            table.text("sceneContinuityId");
+            table.text("tableRowJson");
+            table.string("factStatus").notNullable().defaultTo("legacy");
+            table.integer("factVersion").notNullable().defaultTo(1);
+            table.integer("factRevision").notNullable().defaultTo(1);
             table.integer("shouldGenerateImage");
             table.integer("projectId");
             table.integer("flowId");
@@ -42154,6 +41955,42 @@ A medium tracking shot follows the woman from behind as she ascends and approach
             table.text("referenceImages").notNullable().defaultTo("[]");
             table.primary(["id"]);
             table.unique(["id"]);
+            table.index(["projectId", "scriptId", "index"], "idx_storyboard_project_script_index");
+            table.index(["trackId"], "idx_storyboard_track_id");
+          }
+        },
+        {
+          name: "o_storyboardGeneration",
+          builder: (table) => {
+            table.integer("id").primary();
+            table.string("generationId").notNullable().unique();
+            table.integer("projectId").notNullable();
+            table.integer("scriptId").notNullable();
+            table.integer("expectedRowCount").notNullable();
+            table.text("groupPlanJson").notNullable();
+            table.string("state").notNullable();
+            table.integer("revision");
+            table.text("errorJson");
+            table.integer("createdAt").notNullable();
+            table.integer("updatedAt").notNullable();
+            table.index(["projectId", "scriptId", "state"], "idx_storyboard_generation_owner_state");
+            table.index(["updatedAt"], "idx_storyboard_generation_updated");
+          }
+        },
+        {
+          name: "o_storyboardGenerationRow",
+          builder: (table) => {
+            table.integer("id").primary();
+            table.string("generationId").notNullable();
+            table.integer("rowIndex").notNullable();
+            table.text("rowJson").notNullable();
+            table.string("rowHash").notNullable();
+            table.integer("createdAt").notNullable();
+            table.integer("updatedAt").notNullable();
+            table.unique(["generationId", "rowIndex"], {
+              indexName: "uq_storyboard_generation_row"
+            });
+            table.index(["generationId"], "idx_storyboard_generation_row_generation");
           }
         },
         //flowData-剧本
@@ -42261,8 +42098,11 @@ A medium tracking shot follows the woman from behind as she ascends and approach
             table.text("prompt");
             table.integer("selectVideoId");
             table.integer("duration");
+            table.text("groupPlanJson");
+            table.integer("archived").notNullable().defaultTo(0);
             table.primary(["id"]);
             table.unique(["id"]);
+            table.index(["projectId", "scriptId", "archived"], "idx_video_track_owner_archived");
           }
         },
         {
@@ -54583,8 +54423,8 @@ var require_JSXTransformer = __commonJS({
         }
         if (this.isAutomaticRuntime) {
           if (this.importProcessor) {
-            for (const [path27, resolvedName] of Object.entries(this.cjsAutomaticModuleNameResolutions)) {
-              prefix += `var ${resolvedName} = require("${path27}");`;
+            for (const [path29, resolvedName] of Object.entries(this.cjsAutomaticModuleNameResolutions)) {
+              prefix += `var ${resolvedName} = require("${path29}");`;
             }
           } else {
             const { createElement: createElementResolution, ...otherResolutions } = this.esmAutomaticImportNameResolutions;
@@ -54777,11 +54617,11 @@ var require_JSXTransformer = __commonJS({
       }
       claimAutoImportedName(funcName, importPathSuffix) {
         if (this.importProcessor) {
-          const path27 = this.jsxImportSource + importPathSuffix;
-          if (!this.cjsAutomaticModuleNameResolutions[path27]) {
-            this.cjsAutomaticModuleNameResolutions[path27] = this.importProcessor.getFreeIdentifierForPath(path27);
+          const path29 = this.jsxImportSource + importPathSuffix;
+          if (!this.cjsAutomaticModuleNameResolutions[path29]) {
+            this.cjsAutomaticModuleNameResolutions[path29] = this.importProcessor.getFreeIdentifierForPath(path29);
           }
-          return `${this.cjsAutomaticModuleNameResolutions[path27]}.${funcName}`;
+          return `${this.cjsAutomaticModuleNameResolutions[path29]}.${funcName}`;
         } else {
           if (!this.esmAutomaticImportNameResolutions[funcName]) {
             this.esmAutomaticImportNameResolutions[funcName] = this.nameManager.claimFreeName(
@@ -54988,13 +54828,13 @@ var require_JSXTransformer = __commonJS({
       return firstChar >= _charcodes.charCodes.lowercaseA && firstChar <= _charcodes.charCodes.lowercaseZ;
     }
     exports2.startsWithLowerCase = startsWithLowerCase;
-    function formatJSXTextLiteral(text2) {
+    function formatJSXTextLiteral(text3) {
       let result = "";
       let whitespace = "";
       let isInInitialLineWhitespace = false;
       let seenNonWhitespace = false;
-      for (let i = 0; i < text2.length; i++) {
-        const c = text2[i];
+      for (let i = 0; i < text3.length; i++) {
+        const c = text3[i];
         if (c === " " || c === "	" || c === "\r") {
           if (!isInInitialLineWhitespace) {
             whitespace += c;
@@ -55009,7 +54849,7 @@ var require_JSXTransformer = __commonJS({
           result += whitespace;
           whitespace = "";
           if (c === "&") {
-            const { entity, newI } = processEntity(text2, i + 1);
+            const { entity, newI } = processEntity(text3, i + 1);
             i = newI - 1;
             result += entity;
           } else {
@@ -55024,10 +54864,10 @@ var require_JSXTransformer = __commonJS({
       }
       return JSON.stringify(result);
     }
-    function formatJSXTextReplacement(text2) {
+    function formatJSXTextReplacement(text3) {
       let numNewlines = 0;
       let numSpaces = 0;
-      for (const c of text2) {
+      for (const c of text3) {
         if (c === "\n") {
           numNewlines++;
           numSpaces = 0;
@@ -55037,21 +54877,21 @@ var require_JSXTransformer = __commonJS({
       }
       return "\n".repeat(numNewlines) + " ".repeat(numSpaces);
     }
-    function formatJSXStringValueLiteral(text2) {
+    function formatJSXStringValueLiteral(text3) {
       let result = "";
-      for (let i = 0; i < text2.length; i++) {
-        const c = text2[i];
+      for (let i = 0; i < text3.length; i++) {
+        const c = text3[i];
         if (c === "\n") {
-          if (/\s/.test(text2[i + 1])) {
+          if (/\s/.test(text3[i + 1])) {
             result += " ";
-            while (i < text2.length && /\s/.test(text2[i + 1])) {
+            while (i < text3.length && /\s/.test(text3[i + 1])) {
               i++;
             }
           } else {
             result += "\n";
           }
         } else if (c === "&") {
-          const { entity, newI } = processEntity(text2, i + 1);
+          const { entity, newI } = processEntity(text3, i + 1);
           result += entity;
           i = newI - 1;
         } else {
@@ -55060,38 +54900,38 @@ var require_JSXTransformer = __commonJS({
       }
       return JSON.stringify(result);
     }
-    function processEntity(text2, indexAfterAmpersand) {
+    function processEntity(text3, indexAfterAmpersand) {
       let str = "";
       let count = 0;
       let entity;
       let i = indexAfterAmpersand;
-      if (text2[i] === "#") {
+      if (text3[i] === "#") {
         let radix = 10;
         i++;
         let numStart;
-        if (text2[i] === "x") {
+        if (text3[i] === "x") {
           radix = 16;
           i++;
           numStart = i;
-          while (i < text2.length && isHexDigit(text2.charCodeAt(i))) {
+          while (i < text3.length && isHexDigit(text3.charCodeAt(i))) {
             i++;
           }
         } else {
           numStart = i;
-          while (i < text2.length && isDecimalDigit(text2.charCodeAt(i))) {
+          while (i < text3.length && isDecimalDigit(text3.charCodeAt(i))) {
             i++;
           }
         }
-        if (text2[i] === ";") {
-          const numStr = text2.slice(numStart, i);
+        if (text3[i] === ";") {
+          const numStr = text3.slice(numStart, i);
           if (numStr) {
             i++;
             entity = String.fromCodePoint(parseInt(numStr, radix));
           }
         }
       } else {
-        while (i < text2.length && count++ < 10) {
-          const ch = text2[i];
+        while (i < text3.length && count++ < 10) {
+          const ch = text3[i];
           i++;
           if (ch === ";") {
             entity = _xhtml2.default.get(str);
@@ -55217,7 +55057,7 @@ var require_CJSImportProcessor = __commonJS({
        */
       pruneTypeOnlyImports() {
         this.nonTypeIdentifiers = _getNonTypeIdentifiers.getNonTypeIdentifiers.call(void 0, this.tokens, this.options);
-        for (const [path27, importInfo] of this.importInfoByPath.entries()) {
+        for (const [path29, importInfo] of this.importInfoByPath.entries()) {
           if (importInfo.hasBareImport || importInfo.hasStarExport || importInfo.exportStarNames.length > 0 || importInfo.namedExports.length > 0) {
             continue;
           }
@@ -55227,7 +55067,7 @@ var require_CJSImportProcessor = __commonJS({
             ...importInfo.namedImports.map(({ localName }) => localName)
           ];
           if (names.every((name28) => this.shouldAutomaticallyElideImportedName(name28))) {
-            this.importsToReplace.set(path27, "");
+            this.importsToReplace.set(path29, "");
           }
         }
       }
@@ -55235,7 +55075,7 @@ var require_CJSImportProcessor = __commonJS({
         return this.isTypeScriptTransformEnabled && !this.keepUnusedImports && !this.nonTypeIdentifiers.has(name28);
       }
       generateImportReplacements() {
-        for (const [path27, importInfo] of this.importInfoByPath.entries()) {
+        for (const [path29, importInfo] of this.importInfoByPath.entries()) {
           const {
             defaultNames,
             wildcardNames,
@@ -55245,17 +55085,17 @@ var require_CJSImportProcessor = __commonJS({
             hasStarExport
           } = importInfo;
           if (defaultNames.length === 0 && wildcardNames.length === 0 && namedImports.length === 0 && namedExports.length === 0 && exportStarNames.length === 0 && !hasStarExport) {
-            this.importsToReplace.set(path27, `require('${path27}');`);
+            this.importsToReplace.set(path29, `require('${path29}');`);
             continue;
           }
-          const primaryImportName = this.getFreeIdentifierForPath(path27);
+          const primaryImportName = this.getFreeIdentifierForPath(path29);
           let secondaryImportName;
           if (this.enableLegacyTypeScriptModuleInterop) {
             secondaryImportName = primaryImportName;
           } else {
-            secondaryImportName = wildcardNames.length > 0 ? wildcardNames[0] : this.getFreeIdentifierForPath(path27);
+            secondaryImportName = wildcardNames.length > 0 ? wildcardNames[0] : this.getFreeIdentifierForPath(path29);
           }
-          let requireCode = `var ${primaryImportName} = require('${path27}');`;
+          let requireCode = `var ${primaryImportName} = require('${path29}');`;
           if (wildcardNames.length > 0) {
             for (const wildcardName of wildcardNames) {
               const moduleExpr = this.enableLegacyTypeScriptModuleInterop ? primaryImportName : `${this.helperManager.getHelperName("interopRequireWildcard")}(${primaryImportName})`;
@@ -55283,7 +55123,7 @@ var require_CJSImportProcessor = __commonJS({
               "createStarExport"
             )}(${primaryImportName});`;
           }
-          this.importsToReplace.set(path27, requireCode);
+          this.importsToReplace.set(path29, requireCode);
           for (const defaultName of defaultNames) {
             this.identifierReplacements.set(defaultName, `${secondaryImportName}.default`);
           }
@@ -55292,8 +55132,8 @@ var require_CJSImportProcessor = __commonJS({
           }
         }
       }
-      getFreeIdentifierForPath(path27) {
-        const components = path27.split("/");
+      getFreeIdentifierForPath(path29) {
+        const components = path29.split("/");
         const lastComponent = components[components.length - 1];
         const baseName = lastComponent.replace(/\W/g, "");
         return this.nameManager.claimFreeName(`_${baseName}`);
@@ -55338,8 +55178,8 @@ var require_CJSImportProcessor = __commonJS({
         if (!this.tokens.matches1AtIndex(index, _types.TokenType.string)) {
           throw new Error("Expected string token at the end of import statement.");
         }
-        const path27 = this.tokens.stringValueAtIndex(index);
-        const importInfo = this.getImportInfo(path27);
+        const path29 = this.tokens.stringValueAtIndex(index);
+        const importInfo = this.getImportInfo(path29);
         importInfo.defaultNames.push(...defaultNames);
         importInfo.wildcardNames.push(...wildcardNames);
         importInfo.namedImports.push(...namedImports);
@@ -55406,8 +55246,8 @@ var require_CJSImportProcessor = __commonJS({
         if (!this.tokens.matches1AtIndex(index, _types.TokenType.string)) {
           throw new Error("Expected string token at the end of import statement.");
         }
-        const path27 = this.tokens.stringValueAtIndex(index);
-        const importInfo = this.getImportInfo(path27);
+        const path29 = this.tokens.stringValueAtIndex(index);
+        const importInfo = this.getImportInfo(path29);
         importInfo.namedExports.push(...namedImports);
       }
       preprocessExportStarAtIndex(index) {
@@ -55422,8 +55262,8 @@ var require_CJSImportProcessor = __commonJS({
         if (!this.tokens.matches1AtIndex(index, _types.TokenType.string)) {
           throw new Error("Expected string token at the end of star export statement.");
         }
-        const path27 = this.tokens.stringValueAtIndex(index);
-        const importInfo = this.getImportInfo(path27);
+        const path29 = this.tokens.stringValueAtIndex(index);
+        const importInfo = this.getImportInfo(path29);
         if (exportedName !== null) {
           importInfo.exportStarNames.push(exportedName);
         } else {
@@ -55463,8 +55303,8 @@ var require_CJSImportProcessor = __commonJS({
        * Get a mutable import info object for this path, creating one if it doesn't
        * exist yet.
        */
-      getImportInfo(path27) {
-        const existingInfo = this.importInfoByPath.get(path27);
+      getImportInfo(path29) {
+        const existingInfo = this.importInfoByPath.get(path29);
         if (existingInfo) {
           return existingInfo;
         }
@@ -55477,7 +55317,7 @@ var require_CJSImportProcessor = __commonJS({
           exportStarNames: [],
           hasStarExport: false
         };
-        this.importInfoByPath.set(path27, newInfo);
+        this.importInfoByPath.set(path29, newInfo);
         return newInfo;
       }
       addExportBinding(localName, exportedName) {
@@ -56017,16 +55857,16 @@ var require_resolve_uri_umd = __commonJS({
       }
       function parseFileUrl(input) {
         const match = fileRegex.exec(input);
-        const path27 = match[2];
-        return makeUrl("file:", "", match[1] || "", "", isAbsolutePath(path27) ? path27 : "/" + path27, match[3] || "", match[4] || "");
+        const path29 = match[2];
+        return makeUrl("file:", "", match[1] || "", "", isAbsolutePath(path29) ? path29 : "/" + path29, match[3] || "", match[4] || "");
       }
-      function makeUrl(scheme, user, host, port, path27, query, hash3) {
+      function makeUrl(scheme, user, host, port, path29, query, hash3) {
         return {
           scheme,
           user,
           host,
           port,
-          path: path27,
+          path: path29,
           query,
           hash: hash3,
           type: 7
@@ -56056,11 +55896,11 @@ var require_resolve_uri_umd = __commonJS({
         url4.type = input ? input.startsWith("?") ? 3 : input.startsWith("#") ? 2 : 4 : 1;
         return url4;
       }
-      function stripPathFilename(path27) {
-        if (path27.endsWith("/.."))
-          return path27;
-        const index = path27.lastIndexOf("/");
-        return path27.slice(0, index + 1);
+      function stripPathFilename(path29) {
+        if (path29.endsWith("/.."))
+          return path29;
+        const index = path29.lastIndexOf("/");
+        return path29.slice(0, index + 1);
       }
       function mergePaths(url4, base) {
         normalizePath3(base, base.type);
@@ -56098,14 +55938,14 @@ var require_resolve_uri_umd = __commonJS({
           pieces[pointer++] = piece;
           positive++;
         }
-        let path27 = "";
+        let path29 = "";
         for (let i = 1; i < pointer; i++) {
-          path27 += "/" + pieces[i];
+          path29 += "/" + pieces[i];
         }
-        if (!path27 || addTrailingSlash && !path27.endsWith("/..")) {
-          path27 += "/";
+        if (!path29 || addTrailingSlash && !path29.endsWith("/..")) {
+          path29 += "/";
         }
-        url4.path = path27;
+        url4.path = path29;
       }
       function resolve3(input, base) {
         if (!input && !base)
@@ -56146,13 +55986,13 @@ var require_resolve_uri_umd = __commonJS({
           case 3:
             return queryHash;
           case 4: {
-            const path27 = url4.path.slice(1);
-            if (!path27)
+            const path29 = url4.path.slice(1);
+            if (!path29)
               return queryHash || ".";
-            if (isRelative(base || input) && !isRelative(path27)) {
-              return "./" + path27 + queryHash;
+            if (isRelative(base || input) && !isRelative(path29)) {
+              return "./" + path29 + queryHash;
             }
-            return path27 + queryHash;
+            return path29 + queryHash;
           }
           case 5:
             return url4.path + queryHash;
@@ -56252,10 +56092,10 @@ var require_trace_mapping_umd = __commonJS({
       module3.exports = __toCommonJS2(trace_mapping_exports);
       var import_sourcemap_codec = __toESM2(require_sourcemap_codec());
       var import_resolve_uri = __toESM2(require_resolve_uri());
-      function stripFilename(path27) {
-        if (!path27) return "";
-        const index = path27.lastIndexOf("/");
-        return path27.slice(0, index + 1);
+      function stripFilename(path29) {
+        if (!path29) return "";
+        const index = path29.lastIndexOf("/");
+        return path29.slice(0, index + 1);
       }
       function resolver(mapUrl, sourceRoot) {
         const from = stripFilename(mapUrl);
@@ -57464,9 +57304,9 @@ var require_util2 = __commonJS({
       /** @class */
       (function(_super) {
         __extends(VError2, _super);
-        function VError2(path27, message) {
+        function VError2(path29, message) {
           var _this = _super.call(this, message) || this;
-          _this.path = path27;
+          _this.path = path29;
           Object.setPrototypeOf(_this, VError2.prototype);
           return _this;
         }
@@ -57526,26 +57366,26 @@ var require_util2 = __commonJS({
             (_b27 = this._messages).push.apply(_b27, best._messages);
           }
         };
-        DetailContext2.prototype.getError = function(path27) {
+        DetailContext2.prototype.getError = function(path29) {
           var msgParts = [];
           for (var i = this._propNames.length - 1; i >= 0; i--) {
             var p = this._propNames[i];
-            path27 += typeof p === "number" ? "[" + p + "]" : p ? "." + p : "";
+            path29 += typeof p === "number" ? "[" + p + "]" : p ? "." + p : "";
             var m = this._messages[i];
             if (m) {
-              msgParts.push(path27 + " " + m);
+              msgParts.push(path29 + " " + m);
             }
           }
-          return new VError(path27, msgParts.join("; "));
+          return new VError(path29, msgParts.join("; "));
         };
-        DetailContext2.prototype.getErrorDetail = function(path27) {
+        DetailContext2.prototype.getErrorDetail = function(path29) {
           var details = [];
           for (var i = this._propNames.length - 1; i >= 0; i--) {
             var p = this._propNames[i];
-            path27 += typeof p === "number" ? "[" + p + "]" : p ? "." + p : "";
+            path29 += typeof p === "number" ? "[" + p + "]" : p ? "." + p : "";
             var message = this._messages[i];
             if (message) {
-              details.push({ path: path27, message });
+              details.push({ path: path29, message });
             }
           }
           var detail = null;
@@ -58358,8 +58198,8 @@ var require_dist = __commonJS({
           this.checkerPlain = this.ttype.getChecker(suite, false);
           this.checkerStrict = this.ttype.getChecker(suite, true);
         }
-        Checker2.prototype.setReportedPath = function(path27) {
-          this._path = path27;
+        Checker2.prototype.setReportedPath = function(path29) {
+          this._path = path29;
         };
         Checker2.prototype.check = function(value) {
           return this._doCheck(this.checkerPlain, value);
@@ -63792,9 +63632,9 @@ var require_CJSImportTransformer = __commonJS({
         if (shouldElideImport) {
           this.tokens.removeToken();
         } else {
-          const path27 = this.tokens.stringValue();
-          this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path27));
-          this.tokens.appendCode(this.importProcessor.claimImportCode(path27));
+          const path29 = this.tokens.stringValue();
+          this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path29));
+          this.tokens.appendCode(this.importProcessor.claimImportCode(path29));
         }
         _removeMaybeImportAttributes.removeMaybeImportAttributes.call(void 0, this.tokens);
         if (this.tokens.matches1(_types.TokenType.semi)) {
@@ -64374,8 +64214,8 @@ var require_CJSImportTransformer = __commonJS({
         }
         if (this.tokens.matchesContextual(_keywords.ContextualKeyword._from)) {
           this.tokens.removeToken();
-          const path27 = this.tokens.stringValue();
-          this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path27));
+          const path29 = this.tokens.stringValue();
+          this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path29));
           _removeMaybeImportAttributes.removeMaybeImportAttributes.call(void 0, this.tokens);
         } else {
           this.tokens.appendCode(exportStatements.join(" "));
@@ -64389,8 +64229,8 @@ var require_CJSImportTransformer = __commonJS({
         while (!this.tokens.matches1(_types.TokenType.string)) {
           this.tokens.removeToken();
         }
-        const path27 = this.tokens.stringValue();
-        this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path27));
+        const path29 = this.tokens.stringValue();
+        this.tokens.replaceTokenTrimmingLeftWhitespace(this.importProcessor.claimImportCode(path29));
         _removeMaybeImportAttributes.removeMaybeImportAttributes.call(void 0, this.tokens);
         if (this.tokens.matches1(_types.TokenType.semi)) {
           this.tokens.removeToken();
@@ -66219,7 +66059,7 @@ var require_formatTokens = __commonJS({
         return [
           formatRange(token.start, token.end),
           _types.formatTokenType.call(void 0, token.type),
-          truncate(String(raw), 14),
+          truncate2(String(raw), 14),
           // @ts-ignore: Intentional dynamic access by key.
           ...tokenKeys.map((key) => formatValue(token[key], key)),
           // @ts-ignore: Intentional dynamic access by key.
@@ -66248,7 +66088,7 @@ var require_formatTokens = __commonJS({
       }
     }
     exports2.default = formatTokens;
-    function truncate(s, length) {
+    function truncate2(s, length) {
       if (s.length > length) {
         return `${s.slice(0, length - 3)}...`;
       } else {
@@ -66640,10 +66480,10 @@ function buildRecoveredFlow(flowId, target, latestTask) {
 async function createSqliteBackup(knex4) {
   const filename = knex4.client.config.connection?.filename;
   if (!filename || filename === ":memory:") return "";
-  const backupDir = import_node_path3.default.join(import_node_path3.default.dirname(filename), "backups");
+  const backupDir = import_node_path4.default.join(import_node_path4.default.dirname(filename), "backups");
   await import_promises.default.mkdir(backupDir, { recursive: true });
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = import_node_path3.default.join(backupDir, `db2-before-image-flow-v2-${timestamp}.sqlite`);
+  const backupPath = import_node_path4.default.join(backupDir, `db2-before-image-flow-v2-${timestamp}.sqlite`);
   const connection = await knex4.client.acquireConnection();
   try {
     await connection.backup(backupPath);
@@ -66768,12 +66608,12 @@ async function failInterruptedImageFlowTasks(knex4) {
   });
   return tasks.length;
 }
-var import_promises, import_node_path3, MIGRATION_KEY, ACTIVE_STATUSES, TERMINAL_STATUSES, ORPHAN_REASON, MISSING_TASK_REASON;
+var import_promises, import_node_path4, MIGRATION_KEY, ACTIVE_STATUSES, TERMINAL_STATUSES, ORPHAN_REASON, MISSING_TASK_REASON;
 var init_imageFlowContractV2 = __esm({
   "src/lib/migrations/imageFlowContractV2.ts"() {
     "use strict";
     import_promises = __toESM(require("node:fs/promises"));
-    import_node_path3 = __toESM(require("node:path"));
+    import_node_path4 = __toESM(require("node:path"));
     init_taskStatus();
     MIGRATION_KEY = "migration:image-flow-contract-v2";
     ACTIVE_STATUSES = /* @__PURE__ */ new Set(["queued", "submitting", "processing"]);
@@ -66785,8 +66625,8 @@ var init_imageFlowContractV2 = __esm({
 
 // src/lib/migrations/videoQueueV2.ts
 function truncateDiagnostic(value) {
-  const text2 = String(value || "");
-  return text2.length > RAW_OUTPUT_LIMIT ? text2.slice(-RAW_OUTPUT_LIMIT) : text2;
+  const text3 = String(value || "");
+  return text3.length > RAW_OUTPUT_LIMIT ? text3.slice(-RAW_OUTPUT_LIMIT) : text3;
 }
 function statusOf2(task) {
   if (task.status) return task.status;
@@ -66833,10 +66673,10 @@ function parseRequest(value) {
 async function createSqliteBackup2(knex4) {
   const filename = knex4.client.config.connection?.filename;
   if (!filename || filename === ":memory:") return "";
-  const backupDir = import_node_path4.default.join(import_node_path4.default.dirname(filename), "backups");
+  const backupDir = import_node_path5.default.join(import_node_path5.default.dirname(filename), "backups");
   await import_promises2.default.mkdir(backupDir, { recursive: true });
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = import_node_path4.default.join(backupDir, `db2-before-video-queue-v2-${timestamp}.sqlite`);
+  const backupPath = import_node_path5.default.join(backupDir, `db2-before-video-queue-v2-${timestamp}.sqlite`);
   const connection = await knex4.client.acquireConnection();
   try {
     await connection.backup(backupPath);
@@ -66855,7 +66695,7 @@ async function migrateQueuedReferences(task, request) {
     const reference = oldReferences[index];
     if (!reference?.base64 || typeof reference.base64 !== "string") continue;
     const type = ["image", "video", "audio"].includes(reference.type) ? reference.type : "image";
-    const filePath = import_node_path4.default.join(taskDir, `${index}${extensionFromDataUrl(reference.base64, type)}`);
+    const filePath = import_node_path5.default.join(taskDir, `${index}${extensionFromDataUrl(reference.base64, type)}`);
     const buffer = Buffer.from(reference.base64.replace(/^data:[^;]+;base64,/, ""), "base64");
     await import_promises2.default.writeFile(filePath, buffer);
     legacyReferences.push({ type, filePath });
@@ -66989,7 +66829,7 @@ async function recoverInterruptedQueuedTasksFromBackup(knex4) {
   const recoveryCopy = getPath_default(["temp", `video-queue-recovery-${Date.now()}.sqlite`]);
   let sourceDb = null;
   try {
-    await import_promises2.default.mkdir(import_node_path4.default.dirname(recoveryCopy), { recursive: true });
+    await import_promises2.default.mkdir(import_node_path5.default.dirname(recoveryCopy), { recursive: true });
     await import_promises2.default.copyFile(backupPath, recoveryCopy);
     sourceDb = (0, import_knex.default)({
       client: "better-sqlite3",
@@ -67110,12 +66950,12 @@ async function recoverVideoQueueAfterRestart(knex4) {
   }
   console.info(`[video-queue-recovery] ${JSON.stringify({ event: "restart.completed", ...summary })}`);
 }
-var import_promises2, import_node_path4, import_knex, MIGRATION_KEY2, RECOVERY_KEY, RAW_OUTPUT_LIMIT, ACTIVE_STATUSES2;
+var import_promises2, import_node_path5, import_knex, MIGRATION_KEY2, RECOVERY_KEY, RAW_OUTPUT_LIMIT, ACTIVE_STATUSES2;
 var init_videoQueueV2 = __esm({
   "src/lib/migrations/videoQueueV2.ts"() {
     "use strict";
     import_promises2 = __toESM(require("node:fs/promises"));
-    import_node_path4 = __toESM(require("node:path"));
+    import_node_path5 = __toESM(require("node:path"));
     import_knex = __toESM(require_knex());
     init_getPath();
     MIGRATION_KEY2 = "migration:video-queue-v2";
@@ -67494,10 +67334,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path27) {
-  if (!path27)
+function getElementAtPath(obj, path29) {
+  if (!path29)
     return obj;
-  return path27.reduce((acc, key) => acc?.[key], obj);
+  return path29.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -67809,11 +67649,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path27, issues) {
+function prefixIssues(path29, issues) {
   return issues.map((iss) => {
     var _a31;
     (_a31 = iss).path ?? (_a31.path = []);
-    iss.path.unshift(path27);
+    iss.path.unshift(path29);
     return iss;
   });
 }
@@ -68056,7 +67896,7 @@ function formatError(error50, mapper = (issue3) => issue3.message) {
 }
 function treeifyError(error50, mapper = (issue3) => issue3.message) {
   const result = { errors: [] };
-  const processError = (error51, path27 = []) => {
+  const processError = (error51, path29 = []) => {
     var _a31, _b27;
     for (const issue3 of error51.issues) {
       if (issue3.code === "invalid_union" && issue3.errors.length) {
@@ -68066,7 +67906,7 @@ function treeifyError(error50, mapper = (issue3) => issue3.message) {
       } else if (issue3.code === "invalid_element") {
         processError({ issues: issue3.issues }, issue3.path);
       } else {
-        const fullpath = [...path27, ...issue3.path];
+        const fullpath = [...path29, ...issue3.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue3));
           continue;
@@ -68098,8 +67938,8 @@ function treeifyError(error50, mapper = (issue3) => issue3.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path27 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path27) {
+  const path29 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path29) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -74172,8 +74012,8 @@ var init_lt = __esm({
   "node_modules/zod/v4/locales/lt.js"() {
     "use strict";
     init_util();
-    capitalizeFirstCharacter = (text2) => {
-      return text2.charAt(0).toUpperCase() + text2.slice(1);
+    capitalizeFirstCharacter = (text3) => {
+      return text3.charAt(0).toUpperCase() + text3.slice(1);
     };
     error26 = () => {
       const Sizable = {
@@ -80863,13 +80703,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path27 = ref.slice(1).split("/").filter(Boolean);
-  if (path27.length === 0) {
+  const path29 = ref.slice(1).split("/").filter(Boolean);
+  if (path29.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path27[0] === defsKey) {
-    const key = path27[1];
+  if (path29[0] === defsKey) {
+    const key = path29[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -81795,10 +81635,10 @@ function imageCandidates(node) {
 async function createBackup(knex4) {
   const filename = knex4.client.config.connection?.filename;
   if (!filename || filename === ":memory:") return "";
-  const backupDir = import_node_path5.default.join(import_node_path5.default.dirname(filename), "backups");
+  const backupDir = import_node_path6.default.join(import_node_path6.default.dirname(filename), "backups");
   await import_promises3.default.mkdir(backupDir, { recursive: true });
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = import_node_path5.default.join(backupDir, `db2-before-storyboard-editor-v1-${timestamp}.sqlite`);
+  const backupPath = import_node_path6.default.join(backupDir, `db2-before-storyboard-editor-v1-${timestamp}.sqlite`);
   const connection = await knex4.client.acquireConnection();
   try {
     await connection.backup(backupPath);
@@ -81919,7 +81759,7 @@ async function migrateStoryboardEditorContractV1(knex4, options = {}) {
       if (!data.source) {
         data.source = "local";
         data.sourceId = `migration:${flowId}:${nodeId}:${index}`;
-        data.label ||= import_node_path5.default.posix.basename(filePath);
+        data.label ||= import_node_path6.default.posix.basename(filePath);
         data.group ||= "\u672C\u5730\u4E0A\u4F20";
         data.type ||= "image";
       }
@@ -81979,12 +81819,12 @@ async function migrateStoryboardEditorContractV1(knex4, options = {}) {
     backupPath
   };
 }
-var import_promises3, import_node_path5, MIGRATION_KEY5;
+var import_promises3, import_node_path6, MIGRATION_KEY5;
 var init_storyboardEditorContractV1 = __esm({
   "src/lib/migrations/storyboardEditorContractV1.ts"() {
     "use strict";
     import_promises3 = __toESM(require("node:fs/promises"));
-    import_node_path5 = __toESM(require("node:path"));
+    import_node_path6 = __toESM(require("node:path"));
     MIGRATION_KEY5 = "migration:storyboard-editor-contract-v1";
   }
 });
@@ -82002,7 +81842,7 @@ function inferTaskType(taskClass) {
 async function createBackup2(knex4) {
   const backupDir = getPath_default("backups");
   await import_promises4.default.mkdir(backupDir, { recursive: true });
-  const backupPath = import_node_path6.default.join(backupDir, `db2-before-unified-task-v1-${Date.now()}.sqlite`);
+  const backupPath = import_node_path7.default.join(backupDir, `db2-before-unified-task-v1-${Date.now()}.sqlite`);
   await knex4.raw(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
   return backupPath;
 }
@@ -82120,12 +81960,12 @@ async function recoverInterruptedEphemeralTasks(knex4) {
   console.warn(`[unified-task] recovered ${rows.length} interrupted non-recoverable tasks`);
   return rows.length;
 }
-var import_promises4, import_node_path6, import_node_crypto3, MIGRATION_KEY6, TERMINAL;
+var import_promises4, import_node_path7, import_node_crypto3, MIGRATION_KEY6, TERMINAL;
 var init_unifiedTaskV1 = __esm({
   "src/lib/migrations/unifiedTaskV1.ts"() {
     "use strict";
     import_promises4 = __toESM(require("node:fs/promises"));
-    import_node_path6 = __toESM(require("node:path"));
+    import_node_path7 = __toESM(require("node:path"));
     import_node_crypto3 = require("node:crypto");
     init_getPath();
     init_taskStatus();
@@ -82177,10 +82017,10 @@ function cleanNode(node) {
 async function backup(knex4) {
   const filename = knex4.client.config.connection?.filename;
   if (!filename || filename === ":memory:") return "";
-  const backupDir = import_node_path7.default.join(import_node_path7.default.dirname(filename), "backups");
+  const backupDir = import_node_path8.default.join(import_node_path8.default.dirname(filename), "backups");
   await import_promises5.default.mkdir(backupDir, { recursive: true });
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = import_node_path7.default.join(backupDir, `db2-before-media-path-v1-${timestamp}.sqlite`);
+  const backupPath = import_node_path8.default.join(backupDir, `db2-before-media-path-v1-${timestamp}.sqlite`);
   const connection = await knex4.client.acquireConnection();
   try {
     await connection.backup(backupPath);
@@ -82231,12 +82071,12 @@ async function migrateMediaPathContractV1(knex4, options = {}) {
   await knex4("o_setting").insert({ key: MIGRATION_KEY7, value: JSON.stringify({ changed, backupPath, time: Date.now() }) });
   return { skipped: false, changed, backupPath };
 }
-var import_promises5, import_node_path7, MIGRATION_KEY7;
+var import_promises5, import_node_path8, MIGRATION_KEY7;
 var init_mediaPathContractV1 = __esm({
   "src/lib/migrations/mediaPathContractV1.ts"() {
     "use strict";
     import_promises5 = __toESM(require("node:fs/promises"));
-    import_node_path7 = __toESM(require("node:path"));
+    import_node_path8 = __toESM(require("node:path"));
     MIGRATION_KEY7 = "migration:media-path-contract-v1";
   }
 });
@@ -82428,7 +82268,19 @@ var init_fixDB = __esm({
           value: notValModelData.length ? "0" : "1"
         });
       }
+      if (!await knex4("o_agentDeploy").where("key", "storyAgent").first()) {
+        await knex4("o_agentDeploy").insert({
+          model: "",
+          modelName: "",
+          vendorId: null,
+          key: "storyAgent",
+          name: "Story Agent",
+          desc: "Story ideation, outline, script writing, and annotation-based revision",
+          disabled: false
+        });
+      }
       const advancedAgentList = [
+        { key: "storyAgent:decisionAgent", name: "Story Agent: Decision", desc: "Story creation and annotation revision" },
         { key: "scriptAgent:decisionAgent", name: "\u5267\u672CAgent:\u51B3\u7B56\u5C42", desc: "\u51B3\u7B56\u5C42" },
         { key: "scriptAgent:supervisionAgent", name: "\u5267\u672CAgent:\u76D1\u7763\u5C42", desc: "\u76D1\u7763\u5C42" },
         { key: "scriptAgent:storySkeletonAgent", name: "\u5267\u672CAgent:\u6545\u4E8B\u9AA8\u67B6", desc: "\u6545\u4E8B\u9AA8\u67B6\u751F\u6210" },
@@ -82551,612 +82403,14 @@ description: \u4E13\u6CE8\u4E8E\u4ECE\u5267\u672C\u5185\u5BB9\u4E2D\u63D0\u53D6\
 - \u573A\u666F\u4E2D\u7684\u56FA\u5B9A\u9648\u8BBE\u4E0D\u9700\u8981\u5355\u72EC\u63D0\u53D6\u4E3A\u9053\u5177\uFF0C\u9664\u975E\u8BE5\u7269\u4EF6\u6709\u72EC\u7ACB\u5267\u60C5\u4F5C\u7528`
       });
       await knex4("o_prompt").where("type", "videoPromptGeneration").update({
-        data: `# \u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210 Skill
-
-\u4F60\u662F**\u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210 Agent**\uFF0C\u4E13\u95E8\u8D1F\u8D23\u6839\u636E\u6307\u5B9A\u7684 AI \u89C6\u9891\u6A21\u578B\uFF0C\u8BFB\u53D6\u5206\u955C\u4FE1\u606F\u5E76\u8F93\u51FA\u8BE5\u6A21\u578B\u5BF9\u5E94\u683C\u5F0F\u7684\u89C6\u9891\u63D0\u793A\u8BCD\u3002
-
----
-
-## \u8F93\u5165\u683C\u5F0F
-
-### 1. \u6A21\u578B\u4E0E\u6A21\u5F0F\uFF08\u5FC5\u9009\uFF09
-
-
-#### \u6A21\u5F0F\u8DEF\u7531\u89C4\u5219
-
-| \u6761\u4EF6 | \u5339\u914D\u6A21\u5F0F | \u8BF4\u660E |
-|------|----------|------|
-| \u6A21\u578B\u540D\u4E3A \`seedance-2-0\` + \`\u591A\u53C2:\u662F\` / \`seedance 2.0\` + \`\u591A\u53C2:\u662F\` / \`\u5373\u68A62.0\` + \`\u591A\u53C2:\u662F\` | **seedance-2-0*\uFF0C\u4E0D\u5305\u542B\u5176\u4ED6\u7248\u672C\u6BD4\u5982seedance-1-5/seedance-1-0 | \u652F\u6301\u89D2\u8272/\u573A\u666F/\u5206\u955C\u56FE\u591A\u53C2\u5F15\u7528 |
-| \u6A21\u578B\u540D\u4E3A \`Wan2.6\` / \`wan 2.6\` / \`\u4E07\u8C612.6\` | **Wan 2.6** | \u56FA\u5B9A\u6A21\u5F0F\uFF0C\u5355\u56FE\uFF08\u9996\u5E27\uFF09+ \u53D9\u4E8B\u6587\u672C\uFF0C\u65E0\u5C3E\u5E27 |
-| \u5176\u4ED6\u4EFB\u4F55\u6A21\u578B + \`\u591A\u53C2:\u662F\` | **\u901A\u7528\u591A\u53C2\u6A21\u5F0F** | \u652F\u6301\u89D2\u8272/\u573A\u666F/\u5206\u955C\u56FE\u591A\u53C2\u5F15\u7528 |
-| \u5176\u4ED6\u4EFB\u4F55\u6A21\u578B/seedance-1-5/seedance-1-0 + \`\u591A\u53C2:\u5426\` | **\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F** | \u9996\u5E27/\u9996\u5C3E\u5E27 + \u7EAF\u6587\u672C\u63CF\u8FF0 |
-
-> \u6A21\u578B\u540D\u4EC5\u7528\u4E8E\u8BB0\u5F55\uFF0C\u5B9E\u9645\u63D0\u793A\u8BCD\u683C\u5F0F\u7531\u5339\u914D\u5230\u7684\u6A21\u5F0F\u51B3\u5B9A\u3002Seedance 2.0 \u548C Wan 2.6 \u662F\u6307\u5B9A\u6A21\u578B\u540D\u5373\u786E\u5B9A\u6A21\u5F0F\u7684\u7279\u4F8B\u3002
-
-### 2. \u8D44\u4EA7\u4FE1\u606F
-
-\`\`\`
-\u8D44\u4EA7\u4FE1\u606F[id, type, name], [id, type, name], ...
-\`\`\`
-
-- \`id\`\uFF1A\u8D44\u4EA7\u552F\u4E00\u6807\u8BC6\uFF08\u5982 \`A001\`\uFF09
-- \`type\`\uFF1A\u8D44\u4EA7\u7C7B\u578B\uFF0C\u53D6\u503C \`role\`\uFF08\u89D2\u8272\uFF09/ \`scene\`\uFF08\u573A\u666F\uFF09/ \`prop\`\uFF08\u9053\u5177\uFF09
-- \`name\`\uFF1A\u8D44\u4EA7\u540D\u79F0\uFF08\u5982 \`\u6C88\u8F9E\`\u3001\`\u57CE\u697C\`\u3001\`\u957F\u5251\`\uFF09
-
-### 3. \u5206\u955C\u4FE1\u606F
-
-\u5206\u955C\u4EE5 \`<storyboardItem>\` XML \u6807\u7B7E\u5217\u8868\u7684\u5F62\u5F0F\u4F20\u5165\uFF0C\u6BCF\u6761\u5206\u955C\u7ED3\u6784\u5982\u4E0B\uFF1A
-
-\`\`\`xml
-<storyboardItem
-  videoDesc='\uFF08\u753B\u9762\u63CF\u8FF0\u3001\u573A\u666F\u3001\u5173\u8054\u8D44\u4EA7\u540D\u79F0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u3001\u5173\u8054\u8D44\u4EA7ID\uFF09'
-  prompt='\u5F85\u751F\u6210'
-  track='\u5206\u7EC4'
-  duration='\u89C6\u9891\u63A8\u8350\u65F6\u95F4'
-  associateAssetsIds="[\u8BE5\u5206\u955C\u6240\u9700\u7684\u8D44\u4EA7ID\u5217\u8868]"
-  shouldGenerateImage="true"
-></storyboardItem>
-\`\`\`
-
-#### \u8F93\u5165\u5B57\u6BB5\u8BF4\u660E
-
-| \u5C5E\u6027 | \u8BF4\u660E | \u6765\u6E90 |
-|------|------|------|
-| \`videoDesc\` | **\u6838\u5FC3\u8F93\u5165**\uFF1A\u5206\u955C\u7684\u7ED3\u6784\u5316\u753B\u9762\u63CF\u8FF0\uFF0C\u5305\u542B\u753B\u9762\u63CF\u8FF0\u3001\u573A\u666F\u3001\u5173\u8054\u8D44\u4EA7\u540D\u79F0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u3001\u5173\u8054\u8D44\u4EA7ID | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`prompt\` | **\u5DF2\u6709\u5B57\u6BB5**\uFF1A\u4E0A\u6E38\u751F\u6210\u7684\u5206\u955C\u56FE\u63D0\u793A\u8BCD\uFF0C\u4F5C\u4E3A\u8F85\u52A9\u53C2\u8003\u4E0A\u4E0B\u6587\uFF0C**\u4E0D\u4FEE\u6539** | \u4E0A\u6E38\u7CFB\u7EDF\u5DF2\u586B\u5199 |
-| \`track\` | \u5206\u955C\u5206\u7EC4\u6807\u8BC6 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`duration\` | \u89C6\u9891\u63A8\u8350\u65F6\u957F\uFF08\u79D2\uFF09 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`associateAssetsIds\` | \u8BE5\u5206\u955C\u5173\u8054\u7684\u8D44\u4EA7ID\u5217\u8868 | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-| \`shouldGenerateImage\` | \u662F\u5426\u9700\u8981\u751F\u6210\u5206\u955C\u56FE\u7247\uFF0C\u9ED8\u8BA4 \`true\` | \u7528\u6237/\u4E0A\u6E38\u7CFB\u7EDF\u586B\u5199 |
-
----
-
-## \u4EFB\u52A1\u76EE\u6807
-
-\u8BFB\u53D6\u6240\u6709 \`<storyboardItem>\` \u7684\u5C5E\u6027\uFF0C\u7ED3\u5408\u8D44\u4EA7\u4FE1\u606F\uFF0C\u6839\u636E\u6307\u5B9A\u6A21\u578B\u7684\u63D0\u793A\u8BCD\u683C\u5F0F\uFF0C\u5C06\u5168\u90E8\u5206\u955C\u6574\u5408\u4E3A\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD\u3002
-
----
-
-## \u8F93\u51FA\u683C\u5F0F
-
-\u5C06\u6240\u6709\u5206\u955C\u6574\u5408\u4E3A**\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD**\u8F93\u51FA\uFF08\u975E\u9010\u6761\u72EC\u7ACB\uFF09\uFF1A
-
-| \u6A21\u5F0F | \u6574\u5408\u65B9\u5F0F |
-|------|----------|
-| **\u901A\u7528\u591A\u53C2\u6A21\u5F0F** | \`[References]\` \u6C47\u603B\u6240\u6709 \`@\u56FEN \` \u5F15\u7528\uFF1B\`[Instruction]\` \u6309\u65F6\u95F4\u987A\u5E8F\u63CF\u8FF0\u5B8C\u6574\u53D9\u4E8B |
-| **\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F** | \u7EAF\u6587\u672C\u4E94\u7EF4\u5EA6\uFF08Visual / Motion / Camera / Audio / Narrative\uFF09\uFF0C\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528\uFF0C\u6309\u65F6\u95F4\u8F74\u8FDE\u7EED\u7F16\u6392\uFF08\`[Motion]\` 0s \u2192 \u603B\u65F6\u957F\uFF0C\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF09\uFF0C\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934\uFF0C\u4E0D\u5207\u955C |
-| **Seedance 2.0** | \`\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B N \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891\`\uFF0C\u6BCF\u6761\u5BF9\u5E94 \`\u5206\u955CN{N}s\` \u6BB5\u843D |
-| **Wan 2.6** | \u5355\u56FE\u9996\u5E27\u6A21\u5F0F\uFF0C\u6BCF\u6B21\u4EC5\u8F93\u5165\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u53D9\u4E8B\u5F0F\u82F1\u6587\u63D0\u793A\u8BCD\uFF08\u4E09\u6BB5\u5F0F\uFF1A\u98CE\u683C\u57FA\u8C03 \u2192 \u4E3B\u4F53\u52A8\u4F5C+\u573A\u666F\u73AF\u5883+\u5149\u7EBF\u6C1B\u56F4 \u2192 \u955C\u5934\u6536\u5C3E\uFF09\uFF0C\u4E0D\u4F7F\u7528 \`@\u56FEN \` \u5F15\u7528 |
-
-- \u4EC5\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD\u6587\u672C\uFF0C\u4E0D\u8F93\u51FA XML \u6807\u7B7E\uFF0C\u4E0D\u9644\u52A0\u89E3\u91CA
-
----
-
-## videoDesc \u89E3\u6790\u89C4\u5219
-
-\u4ECE \`videoDesc\` \u62EC\u53F7\u5185\u6309\u987F\u53F7\u5206\u9694\u63D0\u53D6\u4EE5\u4E0B\u7ED3\u6784\u5316\u5B57\u6BB5\uFF1A
-
-\`\`\`
-\uFF08{\u753B\u9762\u63CF\u8FF0}\u3001{\u573A\u666F}\u3001{\u5173\u8054\u8D44\u4EA7\u540D\u79F0}\u3001{\u65F6\u957F}\u3001{\u666F\u522B}\u3001{\u8FD0\u955C}\u3001{\u89D2\u8272\u52A8\u4F5C}\u3001{\u60C5\u7EEA}\u3001{\u5149\u5F71\u6C1B\u56F4}\u3001{\u53F0\u8BCD}\u3001{\u97F3\u6548}\u3001{\u5173\u8054\u8D44\u4EA7ID}\uFF09
-\`\`\`
-
-| \u5E8F\u53F7 | \u5B57\u6BB5 | \u7528\u9014 | \u793A\u4F8B |
-|------|------|------|------|
-| 1 | \u753B\u9762\u63CF\u8FF0 | prompt \u7684\u53D9\u4E8B\u4E3B\u5E72 | \u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730 |
-| 2 | \u573A\u666F | \u5339\u914D\u573A\u666F\u8D44\u4EA7 | \u57CE\u697C |
-| 3 | \u5173\u8054\u8D44\u4EA7\u540D\u79F0 | \u5339\u914D\u89D2\u8272/\u9053\u5177\u8D44\u4EA7 | \u6C88\u8F9E/\u57CE\u697C |
-| 4 | \u65F6\u957F | \u63A7\u5236\u65F6\u957F\u53C2\u6570 | 4s |
-| 5 | \u666F\u522B | \u63A7\u5236\u955C\u5934\u666F\u522B | \u5168\u666F |
-| 6 | \u8FD0\u955C | \u63A7\u5236\u8FD0\u955C\u65B9\u5F0F | \u9759\u6B62 |
-| 7 | \u89D2\u8272\u52A8\u4F5C | prompt \u52A8\u4F5C\u63CF\u5199 | \u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C |
-| 8 | \u60C5\u7EEA | prompt \u60C5\u7EEA\u6C1B\u56F4 | \u575A\u5B9A\u51B3\u7EDD |
-| 9 | \u5149\u5F71\u6C1B\u56F4 | prompt \u5149\u5F71\u63CF\u5199 | \u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149 |
-| 10 | \u53F0\u8BCD | prompt \u53F0\u8BCD/\u97F3\u9891\u6BB5 | \u65E0\u53F0\u8BCD / \u5177\u4F53\u53F0\u8BCD\u5185\u5BB9 |
-| 11 | \u97F3\u6548 | prompt \u97F3\u6548\u63CF\u5199 | \u98CE\u58F0\u8863\u8882\u58F0 |
-| 12 | \u5173\u8054\u8D44\u4EA7ID | \u7528\u4E8E\u8D44\u4EA7ID\u2194\u89D2\u8272\u6807\u7B7E\u6620\u5C04 | A001/A002 |
-
----
-
-## \u8D44\u4EA7\u5F15\u7528\u7F16\u53F7\u89C4\u5219
-
-\u6240\u6709\u6A21\u578B\u7EDF\u4E00\u4F7F\u7528 \`@\u56FEN \` \u683C\u5F0F\u5F15\u7528\u8D44\u4EA7\u548C\u5206\u955C\u56FE\uFF0C\u7F16\u53F7\u6309\u8F93\u5165\u987A\u5E8F\u8FDE\u7EED\u9012\u589E\uFF1A
-
-1. **\u8D44\u4EA7**\uFF1A\u6309\u8D44\u4EA7\u4FE1\u606F\u4E2D \`[id, type, name]\` \u7684\u51FA\u73B0\u987A\u5E8F\uFF0C\u4ECE \`@\u56FE1 \` \u5F00\u59CB\u7F16\u53F7\uFF08\u4E0D\u533A\u5206 role / scene / prop\uFF09\u3002**\u8D44\u4EA7\u7C7B\u578B\u7684\u51FA\u73B0\u987A\u5E8F\u4E0D\u56FA\u5B9A**\u2014\u2014\u53EF\u80FD\u5148 scene \u540E character\uFF0C\u4E5F\u53EF\u80FD prop \u5728\u524D\u3001character \u5728\u540E\uFF0C\u6216\u4EFB\u610F\u4EA4\u66FF\u51FA\u73B0\uFF0C\u7F16\u53F7\u4E25\u683C\u6309\u8F93\u5165\u4F4D\u7F6E\u5206\u914D\uFF0C\u4E0D\u6309\u7C7B\u578B\u5F52\u7EC4
-2. **\u5206\u955C\u56FE**\uFF1A\u6BCF\u6761 \`<storyboardItem>\` \u5BF9\u5E94\u4E00\u5F20\u5206\u955C\u56FE\uFF0C\u7F16\u53F7\u63A5\u7EED\u8D44\u4EA7\u4E4B\u540E
-3. **\u8DF3\u8FC7\u65E0\u5206\u955C\u56FE\u7684\u6761\u76EE**\uFF1A\u5F53 \`shouldGenerateImage="false"\` \u65F6\uFF0C\u8BE5\u5206\u955C\u672A\u751F\u6210\u56FE\u7247\uFF0C**\u4E0D\u5206\u914D**\u5206\u955C\u56FE\u7F16\u53F7\uFF0C\u540E\u7EED\u7F16\u53F7\u987A\u5EF6
-
-#### \u793A\u4F8B
-
-\u8F93\u5165 3 \u4E2A\u8D44\u4EA7 + 2 \u6761\u5206\u955C\uFF1A
-\`\`\`
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem ...>  <!-- \u5206\u955C1 -->
-<storyboardItem ...>  <!-- \u5206\u955C2 -->
-\`\`\`
-
-\u7F16\u53F7\u7ED3\u679C\uFF1A
-
-| \u8F93\u5165\u9879 | \u5F15\u7528\u6807\u7B7E | \u8BF4\u660E |
-|--------|----------|------|
-| [A001, role, \u6C88\u8F9E] | \`@\u56FE1 \` | \u89D2\u8272\xB7\u6C88\u8F9E \u53C2\u8003\u56FE |
-| [A002, role, \u82CF\u9526] | \`@\u56FE2 \` | \u89D2\u8272\xB7\u82CF\u9526 \u53C2\u8003\u56FE |
-| [A003, scene, \u57CE\u697C] | \`@\u56FE3 \` | \u573A\u666F\xB7\u57CE\u697C \u53C2\u8003\u56FE |
-| storyboardItem \u7B2C1\u6761 | \`@\u56FE4 \` | \u5206\u955C\u56FE1 |
-| storyboardItem \u7B2C2\u6761 | \`@\u56FE5 \` | \u5206\u955C\u56FE2 |
-
-**\u6DF7\u5408\u987A\u5E8F\u793A\u4F8B**
-
-\u8F93\u5165 3 \u4E2A\u8D44\u4EA7\uFF08\u573A\u666F\u5728\u524D\uFF09+ 2 \u6761\u5206\u955C\uFF1A
-\`\`\`
-\u8D44\u4EA7\u4FE1\u606F[A003, scene, \u57CE\u697C], [A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526]
-\`\`\`
-\`\`\`xml
-<storyboardItem ...>  <!-- \u5206\u955C1 -->
-<storyboardItem ...>  <!-- \u5206\u955C2 -->
-\`\`\`
-
-\u7F16\u53F7\u7ED3\u679C\uFF1A
-
-| \u8F93\u5165\u9879 | \u5F15\u7528\u6807\u7B7E | \u8BF4\u660E |
-|--------|----------|------|
-| [A003, scene, \u57CE\u697C] | \`@\u56FE1 \` | \u573A\u666F\xB7\u57CE\u697C \u53C2\u8003\u56FE |
-| [A001, role, \u6C88\u8F9E] | \`@\u56FE2 \` | \u89D2\u8272\xB7\u6C88\u8F9E \u53C2\u8003\u56FE |
-| [A002, role, \u82CF\u9526] | \`@\u56FE3 \` | \u89D2\u8272\xB7\u82CF\u9526 \u53C2\u8003\u56FE |
-| storyboardItem \u7B2C1\u6761 | \`@\u56FE4 \` | \u5206\u955C\u56FE1 |
-| storyboardItem \u7B2C2\u6761 | \`@\u56FE5 \` | \u5206\u955C\u56FE2 |
-
-> **\u5173\u952E**\uFF1A\u6B64\u4F8B\u4E2D \`@\u56FE1 \` \u662F\u573A\u666F\u800C\u975E\u89D2\u8272\uFF0C\`@\u56FE2 \` \`@\u56FE3 \` \u624D\u662F\u89D2\u8272\u3002\u751F\u6210\u63D0\u793A\u8BCD\u65F6\uFF0C\u5FC5\u987B\u6839\u636E\u8D44\u4EA7\u7684\u5B9E\u9645 \`type\` \u5B57\u6BB5\u786E\u5B9A\u5F15\u7528\u65B9\u5F0F\uFF0C\u800C\u975E\u6839\u636E\u7F16\u53F7\u5927\u5C0F\u5047\u5B9A\u7C7B\u578B\u3002
-
----
-
-## \u6A21\u578B\u63D0\u793A\u8BCD\u751F\u6210\u89C4\u5219
-
-### \u4E00\u3001\u901A\u7528\u591A\u53C2\u6A21\u5F0F
-
-#### \u6838\u5FC3\u539F\u5219
-- MVL \u591A\u6A21\u6001\u878D\u5408\uFF1A\u81EA\u7136\u8BED\u8A00 + \u56FE\u50CF\u5F15\u7528\u5728\u540C\u4E00\u8BED\u4E49\u7A7A\u95F4
-- \u5206\u955C\u56FE\u5E8F\u5217\u8D1F\u8D23\u52A8\u4F5C/\u65F6\u95F4\u8F74/\u6784\u56FE\uFF0C\u573A\u666F\u53C2\u8003\u56FE\u8D1F\u8D23\u73AF\u5883\u4E00\u81F4\u6027
-- \u6240\u6709\u8D44\u4EA7\u548C\u5206\u955C\u56FE\u7EDF\u4E00\u7528 \`@\u56FEN \` \u5F15\u7528
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 Instruction \u4E2D\u4F53\u73B0\u53F0\u8BCD\u76F8\u5173\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO\uFF09\uFF0C\u5728 Instruction \u4E2D\u7528\u62EC\u53F7\u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-> **\u6CE8\u610F**\uFF1A\`[References]\` \u4E2D\u7684 \`@\u56FEN\` \u7F16\u53F7\u4E25\u683C\u6309\u8D44\u4EA7\u8F93\u5165\u987A\u5E8F\u5206\u914D\uFF0C\u89D2\u8272/\u573A\u666F/\u9053\u5177\u53EF\u80FD\u51FA\u73B0\u5728\u4EFB\u610F\u7F16\u53F7\u4F4D\u7F6E\u3002\u751F\u6210\u65F6\u9700\u6839\u636E\u6BCF\u4E2A\u8D44\u4EA7\u7684 \`type\` \u5B57\u6BB5\u786E\u5B9A\u5176\u5F15\u7528\u65B9\u5F0F\uFF0C\u4E0D\u53EF\u5047\u5B9A\u56FA\u5B9A\u7684\u7C7B\u578B-\u7F16\u53F7\u5BF9\u5E94\u5173\u7CFB\u3002
-
-\`\`\`
-[References]
-@\u56FE{\u8D44\u4EA71\u7F16\u53F7} : [{\u8D44\u4EA71\u540D\u79F0}\u53C2\u8003\u56FE]   \u2190 \u53EF\u80FD\u662F role/scene/prop \u4E2D\u7684\u4EFB\u610F\u7C7B\u578B
-@\u56FE{\u8D44\u4EA72\u7F16\u53F7} : [{\u8D44\u4EA72\u540D\u79F0}\u53C2\u8003\u56FE]
-@\u56FE{\u8D44\u4EA73\u7F16\u53F7} : [{\u8D44\u4EA73\u540D\u79F0}\u53C2\u8003\u56FE]
-...
-@\u56FE{\u5206\u955C\u56FE\u7F16\u53F7} : [\u5206\u955C\u56FE1]            \u2190 \u5206\u955C\u56FE\u7F16\u53F7\u63A5\u7EED\u8D44\u4EA7\u4E4B\u540E
-
-[Instruction]
-Based on the storyboard @\u56FE{\u5206\u955C\u56FE\u7F16\u53F7} :
-@\u56FE{\u89D2\u8272\u8D44\u4EA7\u7F16\u53F7} {\u52A8\u4F5C/\u72B6\u6001\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09},
-set in the {\u573A\u666F\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09} of @\u56FE{\u573A\u666F\u8D44\u4EA7\u7F16\u53F7} ,
-{\u955C\u5934/\u8FD0\u955C\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09},
-{\u60C5\u611F\u57FA\u8C03\uFF08\u82F1\u6587\uFF09},
-{\u53F0\u8BCD\u63CF\u8FF0\uFF08\u82F1\u6587\uFF0C\u542B dialogue/OS/VO \u6807\u6CE8\uFF09/ No dialogue},
-{\u97F3\u6548\u63CF\u8FF0\uFF08\u82F1\u6587\uFF09}.
-\`\`\`
-
-#### \u751F\u6210\u7EA6\u675F
-1. **Instruction \u5FC5\u987B\u7528\u82F1\u6587**
-2. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-3. **\u89D2\u8272\u52A8\u4F5C**\u4ECE videoDesc \u7684\u300C\u89D2\u8272\u52A8\u4F5C\u300D\u5B57\u6BB5\u63D0\u53D6\uFF0C\u7FFB\u8BD1\u4E3A\u7B80\u6D01\u82F1\u6587\u52A8\u4F5C\u63CF\u8FF0
-4. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 Instruction \u4E2D\u4F53\u73B0\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-5. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`(dialogue)\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`(inner monologue, OS)\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`(voiceover, VO)\`
-6. **\u955C\u5934\u98CE\u683C**\u4F7F\u7528\u6807\u51C6\u6807\u7B7E\uFF1A\`cinematic\` / \`wide-angle\` / \`close-up\` / \`slow motion\` / \`surround shooting\` / \`handheld\`
-7. **\u7A7A\u95F4\u5173\u7CFB**\u4F7F\u7528\u6807\u51C6\u52A8\u8BCD\uFF1A\`wearing\` / \`holding\` / \`standing on\` / \`following behind\` / \`sitting in\`
-8. \u5355\u6761\u5206\u955C\u5BF9\u5E94\u5355\u4E2A \`@\u56FEN \`\uFF0C\u4E0D\u505A\u591A\u5E27\u8DE8\u955C\u63CF\u8FF0
-9. \u65E0\u9700\u63CF\u8FF0\u89D2\u8272\u5916\u89C2\uFF08\u7531\u53C2\u8003\u56FE\u8D1F\u8D23\uFF09
-10. \u65E0\u65F6\u957F\u6807\u6CE8\uFF08\u7531\u6A21\u578B\u63A8\u65AD\uFF09
-11. **\u65E0\u5206\u955C\u56FE\u65F6**\uFF1A\u5F53 \`shouldGenerateImage="false"\` \u65F6\uFF0C\u8BE5\u5206\u955C\u65E0\u5206\u955C\u56FE\uFF0C\`[References]\` \u4E2D\u4E0D\u5217\u51FA\u8BE5\u5206\u955C\u56FE\uFF0C\`[Instruction]\` \u4E2D\u4E0D\u4F7F\u7528 \`@\u56FEN \` \u5F15\u7528\u8BE5\u5206\u955C\u56FE\uFF0C\u6539\u4E3A\u7EAF\u6587\u672C\u63CF\u8FF0\u753B\u9762\u5185\u5BB9
-
-#### KlingOmni \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AKlingOmni
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u65E0\u53F0\u8BCD\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-[References]
-@\u56FE1 : [\u6C88\u8F9E\u53C2\u8003\u56FE]
-@\u56FE2 : [\u82CF\u9526\u53C2\u8003\u56FE]
-@\u56FE3 : [\u57CE\u697C\u53C2\u8003\u56FE]
-@\u56FE4 : [\u5206\u955C\u56FE1]
-@\u56FE5 : [\u5206\u955C\u56FE2]
-
-[Instruction]
-Based on the storyboard from @\u56FE4 to @\u56FE5 :
-@\u56FE1 standing alone atop the city wall, hands clasped behind back, robes billowing in the wind, gazing across the vast land,
-@\u56FE2 ascending the steps toward @\u56FE1 , expression worried,
-set in the ancient city wall environment of @\u56FE3 ,
-wide shot transitioning to medium tracking shot, cinematic,
-resolute determination shifting to concerned anticipation, dusk cold-toned side-backlit atmosphere fading,
-no dialogue,
-wind howling, fabric flapping, footsteps on stone.
-\`\`\`
-
----
-
-### \u4E8C\u3001\u901A\u7528\u9996\u5C3E\u5E27\u6A21\u5F0F
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u7EAF\u6587\u672C\u63D0\u793A\u8BCD**\uFF1A\u63D0\u793A\u8BCD\u5185**\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF08\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u4E5F\u4E0D\u5F15\u7528\u5206\u955C\u56FE\uFF09\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-- **\u4E94\u7EF4\u5EA6\u7ED3\u6784**\uFF1AVisual / Motion / Camera / Audio / Narrative
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 \`[Audio]\` \u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue, lip-sync active\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS, silent lips\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO, silent lips\uFF09\uFF0C\u5E76\u5728 \`[Audio]\` \u4E2D\u660E\u786E\u6807\u6CE8
-- **\u4E0D\u8BF4\u8BDD\u7684\u4E3B\u4F53\u6807\u6CE8 \`silent\`** \u2014 \u9632\u6B62\u8BEF\u751F\u53E3\u578B
-- **\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934**\uFF1A\u4ECE\u5934\u5230\u5C3E\u4E00\u4E2A\u955C\u5934\uFF0C\u4E0D\u5B58\u5728\u5207\u955C
-- **\u65F6\u95F4\u8F74\u5206\u6BB5**\uFF1A\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF0C\u7528 \`0s-Xs\` \u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-\`\`\`
-[Visual]
-{\u4E3B\u4F53A\u540D}: {\u5916\u89C2\u7B80\u8FF0}, {\u7AD9\u4F4D/\u59FF\u6001}, {\u8BF4\u8BDD\u72B6\u6001 speaking/silent}.
-{\u4E3B\u4F53B\u540D}: {\u5916\u89C2\u7B80\u8FF0}, {\u7AD9\u4F4D/\u59FF\u6001}, {\u8BF4\u8BDD\u72B6\u6001}.
-{\u573A\u666F\u63CF\u8FF0}, {\u9053\u5177\u63CF\u8FF0}.
-{\u89C6\u89C9\u98CE\u683C\u6807\u7B7E}.
-
-[Motion]
-0s-{X}s: {\u4E3B\u4F53A\u540D} {\u52A8\u4F5C\u63CF\u8FF0\u6BB51}.
-{X}s-{Y}s: {\u4E3B\u4F53B\u540D} {\u52A8\u4F5C\u63CF\u8FF0\u6BB52}.
-
-[Camera]
-{\u955C\u5934\u7C7B\u578B}, {\u8FD0\u955C\u65B9\u5F0F}, {\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934\u63CF\u8FF0}.
-
-[Audio]
-{Xs-Ys}: "{\u53F0\u8BCD\u5185\u5BB9}" \u2014 {\u8BF4\u8BDD\u8005\u540D} ({dialogue / inner monologue OS / voiceover VO}), {lip-sync active / silent lips}.
-{\u97F3\u6548\u63CF\u8FF0}.
-
-[Narrative]
-{\u60C5\u8282\u70B9\u6982\u8FF0}, {\u53D9\u4E8B\u4F4D\u7F6E}.
-\`\`\`
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u5168\u90E8\u7528\u82F1\u6587**
-2. **\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF1A\u63D0\u793A\u8BCD\u5185\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u5206\u955C\u56FE\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-3. **\u4E3B\u4F53\u7528\u6587\u5B57\u63CF\u8FF0**\uFF1A\u5728 [Visual] \u4E2D\u7B80\u8981\u63CF\u8FF0\u4E3B\u4F53\u5916\u89C2\u7279\u5F81\uFF08\u5982\u670D\u9970\u3001\u53D1\u578B\u7B49\u5173\u952E\u8FA8\u8BC6\u7279\u5F81\uFF09
-4. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-5. **\u6BCF\u4E2A\u4E3B\u4F53\u5FC5\u987B\u6807\u6CE8\u8BF4\u8BDD\u72B6\u6001**\uFF1A\`speaking\` / \`silent\` / \`speaking simultaneously\`
-6. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728 \`[Audio]\` \u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-7. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`dialogue, lip-sync active\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`inner monologue (OS), silent lips\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`voiceover (VO), silent lips\`
-8. **Motion \u65F6\u95F4\u8F74**\u6BCF\u6BB5\u6700\u4F4E 1 \u79D2\uFF0C\u4E0D\u8D85\u8FC7\u603B\u65F6\u957F
-9. **\u5168\u7A0B\u5355\u4E00\u8FDE\u8D2F\u955C\u5934**\uFF1ACamera \u6BB5\u843D\u63CF\u8FF0\u4ECE\u5934\u5230\u5C3E\u7684\u4E00\u4E2A\u955C\u5934\uFF0C\u7EDD\u4E0D\u5207\u955C
-10. **\u89C6\u89C9\u98CE\u683C**\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9
-11. **\u955C\u5934\u7C7B\u578B**\u4ECE\u4EE5\u4E0B\u9009\u53D6\uFF1A\`Wide establishing shot / Over-the-shoulder / Medium shot / Close-up / Wide shot / POV / Dutch angle / Crane up / Dolly right / Whip pan / Handheld / Slow motion\`
-
-#### Seedance 1.5 Pro \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1ASeedance1.5
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u65E0\u53F0\u8BCD\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-[Visual]
-Shen Ci: male, dark flowing robes, hair tied up, standing alone atop city wall, hands clasped behind back, robes billowing, silent.
-Su Jin: female, light-colored dress, hair partially down, ascending steps toward Shen Ci, expression worried, silent.
-Ancient city wall, vast open land beyond, dusk sky fading.
-Cinematic, photorealistic, 4K, high contrast, desaturated tones, shallow depth of field.
-
-[Motion]
-0s-4s: Shen Ci stands still on city wall edge, robes flutter in wind, hair sways gently. Gaze fixed on distant horizon.
-4s-8s: Su Jin climbs the last few steps onto the wall, walks toward Shen Ci. Shen Ci remains still, unaware. Su Jin slows as she approaches.
-
-[Camera]
-Wide establishing shot, static for first 4 seconds capturing the lone figure. Then smooth transition to medium tracking shot following the woman ascending steps, single continuous take throughout, no cuts.
-
-[Audio]
-0s-4s: Wind howling across wall, fabric flapping rhythmically. No dialogue.
-4s-8s: Footsteps on stone, robes rustling. No dialogue.
-Shen Ci \u2014 silent. Su Jin \u2014 silent.
-
-[Narrative]
-Lone figure on city wall, then arrival of a companion. Tension between determination and concern. Single continuous take.
-\`\`\`
-
----
-
-### \u4E09\u3001Seedance 2.0
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u7ED3\u6784\u531612\u7EF4\u7F16\u7801**\uFF1A\u7EDF\u4E00\u7528 \`@\u56FEN \` \u5F15\u7528\u8D44\u4EA7\u548C\u5206\u955C\u56FE\uFF0C\u65F6\u957F \`{N}s\`
-- **\u6700\u524D\u9762\u5148\u5B9A\u4E49\u56FE\u7247\u6620\u5C04**\uFF1A\u5148\u8F93\u51FA\u201C\u56FE\u7247\u5B9A\u4E49\u201D\u6BB5\uFF0C\u96C6\u4E2D\u58F0\u660E \`@\u56FEN : \u4E3B\u4F53\u540D\u5B57/\u573A\u666F\u540D\u5B57\uFF0C\u7B80\u8FF0\`\uFF1B\u540E\u7EED\u5206\u955C\u6B63\u6587\u53EA\u4F7F\u7528\u4E3B\u4F53\u540D\u5B57\uFF0C\u4E0D\u518D\u5199 \`@\u56FEN \`
-- **\u97F3\u8272\u53C2\u65709\u7EF4\u5EA6\u7CBE\u7EC6\u63CF\u8FF0**\uFF08\u6709\u53F0\u8BCD\u65F6\u5FC5\u586B\uFF09
-- **\u79D2\u7EA7\u65F6\u957F\u63A7\u5236**\uFF1A\u5355\u5206\u955C\u65F6\u957F\u6700\u4F4E 1s
-- **\u4E2D\u6587\u63D0\u793A\u8BCD**
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u6BCF\u6761\u5206\u955C\u7684\u63CF\u8FF0\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u548C\u97F3\u8272\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08\u76F4\u63A5\u4F7F\u7528\u300C\u8BF4\uFF1A\u300D\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08\u4F7F\u7528\u300C\u5185\u5FC3OS\uFF1A\u300D\uFF09\u3001\u753B\u5916\u97F3\uFF08\u4F7F\u7528\u300C\u753B\u5916\u97F3VO\uFF1A\u300D\uFF09\uFF0C\u5E76\u5339\u914D\u5BF9\u5E94\u7684\u5634\u578B\u72B6\u6001\u63CF\u8FF0
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-> **\u6CE8\u610F**\uFF1A\`@\u56FE{\u7F16\u53F7}\` \u4EC5\u7528\u4E8E\u6700\u524D\u9762\u7684\u201C\u56FE\u7247\u5B9A\u4E49\u201D\u6BB5\u3002\u5206\u955C\u6B63\u6587\u4E2D\u7981\u6B62\u518D\u5199 \`@\u56FE{\u7F16\u53F7}\`\uFF0C\u7EDF\u4E00\u6539\u7528\u4E3B\u4F53\u540D\u5B57/\u573A\u666F\u540D\u5B57\u3002
-
-**\u5355\u5206\u955C\u6A21\u677F\uFF1A**
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: {\u98CE\u683C}, {\u8272\u8C03}, {\u7C7B\u578B}
-
-\u56FE\u7247\u5B9A\u4E49:
-@\u56FE1: {\u8D44\u4EA71\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-@\u56FE2: {\u8D44\u4EA72\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-@\u56FEN: {\u8D44\u4EA7N\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-...
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B 1 \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: \u65E0
-
-\u5206\u955C1 {N}s: \u65F6\u95F4\uFF1A{\u65E5/\u591C/\u6668/\u9EC4\u660F}\uFF0C\u573A\u666F\uFF1A{\u573A\u666F\u540D\u5B57}\uFF0C\u955C\u5934\uFF1A{\u666F\u522B}\uFF0C{\u89D2\u5EA6}\uFF0C{\u8FD0\u955C}\uFF0C{\u89D2\u8272\u540D\u5B57} {\u52A8\u4F5C/\u8868\u60C5/\u89C6\u7EBF\u671D\u5411/\u7AD9\u4F4D\u63CF\u8FF0}\u3002{\u53F0\u8BCD\u4E0E\u97F3\u8272\u63CF\u8FF0\uFF08\u5982\u6709\uFF09}\u3002{\u80CC\u666F\u73AF\u5883\u8865\u5145}\u3002{\u5149\u5F71\u6C1B\u56F4}\u3002{\u8FD0\u955C\u8865\u5145}\u3002
-\`\`\`
-
-**\u591A\u5206\u955C\u6A21\u677F\uFF1A**
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: {\u98CE\u683C}, {\u8272\u8C03}, {\u7C7B\u578B}
-
-\u56FE\u7247\u5B9A\u4E49:
-@\u56FE1: {\u8D44\u4EA71\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-@\u56FE2: {\u8D44\u4EA72\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-@\u56FEN: {\u8D44\u4EA7N\u540D\u5B57}\uFF0C{\u7B80\u8FF0}
-...
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B {N} \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: {\u5168\u5C40\u8FC7\u6E21\u63CF\u8FF0}
-
-\u5206\u955C1 {N}s: \u65F6\u95F4\uFF1A{...}\uFF0C\u573A\u666F\uFF1A{\u573A\u666F\u540D\u5B57}\uFF0C\u955C\u5934\uFF1A{...}\uFF0C{\u89D2\u8272\u540D\u5B57} {...}\u3002{...}\u3002
-\u5206\u955C2{N}s: ...
-...
-\`\`\`
-
-#### \u97F3\u8272\u751F\u6210\u89C4\u5219\uFF08\u6709\u53F0\u8BCD\u65F6\u5FC5\u586B\uFF09
-
-\u53F0\u8BCD\u683C\u5F0F\uFF1A\`{\u89D2\u8272\u540D\u5B57} \u8BF4\uFF1A\u300C{\u53F0\u8BCD\u5185\u5BB9}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6\u63CF\u8FF0}\`
-
-9\u7EF4\u5EA6\u6309\u987A\u5E8F\u586B\u5199\uFF1A
-\`\`\`
-{\u6027\u522B}\uFF0C{\u5E74\u9F84\u97F3\u8272}\uFF0C{\u97F3\u8C03}\uFF0C{\u97F3\u8272\u8D28\u611F}\uFF0C{\u58F0\u97F3\u539A\u5EA6}\uFF0C{\u53D1\u97F3\u65B9\u5F0F}\uFF0C{\u6C14\u606F}\uFF0C{\u8BED\u901F}\uFF0C{\u7279\u6B8A\u8D28\u611F}
-\`\`\`
-
-> \u5F53 desc \u4E2D\u672A\u660E\u786E\u97F3\u8272\u4FE1\u606F\u65F6\uFF0C\u6839\u636E\u89D2\u8272\u7C7B\u578B\u4ECE\u4EE5\u4E0B\u53C2\u8003\u8868\u63A8\u65AD\uFF1A
-
-| \u89D2\u8272\u7C7B\u578B\u7279\u5F81 | \u9ED8\u8BA4\u97F3\u8272 |
-|------------|---------|
-| \u7537\u6027\u6743\u5A01/\u9738\u6C14\u89D2\u8272 | \u7537\u58F0\uFF0C\u4E2D\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4F4E\u6C89\uFF0C\u97F3\u8272\u6D51\u539A\u6709\u529B\uFF0C\u58F0\u97F3\u539A\u91CD\uFF0C\u53D1\u97F3\u6807\u51C6\uFF0C\u6C14\u606F\u6781\u5176\u6C89\u7A33\uFF0C\u8BED\u901F\u504F\u6162 |
-| \u5973\u6027\u6E29\u67D4/\u751C\u7F8E\u89D2\u8272 | \u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\u504F\u9AD8\uFF0C\u97F3\u8272\u8D28\u611F\u660E\u4EAE\u6E05\u8106\uFF0C\u58F0\u97F3\u6E05\u4EAE\u67D4\u548C\uFF0C\u6C14\u606F\u5145\u6C9B\u5E73\u7A33\uFF0C\u5E26\u6E29\u5A49\u771F\u8BDA\u611F |
-| \u7537\u6027\u5E74\u8F7B/\u666E\u901A\u89D2\u8272 | \u7537\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\uFF0C\u97F3\u8272\u5E72\u51C0\uFF0C\u58F0\u97F3\u539A\u5EA6\u9002\u4E2D\uFF0C\u53D1\u97F3\u6E05\u6670\uFF0C\u6C14\u606F\u5E73\u7A33\uFF0C\u8BED\u901F\u9002\u4E2D |
-| \u5973\u6027\u6D3B\u6CFC/\u5916\u5411\u89D2\u8272 | \u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u504F\u9AD8\uFF0C\u97F3\u8272\u6E05\u8106\u6D3B\u6CFC\uFF0C\u58F0\u97F3\u8F7B\u76C8\uFF0C\u6C14\u606F\u5145\u6C9B\uFF0C\u8BED\u901F\u504F\u5FEB\uFF0C\u5E26\u7B11\u610F\u548C\u611F\u67D3\u529B |
-| \u53CD\u6D3E/\u51B7\u9177\u89D2\u8272 | \u7537\u58F0\uFF0C\u4E2D\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4F4E\u6C89\uFF0C\u97F3\u8272\u8D28\u611F\u5E72\u71E5\u504F\u6697\uFF0C\u58F0\u97F3\u5E26\u6C99\u783E\u611F\uFF0C\u6C14\u606F\u5E73\u7A33\uFF0C\u8BED\u901F\u6781\u6162\uFF0C\u6709\u5A01\u80C1\u611F |
-
-#### \u65E0\u53F0\u8BCD\u5206\u955C\u5904\u7406
-- \u4E0D\u5199 \`\u8BF4\uFF1A\` \u548C\u97F3\u8272\u6BB5\u843D
-- \u5728\u52A8\u4F5C\u63CF\u8FF0\u540E\u6807\u6CE8 \`\u65E0\u53F0\u8BCD\`
-
-#### \u53F0\u8BCD\u7C7B\u578B\u683C\u5F0F
-
-| \u53F0\u8BCD\u7C7B\u578B | \u683C\u5F0F | \u5634\u578B\u63CF\u8FF0 |
-|----------|------|----------|
-| \u666E\u901A\u5BF9\u767D | \`{\u89D2\u8272\u540D\u5B57} \u8BF4\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u5F00\u5408\u8BF4\u8BDD |
-| \u5185\u5FC3\u72EC\u767D | \`{\u89D2\u8272\u540D\u5B57} \u5185\u5FC3OS\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u7D27\u95ED\u4E0D\u52A8 |
-| \u753B\u5916\u97F3 | \`{\u89D2\u8272\u540D\u5B57} \u753B\u5916\u97F3VO\uFF1A\u300C{\u53F0\u8BCD}\u300D\u97F3\u8272\uFF1A{9\u7EF4\u5EA6}\` | \u89D2\u8272\u5634\u90E8\u7D27\u95ED\u4E0D\u52A8\uFF08\u6216\u89D2\u8272\u4E0D\u5728\u753B\u9762\u4E2D\uFF09 |
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u4E2D\u6587\u63D0\u793A\u8BCD**
-2. **\u76F4\u63A5\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD**\uFF1A\u7981\u6B62\u8F93\u51FA\u4EFB\u4F55\u5206\u6790\u8FC7\u7A0B\u3001\u63A8\u7406\u6B65\u9AA4\u3001\u6A21\u578B\u5339\u914D\u8BF4\u660E\u3001\u8D44\u4EA7\u7F16\u53F7\u8868\u3001\u5206\u9694\u7EBF\u7B49\u975E\u63D0\u793A\u8BCD\u5185\u5BB9\u3002\u7B2C\u4E00\u884C\u5FC5\u987B\u662F \`\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B:\`
-3. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u6BCF\u6761\u5206\u955C\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-4. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u548C\u97F3\u8272
-5. **\u53F0\u8BCD\u7C7B\u578B\u6B63\u786E\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u7528\u300C\u8BF4\uFF1A\u300D\uFF0C\u5185\u5FC3\u72EC\u767D\u7528\u300C\u5185\u5FC3OS\uFF1A\u300D\uFF0C\u753B\u5916\u97F3\u7528\u300C\u753B\u5916\u97F3VO\uFF1A\u300D
-6. **\u5148\u56FE\u7247\u5B9A\u4E49\uFF0C\u540E\u5199\u5206\u955C**\uFF1A\u6700\u524D\u9762\u5FC5\u987B\u5148\u8F93\u51FA"\u56FE\u7247\u5B9A\u4E49"\u6BB5\uFF0C\u5217\u51FA \`@\u56FEN : \u540D\u5B57\uFF0C\u63CF\u8FF0\`
-7. **\u5206\u955C\u6B63\u6587\u7981\u7528 \`@\u56FEN \`**\uFF1A\u6B63\u6587\u7EDF\u4E00\u4F7F\u7528\u89D2\u8272\u540D/\u573A\u666F\u540D\uFF0C\u4E0D\u5199 \`@\u56FE1/@\u56FE2\` \u7B49\u7F16\u53F7
-8. **\u5355\u5206\u955C\u65F6\u957F\u6700\u4F4E 1s**
-9. **\u65F6\u957F\u5355\u4F4D**\uFF1A\u76F4\u63A5\u4F7F\u7528 videoDesc \u4E2D\u7684\u79D2\u6570\uFF0C\u683C\u5F0F\u4E3A \`{N}s\`\uFF08\u5982 \`4s\`\uFF09\uFF0C\u6700\u4F4E 1s
-
-#### Seedance 2.0 \u5B8C\u6574\u793A\u4F8B
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1ASeedance2.0
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u82CF\u9526\u8BF4\uFF1A\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-\u753B\u9762\u98CE\u683C\u548C\u7C7B\u578B: \u771F\u4EBA\u5199\u5B9E, \u7535\u5F71\u98CE\u683C, \u51B7\u8C03, \u53E4\u98CE
-
-\u53C2\u8003\u5B9A\u4E49:
-@\u56FE1: \u6C88\u8F9E\uFF0C\u9ED1\u8272\u957F\u888D\uFF0C\u6C14\u8D28\u51B7\u5CFB\u7684\u9752\u5E74\u7537\u6027
-@\u56FE2: \u82CF\u9526\uFF0C\u6D45\u8272\u8863\u88D9\uFF0C\u795E\u60C5\u7EC6\u817B\u7684\u9752\u5E74\u5973\u6027
-@\u56FE3: \u57CE\u697C\uFF0C\u53E4\u4EE3\u7816\u77F3\u57CE\u697C\u4E0E\u53F0\u9636\u573A\u666F
-
-\u751F\u6210\u4E00\u4E2A\u7531\u4EE5\u4E0B 2 \u4E2A\u5206\u955C\u7EC4\u6210\u7684\u89C6\u9891:
-
-\u573A\u666F:
-\u5206\u955C\u8FC7\u6E21: \u955C\u5934\u5E73\u6ED1\u5207\u6362\uFF0C\u4ECE\u5168\u666F\u8FC7\u6E21\u5230\u4E2D\u666F\u8DDF\u8E2A\uFF0C\u7126\u70B9\u4ECE\u6C88\u8F9E\u72EC\u5904\u8F6C\u5411\u82CF\u9526\u5230\u6765\u3002
-
-\u5206\u955C1 4s: \u65F6\u95F4\uFF1A\u9EC4\u660F\uFF0C\u573A\u666F\uFF1A\u57CE\u697C\uFF0C\u955C\u5934\uFF1A\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u9759\u6B62\u955C\u5934\uFF0C\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u4E4B\u4E0A\uFF0C\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u968F\u98CE\u98D8\u626C\uFF0C\u76EE\u5149\u8FDC\u773A\u82CD\u832B\u5927\u5730\uFF0C\u795E\u60C5\u8083\u7136\u9762\u5BB9\u6C89\u7740\uFF0C\u773C\u795E\u575A\u5B9A\u76EE\u5149\u6E05\u51BD\uFF0C\u7709\u773C\u6C89\u9759\u6C14\u8D28\u51DB\u7136\u3002\u65E0\u53F0\u8BCD\u3002\u80CC\u666F\u662F\u53E4\u57CE\u697C\u7816\u77F3\u7EB9\u7406\u6E05\u6670\uFF0C\u8FDC\u65B9\u5927\u5730\u82CD\u832B\u8FBD\u9614\uFF0C\u5929\u9645\u7EBF\u51B7\u6696\u4EA4\u66FF\u3002\u9EC4\u660F\u659C\u5C04\u4F59\u6656\u4FA7\u9006\u5149\uFF0C\u51B7\u8C03\u4E3A\u4E3B\uFF0C\u957F\u5F71\u62C9\u4F38\uFF0C\u8F6E\u5ED3\u5149\u5FAE\u52FE\u52D2\u4EBA\u7269\u8FB9\u7F18\uFF0C\u5149\u611F\u8BD7\u610F\u3002\u955C\u5934\u9759\u6B62\u3002
-
-\u5206\u955C2 4s: \u65F6\u95F4\uFF1A\u9EC4\u660F\uFF0C\u573A\u666F\uFF1A\u57CE\u697C\uFF0C\u955C\u5934\uFF1A\u4E2D\u666F\uFF0C\u5E73\u89C6\uFF0C\u8DDF\u8E2A\u62CD\u6444\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\uFF0C\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E\uFF0C\u9762\u90E8\u671D\u5411\u6C88\u8F9E\u65B9\u5411\uFF0C\u795E\u60C5\u5FAE\u6123\u9762\u8272\u5FAE\u53D8\uFF0C\u773C\u795E\u4E2D\u5E26\u7740\u62C5\u5FE7\uFF0C\u82CF\u9526\u8BF4\uFF1A\u300C\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3002\u300D\u97F3\u8272\uFF1A\u5973\u58F0\uFF0C\u9752\u5E74\u97F3\u8272\uFF0C\u97F3\u8C03\u4E2D\u7B49\u504F\u9AD8\uFF0C\u97F3\u8272\u8D28\u611F\u660E\u4EAE\u6E05\u8106\uFF0C\u58F0\u97F3\u6E05\u4EAE\u67D4\u548C\uFF0C\u53D1\u97F3\u65B9\u5F0F\u5E72\u51C0\uFF0C\u6C14\u606F\u5145\u6C9B\u5E73\u7A33\uFF0C\u8BED\u901F\u9002\u4E2D\uFF0C\u5E26\u6E29\u5A49\u771F\u8BDA\u611F\u3002\u80CC\u666F\u57CE\u697C\u53F0\u9636\u7EB9\u7406\u6E05\u6670\uFF0C\u4F59\u6656\u6E10\u6697\uFF0C\u5929\u9645\u7EBF\u51B7\u6696\u4EA4\u66FF\u52A0\u6DF1\u3002\u955C\u5934\u8DDF\u8E2A\u82CF\u9526\u79FB\u52A8\u3002
-\`\`\`
-
----
-
-### \u56DB\u3001Wan 2.6
-
-#### \u6838\u5FC3\u539F\u5219
-- **\u5355\u56FE\u9996\u5E27\u6A21\u5F0F**\uFF1A\u5F52\u7C7B\u4E3A\u9996\u5C3E\u5E27\u6A21\u5F0F\uFF0C\u4F46\u4EC5\u6709\u9996\u5E27\uFF08\u5206\u955C\u56FE\uFF09\uFF0C\u65E0\u5C3E\u5E27
-- **\u5355\u6761\u5206\u955C\u8F93\u5165/\u8F93\u51FA**\uFF1A\u6BCF\u6B21\u4EC5\u8F93\u5165\u4E00\u6761 \`<storyboardItem>\` \u53CA\u5176\u5173\u8054\u8D44\u4EA7\u4FE1\u606F\uFF0C\u8F93\u51FA\u4E5F\u4EC5\u4E3A\u4E00\u6BB5\u5B8C\u6574\u7684\u53D9\u4E8B\u5F0F\u63D0\u793A\u8BCD
-- **\u53D9\u4E8B\u5F0F\u82F1\u6587\u63D0\u793A\u8BCD**\uFF1A\u50CF\u5199\u5C0F\u8BF4\u4E00\u6837\u63CF\u5199\u753B\u9762\uFF0C\u4E0D\u4F7F\u7528\u6807\u7B7E\u7F57\u5217\uFF08\u4E0D\u5199 \`4K, cinematic, high quality\` \u8FD9\u7C7B\u5806\u780C\uFF09
-- **\u4E09\u6BB5\u5F0F\u7ED3\u6784**\uFF1A\u98CE\u683C\u57FA\u8C03 \u2192 \u4E3B\u4F53\u52A8\u4F5C + \u573A\u666F\u73AF\u5883 + \u5149\u7EBF\u6C1B\u56F4 \u2192 \u955C\u5934\u6536\u5C3E
-- **\u7EAF\u6587\u672C\u63D0\u793A\u8BCD**\uFF1A\u63D0\u793A\u8BCD\u5185**\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u4F53\u73B0\u53F0\u8BCD\u76F8\u5173\u63CF\u8FF0
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08inner monologue OS\uFF09\u3001\u753B\u5916\u97F3\uFF08voiceover VO\uFF09\uFF0C\u5728\u63D0\u793A\u8BCD\u4E2D\u7528\u62EC\u53F7\u6807\u6CE8
-
-#### prompt \u751F\u6210\u6A21\u677F
-
-\u6BCF\u6B21\u8F93\u5165\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u5B8C\u6574\u63D0\u793A\u8BCD\uFF08\u65E0\u7F16\u53F7\u524D\u7F00\uFF09\uFF0C\u683C\u5F0F\u5982\u4E0B\uFF1A
-
-\`\`\`
-{\u98CE\u683C\u57FA\u8C03\u4E00\u53E5\u8BDD\u5B9A\u6027},
-{\u4E3B\u4F53\u540D} {\u5916\u89C2\u7B80\u8FF0}, {\u5177\u4F53\u52A8\u4F5C/\u59FF\u6001\u63CF\u8FF0}, {\u60C5\u7EEA/\u8868\u60C5\u7528\u52A8\u4F5C\u6697\u793A}.
-{\u573A\u666F\u80CC\u666F\u4E3B\u4F53}, {\u5177\u4F53\u73AF\u5883\u7269\u4EF6}, {\u7A7A\u95F4\u611F}, {\u65F6\u95F4/\u5929\u6C14}.
-{\u5149\u7EBF\u65B9\u5411/\u8272\u6E29} {\u8D28\u611F\u63CF\u8FF0}, {\u60C5\u7EEA\u6697\u793A\u5149\u5F71}.
-{\u53F0\u8BCD\u63CF\u8FF0\uFF08\u5982\u6709\uFF0C\u542B dialogue/OS/VO \u6807\u6CE8\uFF09/ No dialogue}.
-{\u97F3\u6548\u63CF\u8FF0}.
-{\u62CD\u6444\u65B9\u5F0F}, {\u666F\u522B}, {\u89C6\u89D2}, {\u8FD0\u955C\u65B9\u5F0F}.
-\`\`\`
-
-#### \u53D9\u4E8B\u5F0F\u5199\u6CD5\u8981\u70B9
-
-| \u539F\u5219 | \u8BF4\u660E | \u793A\u4F8B |
-|------|------|------|
-| \u98CE\u683C\u57FA\u8C03\u653E\u6700\u524D | \u4E00\u53E5\u8BDD\u5B9A\u6027\u6574\u4F53\u6C14\u8D28 | \`A cinematic epic scene\` / \`A melancholic cinematic scene\` |
-| \u4E3B\u4F53+\u52A8\u4F5C\u7D27\u5BC6\u7ED1\u5B9A | \u4E3B\u4F53\u540E\u9762\u76F4\u63A5\u8DDF\u52A8\u4F5C\uFF0C\u5916\u89C2\u7EC6\u8282\u5D4C\u5165\u4E3B\u4F53\u63CF\u8FF0 | \`A young man in dark flowing robes stands alone atop the city wall, hands clasped behind back\` |
-| \u60C5\u7EEA\u7528\u52A8\u4F5C\u6697\u793A | \u4E0D\u76F4\u63A5\u9648\u8FF0\u300C\u4ED6\u5F88\u60B2\u4F24\u300D | \u274C \`He is sad.\` \u2192 \u2705 \`head drops slowly, shoulders slumped\` |
-| \u73AF\u5883\u878D\u5165\u53D9\u4E8B | \u4E0D\u7F57\u5217\u73AF\u5883\u5C5E\u6027 | \u274C \`The sky is blue. The grass is green.\` \u2192 \u2705 \`hazy blue sky stretches over the emerald valley\` |
-| \u5149\u7EBF\u5355\u72EC\u6210\u53E5 | \u5149\u7EBF\u65B9\u5411+\u8272\u6E29+\u8D28\u611F+\u60C5\u7EEA | \`Warm golden hour light streams from behind, casting long shadows across the stone floor\` |
-| \u955C\u5934\u8BED\u8A00\u6536\u5C3E | \u4E00\u53E5\u8BDD\u70B9\u775B | \`Captured in a wide establishing shot from a low-angle perspective, static camera\` |
-| \u7981\u6B62\u6807\u7B7E\u5806\u780C | \u4E0D\u5199 \`4K, cinematic, high quality\` | \`cinematic\` \u878D\u5165\u98CE\u683C\u57FA\u8C03\u5373\u53EF |
-
-#### \u751F\u6210\u7EA6\u675F
-1. **\u5168\u90E8\u7528\u82F1\u6587**
-2. **\u4E0D\u4F7F\u7528\u4EFB\u4F55 \`@\u56FEN \` \u5F15\u7528**\uFF1A\u63D0\u793A\u8BCD\u5185\u4E0D\u5F15\u7528\u89D2\u8272\u8D44\u4EA7\u3001\u573A\u666F\u8D44\u4EA7\u3001\u5206\u955C\u56FE\uFF0C\u5168\u90E8\u5185\u5BB9\u7528\u7EAF\u6587\u672C\u63CF\u8FF0
-3. **\u53D9\u4E8B\u5F0F\u63CF\u5199**\uFF1A\u50CF\u5199\u5C0F\u8BF4\u4E00\u6837\u6784\u5EFA\u753B\u9762\uFF0C\u7981\u6B62\u6807\u7B7E\u7F57\u5217\u548C\u914D\u7F6E\u6E05\u5355\u5F0F\u5199\u6CD5
-4. **\u4E3B\u4F53\u7528\u6587\u5B57\u63CF\u8FF0**\uFF1A\u7B80\u8981\u63CF\u8FF0\u4E3B\u4F53\u5916\u89C2\u7279\u5F81\uFF08\u5982\u670D\u9970\u3001\u53D1\u578B\u7B49\u5173\u952E\u8FA8\u8BC6\u7279\u5F81\uFF09\uFF0C\u5D4C\u5165\u4E3B\u4F53\u63CF\u8FF0\u4E2D
-5. **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u4FE1\u606F
-6. **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u5B8C\u6574\u8F93\u51FA\u53F0\u8BCD\u5185\u5BB9\uFF08\u4FDD\u6301\u539F\u59CB\u8BED\u8A00\uFF0C\u4E0D\u7FFB\u8BD1\uFF09
-7. **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF1A\u666E\u901A\u5BF9\u767D\u6807\u6CE8 \`(dialogue)\`\uFF1B\u5185\u5FC3\u72EC\u767D\u6807\u6CE8 \`(inner monologue, OS)\`\uFF1B\u753B\u5916\u97F3\u6807\u6CE8 \`(voiceover, VO)\`
-8. **\u5355\u6761\u8F93\u5165/\u8F93\u51FA**\uFF1A\u6BCF\u6B21\u4EC5\u5904\u7406\u4E00\u6761\u5206\u955C\uFF0C\u8F93\u51FA\u4E00\u6BB5\u63D0\u793A\u8BCD\uFF0C\u65E0\u7F16\u53F7\u524D\u7F00
-9. **\u65E0\u9700\u6807\u6CE8\u65F6\u957F**\uFF1A\u65F6\u957F\u7531\u6A21\u578B\u4FA7\u63A7\u5236\uFF0C\u63D0\u793A\u8BCD\u4E2D\u4E0D\u5199\u65F6\u957F\u53C2\u6570
-10. **\u955C\u5934\u63CF\u8FF0\u878D\u5165\u53D9\u4E8B**\uFF1A\u4E0D\u7528\u65B9\u62EC\u53F7\u6807\u7B7E\uFF0C\u7528\u5B8C\u6574\u53E5\u5B50\u63CF\u8FF0\u955C\u5934
-11. **\u89C6\u89C9\u98CE\u683C**\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9
-
-#### Wan 2.6 \u5B8C\u6574\u793A\u4F8B
-
-**\u793A\u4F8B1\uFF1A\u65E0\u53F0\u8BCD\u5206\u955C**
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AWan2.6
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u6C88\u8F9E\u72EC\u7ACB\u57CE\u697C\u8FDC\u773A\u82CD\u832B\u5927\u5730\u3001\u57CE\u697C\u3001\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u5168\u666F\u3001\u9759\u6B62\u3001\u8D1F\u624B\u800C\u7ACB\u8863\u8882\u968F\u98CE\u98D8\u626C\u3001\u575A\u5B9A\u51B3\u7EDD\u3001\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149\u3001\u65E0\u53F0\u8BCD\u3001\u98CE\u58F0\u8863\u8882\u58F0\u3001A001/A003\uFF09' prompt='\u5168\u666F\uFF0C\u5E73\u89C6\u7565\u4EF0\uFF0C\u57CE\u697C\u4E4B\u4E0A\uFF0C\u6C88\u8F9E\u8D1F\u624B\u800C\u7ACB\uFF0C\u8863\u8882\u98D8\u626C\uFF0C\u9EC4\u660F\u51B7\u8C03\u4FA7\u9006\u5149...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-A cinematic epic scene with a cold, desaturn\`ated palette,
-A lone man in dark flowing robes stands atop an ancient city wall, hands clasped behind his back, robes and hair billowing in the wind, gaze fixed on the vast land stretching to the horizon, jaw set firm, eyes unwavering.
-The weathered stone battlements frame the endless expanse below, rolling terrain fading into haze beneath a heavy dusk sky, clouds layered in muted golds and slate greys.
-Cold side-backlight from the setting sun carves a sharp silhouette, long shadows stretching across the stone floor, a faint warm rim outlining the figure against the cool atmosphere.
-No dialogue.
-Wind howling across the open wall, fabric flapping rhythmically.
-Captured in a wide establishing shot from a slightly low angle, static camera, single continuous take.
-\`\`\`
-
-**\u793A\u4F8B2\uFF1A\u6709\u53F0\u8BCD\u5206\u955C**
-
-\u8F93\u5165\uFF1A
-\`\`\`
-\u6A21\u578B\uFF1AWan2.6
-\u8D44\u4EA7\u4FE1\u606F[A001, role, \u6C88\u8F9E], [A002, role, \u82CF\u9526], [A003, scene, \u57CE\u697C]
-\`\`\`
-\`\`\`xml
-<storyboardItem videoDesc='\uFF08\u82CF\u9526\u767B\u4E0A\u57CE\u697C\u8D70\u5411\u6C88\u8F9E\u3001\u57CE\u697C\u3001\u82CF\u9526/\u6C88\u8F9E/\u57CE\u697C\u30014s\u3001\u4E2D\u666F\u3001\u8DDF\u8E2A\u3001\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u6C88\u8F9E\u3001\u62C5\u5FE7\u3001\u9EC4\u660F\u4F59\u6656\u6E10\u6697\u3001\u82CF\u9526\u8BF4\uFF1A\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3001\u811A\u6B65\u58F0\u98CE\u58F0\u3001A001/A002/A003\uFF09' prompt='\u4E2D\u666F\uFF0C\u8DDF\u8E2A\uFF0C\u82CF\u9526\u62FE\u7EA7\u800C\u4E0A\u8D70\u5411\u57CE\u697C\u4E0A\u7684\u6C88\u8F9E...' track='main' duration='4' associateAssetsIds="[&quot;A001&quot;,&quot;A002&quot;,&quot;A003&quot;]" shouldGenerateImage="true" ></storyboardItem>
-\`\`\`
-
-\u8F93\u51FA\uFF1A
-\`\`\`
-A melancholic cinematic scene, dusk tones deepening,
-A young woman in a light-colored dress ascends the final stone steps onto the city wall, her gaze locked on the lone figure ahead, brow slightly furrowed, pace slowing as she approaches, lips parting softly.
-The ancient city wall stretches behind her, weathered stairs leading up from below, the distant skyline dimming as the last traces of golden hour fade into twilight.
-Fading warm light mingles with rising cool blue tones, the contrast between the two figures softened by the diffused remnants of sunset.
-"\u4F60\u53C8\u4E00\u4E2A\u4EBA\u5728\u8FD9\u91CC\u3002" \u2014 Su Jin (dialogue).
-Footsteps on stone, wind sweeping across the battlements, fabric rustling.
-A medium tracking shot follows the woman from behind as she ascends and approaches, handheld camera with subtle movement, single continuous take.
-\`\`\`
-
----
-
-## \u666F\u522B \u2192 \u955C\u5934\u6807\u7B7E\u6620\u5C04
-
-| videoDesc \u4E2D\u7684\u666F\u522B | KlingOmni\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 1.5\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 2.0\uFF08\u4E2D\u6587\u63CF\u8FF0\uFF09 | Wan 2.6\uFF08\u82F1\u6587\u53D9\u4E8B\u5F0F\uFF09 |
-|------|------|------|------|------|
-| \u8FDC\u666F | extreme wide shot | Extreme wide shot | \u8FDC\u666F | an extreme wide shot capturing the vast expanse |
-| \u5168\u666F | wide shot | Wide establishing shot | \u5168\u666F | a wide establishing shot |
-| \u4E2D\u666F | medium shot | Medium shot | \u4E2D\u666F | a medium shot |
-| \u8FD1\u666F | close-up | Close-up | \u8FD1\u666F | a close-up shot |
-| \u7279\u5199 | close-up | Close-up | \u7279\u5199 | a close-up capturing fine detail |
-| \u5927\u7279\u5199 | extreme close-up | Extreme close-up | \u5927\u7279\u5199 | an extreme close-up |
-
-## \u8FD0\u955C \u2192 \u955C\u5934\u6807\u7B7E\u6620\u5C04
-
-| videoDesc \u4E2D\u7684\u8FD0\u955C | KlingOmni\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 1.5\uFF08\u82F1\u6587\u6807\u7B7E\uFF09 | Seedance 2.0\uFF08\u4E2D\u6587\u63CF\u8FF0\uFF09 | Wan 2.6\uFF08\u82F1\u6587\u53D9\u4E8B\u5F0F\uFF09 |
-|------|------|------|------|------|
-| \u9759\u6B62 | static camera | Static, no camera movement | \u955C\u5934\u9759\u6B62 | static camera, locked off |
-| \u63A8\u8FDB | dolly in / push in | Slow dolly forward | \u955C\u5934\u7F13\u6162\u5411\u524D\u63A8\u8FDB | camera slowly pushing in |
-| \u62C9\u8FDC | dolly out / pull back | Slow dolly backward pull | \u955C\u5934\u7F13\u6162\u5411\u540E\u62C9\u8FDC | camera gently pulling back |
-| \u8DDF\u8E2A | tracking shot | Tracking shot, handheld | \u8DDF\u8E2A\u62CD\u6444 | tracking shot following the subject |
-| \u6447\u955C | pan left/right | Slow pan | \u955C\u5934\u7F13\u6162\u6447\u79FB | smooth pan across the scene |
-| \u7529\u955C | whip pan | Whip pan | \u5FEB\u901F\u7529\u955C | whip pan |
-| \u5347\u964D | crane up/down | Crane up/down | \u955C\u5934\u5347\u964D | crane rising / descending |
-| \u73AF\u7ED5 | surround shooting | Orbiting shot | \u73AF\u7ED5\u62CD\u6444 | orbiting around the subject |
-
----
-
-## \u6267\u884C\u6D41\u7A0B
-
-1. **\u89E3\u6790\u8F93\u5165**\uFF1A\u63D0\u53D6\u6A21\u578B\u540D\u548C\u591A\u53C2\u6807\u5FD7\uFF0C\u6309\u8DEF\u7531\u89C4\u5219\u5339\u914D\u6A21\u5F0F\uFF1B\u63D0\u53D6\u8D44\u4EA7\u5217\u8868
-2. **\u6784\u5EFA @\u56FEN \u7F16\u53F7\u8868**\uFF1A\u8D44\u4EA7\u6309\u8F93\u5165\u987A\u5E8F\u4ECE \`@\u56FE1 \` \u8D77\u7F16\u53F7\uFF0C\u5206\u955C\u56FE\u63A5\u7EED\u7F16\u53F7\uFF1B\`shouldGenerateImage="false"\` \u7684\u5206\u955C\u4E0D\u5206\u914D\u5206\u955C\u56FE\u7F16\u53F7
-3. **\u9010\u6761\u89E3\u6790 \`<storyboardItem>\`**\uFF1A\u6309 videoDesc \u89E3\u6790\u89C4\u5219\u63D0\u53D612\u4E2A\u5B57\u6BB5\uFF0C\u7ED3\u5408 \`duration\`\u3001\`associateAssetsIds\` \u5EFA\u7ACB\u6807\u7B7E\u6620\u5C04
-4. **\u6574\u5408\u4E3A\u4E00\u4E2A\u5B8C\u6574\u7684\u89C6\u9891\u63D0\u793A\u8BCD**\uFF1A\u6309\u76EE\u6807\u6A21\u578B\u683C\u5F0F\u7F16\u6392\u5168\u90E8\u5206\u955C
-5. **\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD**
-
----
-
-## \u7EA6\u675F
-
-- **\u4EC5\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD**\uFF1A\u4E0D\u9644\u52A0\u4EFB\u4F55\u89E3\u91CA\u3001\u6CE8\u91CA\u3001\u5206\u6790\u8FC7\u7A0B\u3001\u63A8\u7406\u6B65\u9AA4\u3001\u6A21\u578B\u5339\u914D\u8BF4\u660E\u3001\u8D44\u4EA7\u7F16\u53F7\u8868\u3001\u5206\u9694\u7EBF\uFF08\`---\`\uFF09\u6216\u989D\u5916\u8BF4\u660E\uFF0C\u53EA\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD\u6587\u672C\u3002\u7981\u6B62\u5728\u63D0\u793A\u8BCD\u524D\u540E\u8F93\u51FA\u4EFB\u4F55\u975E\u63D0\u793A\u8BCD\u5185\u5BB9
-- **\u4E25\u683C\u9075\u5FAA videoDesc**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u63D0\u793A\u8BCD\u5185\u5BB9\u4E25\u683C\u57FA\u4E8E videoDesc \u4E2D\u7684\u753B\u9762\u63CF\u8FF0\u3001\u65F6\u957F\u3001\u666F\u522B\u3001\u8FD0\u955C\u3001\u89D2\u8272\u52A8\u4F5C\u3001\u60C5\u7EEA\u3001\u5149\u5F71\u6C1B\u56F4\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u5B57\u6BB5\u751F\u6210\uFF0C\u4E0D\u7F16\u9020\u989D\u5916\u5185\u5BB9
-- **\u53F0\u8BCD\u4E0D\u53EF\u7F3A\u5931**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1AvideoDesc \u4E2D\u6709\u53F0\u8BCD\u7684\u5206\u955C\uFF0C\u5FC5\u987B\u5728\u63D0\u793A\u8BCD\u4E2D\u5B8C\u6574\u4F53\u73B0\u53F0\u8BCD\u5185\u5BB9\uFF0C\u4E0D\u5F97\u9057\u6F0F
-- **\u53F0\u8BCD\u4FDD\u6301\u539F\u59CB\u8F93\u5165**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u53F0\u8BCD\u5185\u5BB9\u4E25\u7981\u7FFB\u8BD1\uFF0C\u5FC5\u987B\u4FDD\u6301 videoDesc \u4E2D\u7684\u539F\u59CB\u8BED\u8A00\u539F\u6837\u8F93\u51FA
-- **\u53F0\u8BCD\u7C7B\u578B\u6807\u6CE8**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u5FC5\u987B\u533A\u5206\u666E\u901A\u5BF9\u767D\uFF08dialogue / \u8BF4\uFF09\u3001\u5185\u5FC3\u72EC\u767D\uFF08OS / \u5185\u5FC3OS\uFF09\u3001\u753B\u5916\u97F3\uFF08VO / \u753B\u5916\u97F3VO\uFF09\uFF0C\u5E76\u5728\u63D0\u793A\u8BCD\u4E2D\u6B63\u786E\u6807\u6CE8
-- **\u65F6\u95F4\u8DE8\u5EA6\u6700\u4F4E 1 \u79D2**\uFF08\u5168\u6A21\u5F0F\u901A\u7528\uFF09\uFF1A\u6240\u6709\u6A21\u5F0F\u4E2D\u6D89\u53CA\u65F6\u95F4\u5206\u6BB5\uFF08Motion \u65F6\u95F4\u8F74 / Seedance 2.0 \u5206\u955C\u65F6\u957F {N}s\uFF09\u7684\u6700\u5C0F\u7C92\u5EA6\u4E3A 1 \u79D2\uFF081s\uFF09\uFF0C\u7981\u6B62\u51FA\u73B0 0.5 \u79D2\u7B49\u4F4E\u4E8E 1 \u79D2\u7684\u95F4\u9694
-- **\u89C6\u89C9\u98CE\u683C**\uFF1A\u98CE\u683C\u76F8\u5173\u63CF\u8FF0\u53C2\u8003 Assistant \u4E2D\u7684\u300C\u89C6\u89C9\u98CE\u683C\u7EA6\u675F\u300D\u90E8\u5206\u5185\u5BB9\uFF0C\u4E0D\u5728\u672C Skill \u5185\u81EA\u884C\u5B9A\u4E49\u98CE\u683C
-- **\u4E25\u683C\u6309\u5339\u914D\u5230\u7684\u6A21\u5F0F\u683C\u5F0F**\uFF0C\u4E0D\u6DF7\u7528\u4E0D\u540C\u6A21\u5F0F\u7684\u683C\u5F0F
-- **\u4E0D\u4FEE\u6539\u539F\u59CB\u8F93\u5165**\uFF1A\u4E0D\u6539\u5199 \`<storyboardItem>\` \u7684\u4EFB\u4F55\u5B57\u6BB5\uFF1B\`prompt\` \u5DF2\u6709\u7684\u5206\u955C\u56FE\u63D0\u793A\u8BCD\u4EC5\u4F5C\u753B\u9762\u53C2\u8003
-- **\u4E0D\u7F16\u9020\u8D44\u4EA7\u6216\u53F0\u8BCD**\uFF1A\u53EA\u4F7F\u7528\u8F93\u5165\u4E2D\u7684\u8D44\u4EA7\u4FE1\u606F\uFF1B\u65E0\u53F0\u8BCD\u5219\u6807\u6CE8\u300C\u65E0\u53F0\u8BCD\u300D/ \`No dialogue\`
-- **\u65F6\u957F\u5355\u4F4D**\uFF1ASeedance 2.0 \u7684\u5206\u955C\u65F6\u957F\u76F4\u63A5\u4F7F\u7528\u79D2\uFF0C\u683C\u5F0F\u4E3A \`{N}s\`\uFF08\u5982 \`4s\`\uFF09\uFF0C\u6700\u4F4E 1s
-`
+        data: [
+          "# Video Prompt Generation Skill",
+          "",
+          "The backend provides structured <trackStoryboard ...> facts and visual references.",
+          "Read only structured attributes: duration, location, timeOfDay, scene, picture, action, shotSize, cameraMove, dialogue, sound, visibleEmotion, groupKey, groupName, groupIntent, beatId, characters, requiredAssets.",
+          "Do not parse or infer business facts from videoDesc, Markdown, XML text, image prompts, chat text, or any other prose.",
+          "Generate the target model video prompt only. Dialogue, voice tone and diegetic sound effects must come from structured fields; BGM, score and OST are not valid video prompt content."
+        ].join("\\n")
       });
       const data = await knex4("o_vendorConfig").select("*");
       for (const item of data) {
@@ -83341,6 +82595,51 @@ A medium tracking shot follows the woman from behind as she ascends and approach
       await knex4.raw("CREATE INDEX IF NOT EXISTS idx_director_asset_flow_node ON o_directorAsset(flowId, nodeId)");
       await knex4.raw("CREATE INDEX IF NOT EXISTS idx_director_asset_target ON o_directorAsset(targetType, targetId)");
       await knex4.raw("CREATE INDEX IF NOT EXISTS idx_director_asset_type ON o_directorAsset(assetType)");
+      if (!await knex4.schema.hasTable("o_storyArtifact")) {
+        await knex4.schema.createTable("o_storyArtifact", (table) => {
+          table.increments("id").primary();
+          table.integer("projectId").notNullable();
+          table.string("type").notNullable();
+          table.text("title").notNullable();
+          table.text("content").notNullable();
+          table.text("contentJson");
+          table.integer("version").notNullable().defaultTo(1);
+          table.integer("parentId");
+          table.string("status").notNullable().defaultTo("draft");
+          table.integer("createTime");
+          table.integer("updateTime");
+        });
+      }
+      if (!await knex4.schema.hasTable("o_storyAnnotation")) {
+        await knex4.schema.createTable("o_storyAnnotation", (table) => {
+          table.increments("id").primary();
+          table.integer("projectId").notNullable();
+          table.integer("artifactId").notNullable();
+          table.integer("artifactVersion").notNullable().defaultTo(1);
+          table.string("blockId");
+          table.integer("startOffset");
+          table.integer("endOffset");
+          table.text("selectedText").notNullable();
+          table.text("comment").notNullable();
+          table.string("status").notNullable().defaultTo("open");
+          table.integer("createTime");
+          table.integer("updateTime");
+        });
+      }
+      if (!await knex4.schema.hasTable("o_storyRevisionMap")) {
+        await knex4.schema.createTable("o_storyRevisionMap", (table) => {
+          table.increments("id").primary();
+          table.integer("projectId").notNullable();
+          table.integer("sourceArtifactId").notNullable();
+          table.integer("newArtifactId").notNullable();
+          table.text("annotationIds");
+          table.text("changeSummary");
+          table.integer("createTime");
+        });
+      }
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_story_artifact_project_type ON o_storyArtifact(projectId, type, status)");
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_story_annotation_artifact_status ON o_storyAnnotation(artifactId, status)");
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_story_revision_project_source ON o_storyRevisionMap(projectId, sourceArtifactId)");
       await knex4.raw(`
     UPDATE o_editImageTask
     SET targetType = 'deriveAsset', targetId = deriveAssetId
@@ -83433,6 +82732,142 @@ A medium tracking shot follows the woman from behind as she ascends and approach
       await knex4.raw("CREATE INDEX IF NOT EXISTS idx_task_event_task_version ON o_taskEvent(taskId, version)");
       await knex4.raw("CREATE INDEX IF NOT EXISTS idx_task_event_scope ON o_taskEvent(projectId, scriptId, id)");
       await knex4.raw("CREATE INDEX IF NOT EXISTS idx_task_event_created ON o_taskEvent(createdAt)");
+      if (!await knex4.schema.hasTable("o_textAsset")) {
+        await knex4.schema.createTable("o_textAsset", (table) => {
+          table.integer("id").notNullable();
+          table.integer("projectId").notNullable();
+          table.integer("scriptId");
+          table.string("targetType").notNullable();
+          table.string("targetId");
+          table.text("filePath").notNullable();
+          table.text("summary");
+          table.integer("size").notNullable().defaultTo(0);
+          table.string("hash").notNullable();
+          table.integer("version").notNullable().defaultTo(1);
+          table.string("state").notNullable().defaultTo("complete");
+          table.integer("createTime").notNullable();
+          table.integer("updateTime").notNullable();
+          table.primary(["id"]);
+          table.unique(["id"]);
+        });
+      }
+      await addColumn("o_textAsset", "scriptId", "integer");
+      await addColumn("o_textAsset", "targetId", "string");
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_text_asset_target ON o_textAsset(projectId, scriptId, targetType, targetId)");
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_text_asset_state ON o_textAsset(state, updateTime)");
+      await addColumn("o_storyboard", "groupKey", "text");
+      await addColumn("o_storyboard", "groupName", "text");
+      await addColumn("o_storyboard", "groupIntent", "text");
+      await addColumn("o_storyboard", "beatId", "text");
+      await addColumn("o_storyboard", "scene", "text");
+      await addColumn("o_storyboard", "picture", "text");
+      await addColumn("o_storyboard", "action", "text");
+      await addColumn("o_storyboard", "shotSize", "text");
+      await addColumn("o_storyboard", "cameraMove", "text");
+      await addColumn("o_storyboard", "dialogue", "text");
+      await addColumn("o_storyboard", "sound", "text");
+      await addColumn("o_storyboard", "visibleEmotion", "text");
+      await addColumn("o_storyboard", "location", "text");
+      await addColumn("o_storyboard", "timeOfDay", "text");
+      await addColumn("o_storyboard", "sceneContinuityId", "text");
+      await addColumn("o_storyboard", "tableRowJson", "text");
+      await addColumn("o_storyboard", "factStatus", "text");
+      await addColumn("o_storyboard", "factVersion", "integer");
+      await addColumn("o_storyboard", "factRevision", "integer");
+      await knex4("o_storyboard").whereNull("factStatus").update({
+        factStatus: knex4.raw("CASE WHEN tableRowJson IS NULL OR TRIM(tableRowJson) = '' THEN 'legacy' ELSE 'draft' END")
+      });
+      await knex4("o_storyboard").whereNull("factVersion").update({ factVersion: 1 });
+      await knex4("o_storyboard").whereNull("factRevision").update({ factRevision: 0 });
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_storyboard_scope_index ON o_storyboard(projectId, scriptId, [index])");
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_storyboard_track ON o_storyboard(trackId)");
+      await addColumn("o_videoTrack", "groupKey", "text");
+      await addColumn("o_videoTrack", "groupName", "text");
+      await addColumn("o_videoTrack", "groupIntent", "text");
+      await addColumn("o_videoTrack", "musicPlanJson", "text");
+      await addColumn("o_videoTrack", "groupPlanJson", "text");
+      await addColumn("o_videoTrack", "reviewState", "text");
+      await addColumn("o_videoTrack", "reviewIssuesJson", "text");
+      await addColumn("o_videoTrack", "archived", "integer");
+      await knex4("o_videoTrack").whereNull("reviewState").update({ reviewState: "pending" });
+      await knex4("o_videoTrack").whereNull("reviewIssuesJson").update({ reviewIssuesJson: "[]" });
+      await knex4("o_videoTrack").whereNull("archived").update({ archived: 0 });
+      if (!await knex4.schema.hasTable("o_storyboardGeneration")) {
+        await knex4.schema.createTable("o_storyboardGeneration", (table) => {
+          table.increments("id").primary();
+          table.string("generationId").notNullable().unique();
+          table.integer("projectId").notNullable();
+          table.integer("scriptId").notNullable();
+          table.integer("expectedRowCount").notNullable();
+          table.text("groupPlanJson").notNullable();
+          table.string("state").notNullable().defaultTo("writing");
+          table.integer("revision");
+          table.integer("createdAt").notNullable();
+          table.integer("updatedAt").notNullable();
+        });
+      }
+      await addColumn("o_storyboardGeneration", "errorJson", "text");
+      await knex4.raw(
+        "CREATE INDEX IF NOT EXISTS idx_storyboard_generation_scope ON o_storyboardGeneration(projectId, scriptId, state)"
+      );
+      await knex4.raw(
+        "CREATE INDEX IF NOT EXISTS idx_storyboard_generation_expiry ON o_storyboardGeneration(state, updatedAt)"
+      );
+      if (!await knex4.schema.hasTable("o_storyboardGenerationRow")) {
+        await knex4.schema.createTable("o_storyboardGenerationRow", (table) => {
+          table.increments("id").primary();
+          table.string("generationId").notNullable();
+          table.integer("rowIndex").notNullable();
+          table.text("rowJson").notNullable();
+          table.string("rowHash").notNullable();
+          table.integer("createdAt").notNullable();
+          table.integer("updatedAt").notNullable();
+          table.unique(["generationId", "rowIndex"], {
+            indexName: "uq_storyboard_generation_row"
+          });
+        });
+      }
+      await knex4.raw(
+        "CREATE INDEX IF NOT EXISTS idx_storyboard_generation_row_order ON o_storyboardGenerationRow(generationId, rowIndex)"
+      );
+      await knex4.raw(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_storyboard_generation_row ON o_storyboardGenerationRow(generationId, rowIndex)"
+      );
+      if (!await knex4.schema.hasTable("o_productionReviewSuggestion")) {
+        await knex4.schema.createTable("o_productionReviewSuggestion", (table) => {
+          table.increments("id").primary();
+          table.integer("projectId").notNullable();
+          table.integer("scriptId");
+          table.string("targetType").notNullable();
+          table.string("targetId").notNullable();
+          table.integer("parentId");
+          table.integer("version").notNullable().defaultTo(1);
+          table.string("issueType").notNullable();
+          table.string("severity").notNullable();
+          table.text("message").notNullable();
+          table.text("reason");
+          table.text("proposedAction");
+          table.text("proposedPatch");
+          table.string("status").notNullable().defaultTo("open");
+          table.integer("createTime").notNullable();
+          table.integer("updateTime").notNullable();
+        });
+      }
+      if (!await knex4.schema.hasTable("o_productionReviewFeedback")) {
+        await knex4.schema.createTable("o_productionReviewFeedback", (table) => {
+          table.increments("id").primary();
+          table.integer("suggestionId").notNullable();
+          table.integer("projectId").notNullable();
+          table.integer("scriptId");
+          table.text("comment").notNullable();
+          table.string("mode").notNullable();
+          table.integer("createTime").notNullable();
+        });
+      }
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_review_suggestion_target ON o_productionReviewSuggestion(projectId, scriptId, targetType, targetId)");
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_review_suggestion_status ON o_productionReviewSuggestion(status, severity)");
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_review_feedback_suggestion ON o_productionReviewFeedback(suggestionId)");
+      await knex4.raw("CREATE INDEX IF NOT EXISTS idx_review_feedback_scope ON o_productionReviewFeedback(projectId, scriptId)");
       if (!await knex4.schema.hasTable("o_projectStorage")) {
         await knex4.schema.createTable("o_projectStorage", (table) => {
           table.integer("projectId").notNullable().primary();
@@ -83460,6 +82895,12 @@ A medium tracking shot follows the woman from behind as she ascends and approach
         "o_script",
         "o_assets",
         "o_storyboard",
+        "o_storyArtifact",
+        "o_storyAnnotation",
+        "o_storyRevisionMap",
+        "o_productionReviewSuggestion",
+        "o_productionReviewFeedback",
+        "o_textAsset",
         "o_agentWorkData",
         "o_video",
         "o_videoTrack",
@@ -83489,6 +82930,12 @@ A medium tracking shot follows the woman from behind as she ascends and approach
         ["o_script", "COALESCE(NEW.projectId, OLD.projectId)"],
         ["o_assets", "COALESCE(NEW.projectId, OLD.projectId)"],
         ["o_storyboard", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_storyArtifact", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_storyAnnotation", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_storyRevisionMap", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_productionReviewSuggestion", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_productionReviewFeedback", "COALESCE(NEW.projectId, OLD.projectId)"],
+        ["o_textAsset", "COALESCE(NEW.projectId, OLD.projectId)"],
         ["o_video", "COALESCE(NEW.projectId, OLD.projectId)"],
         ["o_videoTrack", "COALESCE(NEW.projectId, OLD.projectId)"],
         ["o_workbenchMergedReference", "COALESCE(NEW.projectId, OLD.projectId)"],
@@ -83615,16 +83062,16 @@ function applyConfigDefaults(config3) {
     schemaAsNamespace: false,
     typeOverrides: {},
     typeMap: {},
-    template: path10.join(path10.dirname((0, import_url2.fileURLToPath)(import_meta.url)), "./template.handlebars"),
+    template: path11.join(path11.dirname((0, import_url2.fileURLToPath)(import_meta.url)), "./template.handlebars"),
     custom: {}
   };
   return Object.assign(defaultConfig, config3);
 }
-var path10, import_url2, import_meta;
+var path11, import_url2, import_meta;
 var init_ConfigTasks = __esm({
   "node_modules/@rmp135/sql-ts/dist/ConfigTasks.js"() {
     "use strict";
-    path10 = __toESM(require("path"), 1);
+    path11 = __toESM(require("path"), 1);
     import_url2 = require("url");
     import_meta = {};
   }
@@ -85232,11 +84679,11 @@ var init_toKey = __esm({
 });
 
 // node_modules/lodash-es/_baseGet.js
-function baseGet(object4, path27) {
-  path27 = castPath_default(path27, object4);
-  var index = 0, length = path27.length;
+function baseGet(object4, path29) {
+  path29 = castPath_default(path29, object4);
+  var index = 0, length = path29.length;
   while (object4 != null && index < length) {
-    object4 = object4[toKey_default(path27[index++])];
+    object4 = object4[toKey_default(path29[index++])];
   }
   return index && index == length ? object4 : void 0;
 }
@@ -85251,8 +84698,8 @@ var init_baseGet = __esm({
 });
 
 // node_modules/lodash-es/get.js
-function get(object4, path27, defaultValue) {
-  var result = object4 == null ? void 0 : baseGet_default(object4, path27);
+function get(object4, path29, defaultValue) {
+  var result = object4 == null ? void 0 : baseGet_default(object4, path29);
   return result === void 0 ? defaultValue : result;
 }
 var get_default;
@@ -86061,11 +85508,11 @@ var init_baseHasIn = __esm({
 });
 
 // node_modules/lodash-es/_hasPath.js
-function hasPath(object4, path27, hasFunc) {
-  path27 = castPath_default(path27, object4);
-  var index = -1, length = path27.length, result = false;
+function hasPath(object4, path29, hasFunc) {
+  path29 = castPath_default(path29, object4);
+  var index = -1, length = path29.length, result = false;
   while (++index < length) {
-    var key = toKey_default(path27[index]);
+    var key = toKey_default(path29[index]);
     if (!(result = object4 != null && hasFunc(object4, key))) {
       break;
     }
@@ -86092,8 +85539,8 @@ var init_hasPath = __esm({
 });
 
 // node_modules/lodash-es/hasIn.js
-function hasIn(object4, path27) {
-  return object4 != null && hasPath_default(object4, path27, baseHasIn_default);
+function hasIn(object4, path29) {
+  return object4 != null && hasPath_default(object4, path29, baseHasIn_default);
 }
 var hasIn_default;
 var init_hasIn = __esm({
@@ -86106,13 +85553,13 @@ var init_hasIn = __esm({
 });
 
 // node_modules/lodash-es/_baseMatchesProperty.js
-function baseMatchesProperty(path27, srcValue) {
-  if (isKey_default(path27) && isStrictComparable_default(srcValue)) {
-    return matchesStrictComparable_default(toKey_default(path27), srcValue);
+function baseMatchesProperty(path29, srcValue) {
+  if (isKey_default(path29) && isStrictComparable_default(srcValue)) {
+    return matchesStrictComparable_default(toKey_default(path29), srcValue);
   }
   return function(object4) {
-    var objValue = get_default(object4, path27);
-    return objValue === void 0 && objValue === srcValue ? hasIn_default(object4, path27) : baseIsEqual_default(srcValue, objValue, COMPARE_PARTIAL_FLAG6 | COMPARE_UNORDERED_FLAG4);
+    var objValue = get_default(object4, path29);
+    return objValue === void 0 && objValue === srcValue ? hasIn_default(object4, path29) : baseIsEqual_default(srcValue, objValue, COMPARE_PARTIAL_FLAG6 | COMPARE_UNORDERED_FLAG4);
   };
 }
 var COMPARE_PARTIAL_FLAG6, COMPARE_UNORDERED_FLAG4, baseMatchesProperty_default;
@@ -86147,9 +85594,9 @@ var init_baseProperty = __esm({
 });
 
 // node_modules/lodash-es/_basePropertyDeep.js
-function basePropertyDeep(path27) {
+function basePropertyDeep(path29) {
   return function(object4) {
-    return baseGet_default(object4, path27);
+    return baseGet_default(object4, path29);
   };
 }
 var basePropertyDeep_default;
@@ -86162,8 +85609,8 @@ var init_basePropertyDeep = __esm({
 });
 
 // node_modules/lodash-es/property.js
-function property(path27) {
-  return isKey_default(path27) ? baseProperty_default(toKey_default(path27)) : basePropertyDeep_default(path27);
+function property(path29) {
+  return isKey_default(path29) ? baseProperty_default(toKey_default(path29)) : basePropertyDeep_default(path29);
 }
 var property_default;
 var init_property = __esm({
@@ -87533,13 +86980,13 @@ var require_logger2 = __commonJS({
     "use strict";
     exports2.__esModule = true;
     var _utils = require_utils5();
-    var logger2 = {
+    var logger3 = {
       methodMap: ["debug", "info", "warn", "error"],
       level: "info",
       // Maps a given level value to the `methodMap` indexes above.
       lookupLevel: function lookupLevel(level) {
         if (typeof level === "string") {
-          var levelMap = _utils.indexOf(logger2.methodMap, level.toLowerCase());
+          var levelMap = _utils.indexOf(logger3.methodMap, level.toLowerCase());
           if (levelMap >= 0) {
             level = levelMap;
           } else {
@@ -87550,9 +86997,9 @@ var require_logger2 = __commonJS({
       },
       // Can be overridden in the host environment
       log: function log(level) {
-        level = logger2.lookupLevel(level);
-        if (typeof console !== "undefined" && logger2.lookupLevel(logger2.level) <= level) {
-          var method = logger2.methodMap[level];
+        level = logger3.lookupLevel(level);
+        if (typeof console !== "undefined" && logger3.lookupLevel(logger3.level) <= level) {
+          var method = logger3.methodMap[level];
           if (!console[method]) {
             method = "log";
           }
@@ -87563,7 +87010,7 @@ var require_logger2 = __commonJS({
         }
       }
     };
-    exports2["default"] = logger2;
+    exports2["default"] = logger3;
     module2.exports = exports2["default"];
   }
 });
@@ -88184,13 +87631,13 @@ var require_ast = __commonJS({
         helperExpression: function helperExpression(node) {
           return node.type === "SubExpression" || (node.type === "MustacheStatement" || node.type === "BlockStatement") && !!(node.params && node.params.length || node.hash);
         },
-        scopedId: function scopedId(path27) {
-          return /^\.|this\b/.test(path27.original);
+        scopedId: function scopedId(path29) {
+          return /^\.|this\b/.test(path29.original);
         },
         // an ID is simple if it only has one part, and that part is not
         // `..` or `this`.
-        simpleId: function simpleId(path27) {
-          return path27.parts.length === 1 && !AST.helpers.scopedId(path27) && !path27.depth;
+        simpleId: function simpleId(path29) {
+          return path29.parts.length === 1 && !AST.helpers.scopedId(path29) && !path29.depth;
         }
       }
     };
@@ -89260,12 +88707,12 @@ var require_helpers4 = __commonJS({
         loc
       };
     }
-    function prepareMustache(path27, params, hash3, open, strip, locInfo) {
+    function prepareMustache(path29, params, hash3, open, strip, locInfo) {
       var escapeFlag = open.charAt(3) || open.charAt(2), escaped = escapeFlag !== "{" && escapeFlag !== "&";
       var decorator = /\*/.test(open);
       return {
         type: decorator ? "Decorator" : "MustacheStatement",
-        path: path27,
+        path: path29,
         params,
         hash: hash3,
         escaped,
@@ -89583,9 +89030,9 @@ var require_compiler3 = __commonJS({
       },
       DecoratorBlock: function DecoratorBlock(decorator) {
         var program = decorator.program && this.compileProgram(decorator.program);
-        var params = this.setupFullMustacheParams(decorator, program, void 0), path27 = decorator.path;
+        var params = this.setupFullMustacheParams(decorator, program, void 0), path29 = decorator.path;
         this.useDecorators = true;
-        this.opcode("registerDecorator", params.length, path27.original);
+        this.opcode("registerDecorator", params.length, path29.original);
       },
       PartialStatement: function PartialStatement(partial3) {
         this.usePartial = true;
@@ -89649,46 +89096,46 @@ var require_compiler3 = __commonJS({
         }
       },
       ambiguousSexpr: function ambiguousSexpr(sexpr, program, inverse) {
-        var path27 = sexpr.path, name28 = path27.parts[0], isBlock = program != null || inverse != null;
-        this.opcode("getContext", path27.depth);
+        var path29 = sexpr.path, name28 = path29.parts[0], isBlock = program != null || inverse != null;
+        this.opcode("getContext", path29.depth);
         this.opcode("pushProgram", program);
         this.opcode("pushProgram", inverse);
-        path27.strict = true;
-        this.accept(path27);
+        path29.strict = true;
+        this.accept(path29);
         this.opcode("invokeAmbiguous", name28, isBlock);
       },
       simpleSexpr: function simpleSexpr(sexpr) {
-        var path27 = sexpr.path;
-        path27.strict = true;
-        this.accept(path27);
+        var path29 = sexpr.path;
+        path29.strict = true;
+        this.accept(path29);
         this.opcode("resolvePossibleLambda");
       },
       helperSexpr: function helperSexpr(sexpr, program, inverse) {
-        var params = this.setupFullMustacheParams(sexpr, program, inverse), path27 = sexpr.path, name28 = path27.parts[0];
+        var params = this.setupFullMustacheParams(sexpr, program, inverse), path29 = sexpr.path, name28 = path29.parts[0];
         if (this.options.knownHelpers[name28]) {
           this.opcode("invokeKnownHelper", params.length, name28);
         } else if (this.options.knownHelpersOnly) {
           throw new _exception2["default"]("You specified knownHelpersOnly, but used the unknown helper " + name28, sexpr);
         } else {
-          path27.strict = true;
-          path27.falsy = true;
-          this.accept(path27);
-          this.opcode("invokeHelper", params.length, path27.original, _ast2["default"].helpers.simpleId(path27));
+          path29.strict = true;
+          path29.falsy = true;
+          this.accept(path29);
+          this.opcode("invokeHelper", params.length, path29.original, _ast2["default"].helpers.simpleId(path29));
         }
       },
-      PathExpression: function PathExpression(path27) {
-        this.addDepth(path27.depth);
-        this.opcode("getContext", path27.depth);
-        var name28 = path27.parts[0], scoped = _ast2["default"].helpers.scopedId(path27), blockParamId = !path27.depth && !scoped && this.blockParamIndex(name28);
+      PathExpression: function PathExpression(path29) {
+        this.addDepth(path29.depth);
+        this.opcode("getContext", path29.depth);
+        var name28 = path29.parts[0], scoped = _ast2["default"].helpers.scopedId(path29), blockParamId = !path29.depth && !scoped && this.blockParamIndex(name28);
         if (blockParamId) {
-          this.opcode("lookupBlockParam", blockParamId, path27.parts);
+          this.opcode("lookupBlockParam", blockParamId, path29.parts);
         } else if (!name28) {
           this.opcode("pushContext");
-        } else if (path27.data) {
+        } else if (path29.data) {
           this.options.data = true;
-          this.opcode("lookupData", path27.depth, path27.parts, path27.strict);
+          this.opcode("lookupData", path29.depth, path29.parts, path29.strict);
         } else {
-          this.opcode("lookupOnContext", path27.parts, path27.falsy, path27.strict, scoped);
+          this.opcode("lookupOnContext", path29.parts, path29.falsy, path29.strict, scoped);
         }
       },
       StringLiteral: function StringLiteral(string5) {
@@ -90041,16 +89488,16 @@ var require_util3 = __commonJS({
     }
     exports2.urlGenerate = urlGenerate;
     function normalize(aPath) {
-      var path27 = aPath;
+      var path29 = aPath;
       var url4 = urlParse(aPath);
       if (url4) {
         if (!url4.path) {
           return aPath;
         }
-        path27 = url4.path;
+        path29 = url4.path;
       }
-      var isAbsolute = exports2.isAbsolute(path27);
-      var parts = path27.split(/\/+/);
+      var isAbsolute = exports2.isAbsolute(path29);
+      var parts = path29.split(/\/+/);
       for (var part, up = 0, i = parts.length - 1; i >= 0; i--) {
         part = parts[i];
         if (part === ".") {
@@ -90067,15 +89514,15 @@ var require_util3 = __commonJS({
           }
         }
       }
-      path27 = parts.join("/");
-      if (path27 === "") {
-        path27 = isAbsolute ? "/" : ".";
+      path29 = parts.join("/");
+      if (path29 === "") {
+        path29 = isAbsolute ? "/" : ".";
       }
       if (url4) {
-        url4.path = path27;
+        url4.path = path29;
         return urlGenerate(url4);
       }
-      return path27;
+      return path29;
     }
     exports2.normalize = normalize;
     function join2(aRoot, aPath) {
@@ -92866,8 +92313,8 @@ var require_printer = __commonJS({
       return this.accept(sexpr.path) + " " + params + hash3;
     };
     PrintVisitor.prototype.PathExpression = function(id) {
-      var path27 = id.parts.join("/");
-      return (id.data ? "@" : "") + "PATH:" + path27;
+      var path29 = id.parts.join("/");
+      return (id.data ? "@" : "") + "PATH:" + path29;
     };
     PrintVisitor.prototype.StringLiteral = function(string5) {
       return '"' + string5.value + '"';
@@ -92907,8 +92354,8 @@ var require_lib2 = __commonJS({
     handlebars.print = printer.print;
     module2.exports = handlebars;
     function extension(module3, filename) {
-      var fs23 = require("fs");
-      var templateString = fs23.readFileSync(filename, "utf8");
+      var fs25 = require("fs");
+      var templateString = fs25.readFileSync(filename, "utf8");
       module3.exports = handlebars.compile(templateString);
     }
     if (typeof require !== "undefined" && require.extensions) {
@@ -92920,7 +92367,7 @@ var require_lib2 = __commonJS({
 
 // node_modules/@rmp135/sql-ts/dist/DatabaseTasks.js
 function convertDatabaseToTypescript(database, config3) {
-  const templateString = fs9.readFileSync(config3.template, "utf-8");
+  const templateString = fs10.readFileSync(config3.template, "utf-8");
   const compiler = import_handlebars.default.compile(templateString, { noEscape: true });
   import_handlebars.default.registerHelper("handleNumeric", handleNumeric);
   return compiler({
@@ -92946,14 +92393,14 @@ async function generateDatabase(config3, db2) {
   };
   return database;
 }
-var import_handlebars, fs9;
+var import_handlebars, fs10;
 var init_DatabaseTasks = __esm({
   "node_modules/@rmp135/sql-ts/dist/DatabaseTasks.js"() {
     "use strict";
     init_TableTasks();
     init_EnumTasks();
     import_handlebars = __toESM(require_lib2(), 1);
-    fs9 = __toESM(require("fs"), 1);
+    fs10 = __toESM(require("fs"), 1);
   }
 });
 
@@ -93107,7 +92554,7 @@ function runtimeRole() {
   return process.env.TOONFLOW_RUNTIME_ROLE || "main";
 }
 function busyTimeoutMs() {
-  if (runtimeRole() === "api") return 500;
+  if (runtimeRole() === "api") return 5e3;
   if (runtimeRole() === "worker") return 5e3;
   return 2e3;
 }
@@ -93172,7 +92619,7 @@ ${customHeader}
   }
   if (needWrite) await (0, import_promises6.writeFile)(outFile, content, "utf8");
 }
-var import_promises6, import_fs3, import_path3, import_knex3, import_crypto2, queryStartedAt, dbDiagnostics, dbPath, dbDir, splitStorage, profilePath, profileDb, db, dbReady, dbClient, rawTransaction, db_default;
+var import_promises6, import_fs3, import_path3, import_knex3, import_crypto2, queryStartedAt, dbDiagnostics, dbLog, dbPath, dbDir, splitStorage, profilePath, profileDb, db, dbReady, dbClient, rawTransaction, db_default;
 var init_db = __esm({
   "src/utils/db.ts"() {
     "use strict";
@@ -93184,6 +92631,7 @@ var init_db = __esm({
     import_crypto2 = __toESM(require("crypto"));
     init_fixDB();
     init_storagePaths();
+    init_logger();
     queryStartedAt = /* @__PURE__ */ new Map();
     dbDiagnostics = {
       queryCount: 0,
@@ -93195,8 +92643,9 @@ var init_db = __esm({
       slowTransactions: 0,
       recentSlowQueries: []
     };
+    dbLog = createLogger("db");
     dbPath = workspaceDatabasePath();
-    console.log("\u6570\u636E\u5E93\u76EE\u5F55:", dbPath);
+    dbLog.info("Database path resolved", { event: "db.path", path: dbPath });
     dbDir = import_path3.default.dirname(dbPath);
     splitStorage = storageMode() === "workspace";
     profilePath = profileDatabasePath();
@@ -93267,13 +92716,26 @@ var init_db = __esm({
           at: Date.now()
         });
         dbDiagnostics.recentSlowQueries.splice(0, Math.max(0, dbDiagnostics.recentSlowQueries.length - 50));
-        console.warn(`[db:${runtimeRole()}] slow query ${durationMs.toFixed(1)}ms: ${summarizeSql(query?.sql)}`);
+        dbLog.warn("Slow database query", {
+          event: "db.slow-query",
+          durationMs: Number(durationMs.toFixed(2)),
+          sql: summarizeSql(query?.sql),
+          role: runtimeRole()
+        });
       }
     });
     db.on("query-error", (error50, query) => {
       const key = queryKey(query);
       if (key) queryStartedAt.delete(key);
-      if (String(error50?.code || error50?.message).includes("SQLITE_BUSY")) dbDiagnostics.busyCount += 1;
+      if (String(error50?.code || error50?.message).includes("SQLITE_BUSY")) {
+        dbDiagnostics.busyCount += 1;
+        dbLog.warn("SQLite busy", {
+          event: "db.sqlite-busy",
+          sql: summarizeSql(query?.sql),
+          role: runtimeRole(),
+          error: error50
+        });
+      }
     });
     dbReady = process.env.TOONFLOW_SKIP_DB_INIT === "1" ? Promise.resolve() : (async () => {
       if (profileDb) await initDB_default(profileDb, false, { includeTables: PROFILE_TABLES });
@@ -93294,7 +92756,11 @@ var init_db = __esm({
         dbDiagnostics.transactionTotalMs += durationMs;
         if (durationMs >= 100) {
           dbDiagnostics.slowTransactions += 1;
-          console.warn(`[db:${runtimeRole()}] slow transaction ${durationMs.toFixed(1)}ms`);
+          dbLog.warn("Slow database transaction", {
+            event: "db.slow-transaction",
+            durationMs: Number(durationMs.toFixed(2)),
+            role: runtimeRole()
+          });
         }
       }
     };
@@ -93309,7 +92775,7 @@ var init_db = __esm({
 // src/utils/oss.ts
 function normalizeUserPath(userPath) {
   const trimmedPath = userPath.replace(/^[/\\]+/, "");
-  return trimmedPath.split("/").join(import_node_path8.default.sep);
+  return trimmedPath.split("/").join(import_node_path9.default.sep);
 }
 function resolveSafeLocalPath(userPath, _rootDir) {
   const absPath = resolveMediaFilePath(normalizeUserPath(userPath));
@@ -93318,14 +92784,14 @@ function resolveSafeLocalPath(userPath, _rootDir) {
   }
   return absPath;
 }
-var import_promises7, import_node_fs2, import_node_path8, import_promises8, OSS, oss_default;
+var import_promises7, import_node_fs3, import_node_path9, import_promises8, OSS, oss_default;
 var init_oss = __esm({
   "src/utils/oss.ts"() {
     "use strict";
     init_getPath();
     import_promises7 = __toESM(require("node:fs/promises"));
-    import_node_fs2 = __toESM(require("node:fs"));
-    import_node_path8 = __toESM(require("node:path"));
+    import_node_fs3 = __toESM(require("node:fs"));
+    import_node_path9 = __toESM(require("node:path"));
     import_promises8 = require("node:stream/promises");
     init_runtimeProtocol();
     init_storagePaths();
@@ -93354,7 +92820,7 @@ var init_oss = __esm({
         await this.ensureInit();
         const safePath = normalizeUserPath(userRelPath);
         const url4 = `http://${RUNTIME_API_HOST}:${RUNTIME_API_PORT}/${prefix}/`;
-        return `${url4}${safePath.split(import_node_path8.default.sep).join("/")}`;
+        return `${url4}${safePath.split(import_node_path9.default.sep).join("/")}`;
       }
       /**
        * 读取指定路径的文件内容为 Buffer。
@@ -93385,14 +92851,14 @@ var init_oss = __esm({
         const sourceStat = await import_promises7.default.stat(sourcePath);
         if (!sourceStat.isFile()) throw new Error(`\u751F\u6210\u7ED3\u679C\u4E0D\u662F\u6709\u6548\u6587\u4EF6: ${sourcePath}`);
         const targetPath = resolveSafeLocalPath(userRelPath, this.rootDir);
-        await import_promises7.default.mkdir(import_node_path8.default.dirname(targetPath), { recursive: true });
+        await import_promises7.default.mkdir(import_node_path9.default.dirname(targetPath), { recursive: true });
         await import_promises7.default.copyFile(sourcePath, targetPath);
       }
       async writeStream(userRelPath, stream4) {
         await this.ensureInit();
         const targetPath = resolveSafeLocalPath(userRelPath, this.rootDir);
-        await import_promises7.default.mkdir(import_node_path8.default.dirname(targetPath), { recursive: true });
-        await (0, import_promises8.pipeline)(stream4, import_node_fs2.default.createWriteStream(targetPath));
+        await import_promises7.default.mkdir(import_node_path9.default.dirname(targetPath), { recursive: true });
+        await (0, import_promises8.pipeline)(stream4, import_node_fs3.default.createWriteStream(targetPath));
       }
       /**
        * 读取图片文件并转换为 base64 编码的 Data URL。
@@ -93407,7 +92873,7 @@ var init_oss = __esm({
         if (!stat.isFile()) {
           throw new Error(`${userRelPath} \u4E0D\u662F\u6587\u4EF6`);
         }
-        const ext = import_node_path8.default.extname(userRelPath).toLowerCase();
+        const ext = import_node_path9.default.extname(userRelPath).toLowerCase();
         const mimeTypes = {
           ".jpg": "image/jpeg",
           ".jpeg": "image/jpeg",
@@ -93470,7 +92936,7 @@ var init_oss = __esm({
       async writeFile(userRelPath, data) {
         await this.ensureInit();
         const absPath = resolveSafeLocalPath(userRelPath, this.rootDir);
-        await import_promises7.default.mkdir(import_node_path8.default.dirname(absPath), { recursive: true });
+        await import_promises7.default.mkdir(import_node_path9.default.dirname(absPath), { recursive: true });
         const buffer = typeof data === "string" ? Buffer.from(data.replace(/^data:[^;]+;base64,/, ""), "base64") : data;
         await import_promises7.default.writeFile(absPath, buffer);
       }
@@ -93908,8 +93374,8 @@ var init_error = __esm({
 });
 
 // src/utils/stripThink.ts
-function stripThink(text2) {
-  return text2.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+function stripThink(text3) {
+  return text3.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 }
 var init_stripThink = __esm({
   "src/utils/stripThink.ts"() {
@@ -94135,15 +93601,15 @@ var init_dist3 = __esm({
     marker7 = `vercel.ai.error.${name6}`;
     symbol7 = Symbol.for(marker7);
     JSONParseError = class extends (_b7 = AISDKError, _a7 = symbol7, _b7) {
-      constructor({ text: text2, cause }) {
+      constructor({ text: text3, cause }) {
         super({
           name: name6,
-          message: `JSON parsing failed: Text: ${text2}.
+          message: `JSON parsing failed: Text: ${text3}.
 Error message: ${getErrorMessage(cause)}`,
           cause
         });
         this[_a7] = true;
-        this.text = text2;
+        this.text = text3;
       }
       static isInstance(error50) {
         return AISDKError.hasMarker(error50, marker7);
@@ -94736,8 +94202,8 @@ var init_parseUtil = __esm({
     init_errors3();
     init_en2();
     makeIssue = (params) => {
-      const { data, path: path27, errorMaps, issueData } = params;
-      const fullPath = [...path27, ...issueData.path || []];
+      const { data, path: path29, errorMaps, issueData } = params;
+      const fullPath = [...path29, ...issueData.path || []];
       const fullIssue = {
         ...issueData,
         path: fullPath
@@ -95020,11 +94486,11 @@ var init_types = __esm({
     init_parseUtil();
     init_util2();
     ParseInputLazyPath = class {
-      constructor(parent, value, path27, key) {
+      constructor(parent, value, path29, key) {
         this._cachedPath = [];
         this.parent = parent;
         this.data = value;
-        this._path = path27;
+        this._path = path29;
         this._key = key;
       }
       get path() {
@@ -98885,12 +98351,12 @@ function mediaTypeToExtension(mediaType) {
     "x-m4a": "m4a"
   }[subtype]) != null ? _a211 : subtype;
 }
-function _parse2(text2) {
-  const obj = JSON.parse(text2);
+function _parse2(text3) {
+  const obj = JSON.parse(text3);
   if (obj === null || typeof obj !== "object") {
     return obj;
   }
-  if (suspectProtoRx.test(text2) === false && suspectConstructorRx.test(text2) === false) {
+  if (suspectProtoRx.test(text3) === false && suspectConstructorRx.test(text3) === false) {
     return obj;
   }
   return filter2(obj);
@@ -98917,15 +98383,15 @@ function filter2(obj) {
   }
   return obj;
 }
-function secureJsonParse(text2) {
+function secureJsonParse(text3) {
   const { stackTraceLimit } = Error;
   try {
     Error.stackTraceLimit = 0;
   } catch (e) {
-    return _parse2(text2);
+    return _parse2(text3);
   }
   try {
-    return _parse2(text2);
+    return _parse2(text3);
   } finally {
     Error.stackTraceLimit = stackTraceLimit;
   }
@@ -99864,11 +99330,11 @@ async function safeValidateTypes({
   }
 }
 async function parseJSON({
-  text: text2,
+  text: text3,
   schema
 }) {
   try {
-    const value = secureJsonParse(text2);
+    const value = secureJsonParse(text3);
     if (schema == null) {
       return value;
     }
@@ -99877,15 +99343,15 @@ async function parseJSON({
     if (JSONParseError.isInstance(error50) || TypeValidationError.isInstance(error50)) {
       throw error50;
     }
-    throw new JSONParseError({ text: text2, cause: error50 });
+    throw new JSONParseError({ text: text3, cause: error50 });
   }
 }
 async function safeParseJSON({
-  text: text2,
+  text: text3,
   schema
 }) {
   try {
-    const value = secureJsonParse(text2);
+    const value = secureJsonParse(text3);
     if (schema == null) {
       return { success: true, value, rawValue: value };
     }
@@ -99893,7 +99359,7 @@ async function safeParseJSON({
   } catch (error50) {
     return {
       success: false,
-      error: JSONParseError.isInstance(error50) ? error50 : new JSONParseError({ text: text2, cause: error50 }),
+      error: JSONParseError.isInstance(error50) ? error50 : new JSONParseError({ text: text3, cause: error50 }),
       rawValue: void 0
     };
   }
@@ -100982,12 +100448,12 @@ function convertToOpenAIChatMessages({
         break;
       }
       case "assistant": {
-        let text2 = "";
+        let text3 = "";
         const toolCalls = [];
         for (const part of content) {
           switch (part.type) {
             case "text": {
-              text2 += part.text;
+              text3 += part.text;
               break;
             }
             case "tool-call": {
@@ -101005,7 +100471,7 @@ function convertToOpenAIChatMessages({
         }
         messages.push({
           role: "assistant",
-          content: text2,
+          content: text3,
           tool_calls: toolCalls.length > 0 ? toolCalls : void 0
         });
         break;
@@ -101172,9 +100638,9 @@ function convertToOpenAICompletionPrompt({
   user = "user",
   assistant = "assistant"
 }) {
-  let text2 = "";
+  let text3 = "";
   if (prompt[0].role === "system") {
-    text2 += `${prompt[0].content}
+    text3 += `${prompt[0].content}
 
 `;
     prompt = prompt.slice(1);
@@ -101195,7 +100661,7 @@ function convertToOpenAICompletionPrompt({
             }
           }
         }).filter(Boolean).join("");
-        text2 += `${user}:
+        text3 += `${user}:
 ${userMessage}
 
 `;
@@ -101214,7 +100680,7 @@ ${userMessage}
             }
           }
         }).join("");
-        text2 += `${assistant}:
+        text3 += `${assistant}:
 ${assistantMessage}
 
 `;
@@ -101231,10 +100697,10 @@ ${assistantMessage}
       }
     }
   }
-  text2 += `${assistant}:
+  text3 += `${assistant}:
 `;
   return {
-    prompt: text2,
+    prompt: text3,
     stopSequences: [`
 ${user}:`]
   };
@@ -102327,37 +101793,37 @@ function createOpenAI(options = {}) {
   );
   const createChatModel = (modelId) => new OpenAIChatLanguageModel(modelId, {
     provider: `${providerName}.chat`,
-    url: ({ path: path27 }) => `${baseURL}${path27}`,
+    url: ({ path: path29 }) => `${baseURL}${path29}`,
     headers: getHeaders,
     fetch: options.fetch
   });
   const createCompletionModel = (modelId) => new OpenAICompletionLanguageModel(modelId, {
     provider: `${providerName}.completion`,
-    url: ({ path: path27 }) => `${baseURL}${path27}`,
+    url: ({ path: path29 }) => `${baseURL}${path29}`,
     headers: getHeaders,
     fetch: options.fetch
   });
   const createEmbeddingModel = (modelId) => new OpenAIEmbeddingModel(modelId, {
     provider: `${providerName}.embedding`,
-    url: ({ path: path27 }) => `${baseURL}${path27}`,
+    url: ({ path: path29 }) => `${baseURL}${path29}`,
     headers: getHeaders,
     fetch: options.fetch
   });
   const createImageModel = (modelId) => new OpenAIImageModel(modelId, {
     provider: `${providerName}.image`,
-    url: ({ path: path27 }) => `${baseURL}${path27}`,
+    url: ({ path: path29 }) => `${baseURL}${path29}`,
     headers: getHeaders,
     fetch: options.fetch
   });
   const createTranscriptionModel = (modelId) => new OpenAITranscriptionModel(modelId, {
     provider: `${providerName}.transcription`,
-    url: ({ path: path27 }) => `${baseURL}${path27}`,
+    url: ({ path: path29 }) => `${baseURL}${path29}`,
     headers: getHeaders,
     fetch: options.fetch
   });
   const createSpeechModel = (modelId) => new OpenAISpeechModel(modelId, {
     provider: `${providerName}.speech`,
-    url: ({ path: path27 }) => `${baseURL}${path27}`,
+    url: ({ path: path29 }) => `${baseURL}${path29}`,
     headers: getHeaders,
     fetch: options.fetch
   });
@@ -102372,7 +101838,7 @@ function createOpenAI(options = {}) {
   const createResponsesModel = (modelId) => {
     return new OpenAIResponsesLanguageModel(modelId, {
       provider: `${providerName}.responses`,
-      url: ({ path: path27 }) => `${baseURL}${path27}`,
+      url: ({ path: path29 }) => `${baseURL}${path29}`,
       headers: getHeaders,
       fetch: options.fetch,
       fileIdPrefixes: ["file-"]
@@ -102955,9 +102421,9 @@ var init_dist6 = __esm({
         });
         const choice2 = response.choices[0];
         const content = [];
-        const text2 = choice2.message.content;
-        if (text2 != null && text2.length > 0) {
-          content.push({ type: "text", text: text2 });
+        const text3 = choice2.message.content;
+        if (text3 != null && text3.length > 0) {
+          content.push({ type: "text", text: text3 });
         }
         for (const toolCall of (_a31 = choice2.message.tool_calls) != null ? _a31 : []) {
           content.push({
@@ -107113,7 +106579,7 @@ var init_dist6 = __esm({
         return this.config.provider;
       }
       async getArgs({
-        text: text2,
+        text: text3,
         voice = "alloy",
         outputFormat = "mp3",
         speed,
@@ -107129,7 +106595,7 @@ var init_dist6 = __esm({
         });
         const requestBody = {
           model: this.modelId,
-          input: text2,
+          input: text3,
           voice,
           response_format: "mp3",
           speed,
@@ -107490,13 +106956,13 @@ function convertToDeepSeekChatMessages({
         break;
       }
       case "assistant": {
-        let text2 = "";
+        let text3 = "";
         let reasoning;
         const toolCalls = [];
         for (const part of content) {
           switch (part.type) {
             case "text": {
-              text2 += part.text;
+              text3 += part.text;
               break;
             }
             case "reasoning": {
@@ -107525,7 +106991,7 @@ function convertToDeepSeekChatMessages({
         }
         messages.push({
           role: "assistant",
-          content: text2,
+          content: text3,
           reasoning_content: reasoning,
           tool_calls: toolCalls.length > 0 ? toolCalls : void 0
         });
@@ -107715,7 +107181,7 @@ function createDeepSeek(options = {}) {
   const createLanguageModel = (modelId) => {
     return new DeepSeekChatLanguageModel(modelId, {
       provider: `deepseek.chat`,
-      url: ({ path: path27 }) => `${baseURL}${path27}`,
+      url: ({ path: path29 }) => `${baseURL}${path29}`,
       headers: getHeaders,
       fetch: options.fetch
     });
@@ -107942,9 +107408,9 @@ var init_dist7 = __esm({
             });
           }
         }
-        const text2 = choice2.message.content;
-        if (text2 != null && text2.length > 0) {
-          content.push({ type: "text", text: text2 });
+        const text3 = choice2.message.content;
+        if (text3 != null && text3.length > 0) {
+          content.push({ type: "text", text: text3 });
         }
         return {
           content,
@@ -108362,15 +107828,15 @@ var init_dist8 = __esm({
     marker72 = `vercel.ai.error.${name62}`;
     symbol72 = Symbol.for(marker72);
     JSONParseError2 = class extends (_b72 = AISDKError2, _a72 = symbol72, _b72) {
-      constructor({ text: text2, cause }) {
+      constructor({ text: text3, cause }) {
         super({
           name: name62,
-          message: `JSON parsing failed: Text: ${text2}.
+          message: `JSON parsing failed: Text: ${text3}.
 Error message: ${getErrorMessage3(cause)}`,
           cause
         });
         this[_a72] = true;
-        this.text = text2;
+        this.text = text3;
       }
       static isInstance(error50) {
         return AISDKError2.hasMarker(error50, marker72);
@@ -108633,12 +108099,12 @@ function loadApiKey2({
   }
   return apiKey;
 }
-function _parse3(text2) {
-  const obj = JSON.parse(text2);
+function _parse3(text3) {
+  const obj = JSON.parse(text3);
   if (obj === null || typeof obj !== "object") {
     return obj;
   }
-  if (suspectProtoRx2.test(text2) === false && suspectConstructorRx2.test(text2) === false) {
+  if (suspectProtoRx2.test(text3) === false && suspectConstructorRx2.test(text3) === false) {
     return obj;
   }
   return filter3(obj);
@@ -108665,15 +108131,15 @@ function filter3(obj) {
   }
   return obj;
 }
-function secureJsonParse2(text2) {
+function secureJsonParse2(text3) {
   const { stackTraceLimit } = Error;
   try {
     Error.stackTraceLimit = 0;
   } catch (e) {
-    return _parse3(text2);
+    return _parse3(text3);
   }
   try {
-    return _parse3(text2);
+    return _parse3(text3);
   } finally {
     Error.stackTraceLimit = stackTraceLimit;
   }
@@ -108736,11 +108202,11 @@ async function safeValidateTypes2({
   }
 }
 async function parseJSON2({
-  text: text2,
+  text: text3,
   schema
 }) {
   try {
-    const value = secureJsonParse2(text2);
+    const value = secureJsonParse2(text3);
     if (schema == null) {
       return value;
     }
@@ -108749,15 +108215,15 @@ async function parseJSON2({
     if (JSONParseError2.isInstance(error50) || TypeValidationError2.isInstance(error50)) {
       throw error50;
     }
-    throw new JSONParseError2({ text: text2, cause: error50 });
+    throw new JSONParseError2({ text: text3, cause: error50 });
   }
 }
 async function safeParseJSON2({
-  text: text2,
+  text: text3,
   schema
 }) {
   try {
-    const value = secureJsonParse2(text2);
+    const value = secureJsonParse2(text3);
     if (schema == null) {
       return { success: true, value, rawValue: value };
     }
@@ -108765,7 +108231,7 @@ async function safeParseJSON2({
   } catch (error50) {
     return {
       success: false,
-      error: JSONParseError2.isInstance(error50) ? error50 : new JSONParseError2({ text: text2, cause: error50 }),
+      error: JSONParseError2.isInstance(error50) ? error50 : new JSONParseError2({ text: text3, cause: error50 }),
       rawValue: void 0
     };
   }
@@ -109233,10 +108699,10 @@ function mergeDefs2(...defs) {
 function cloneDef2(schema) {
   return mergeDefs2(schema._zod.def);
 }
-function getElementAtPath2(obj, path27) {
-  if (!path27)
+function getElementAtPath2(obj, path29) {
+  if (!path29)
     return obj;
-  return path27.reduce((acc, key) => acc == null ? void 0 : acc[key], obj);
+  return path29.reduce((acc, key) => acc == null ? void 0 : acc[key], obj);
 }
 function promiseAllObject2(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -109549,12 +109015,12 @@ function aborted2(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues2(path27, issues) {
+function prefixIssues2(path29, issues) {
   return issues.map((iss) => {
     var _a47;
     var _a37;
     (_a47 = (_a37 = iss).path) != null ? _a47 : _a37.path = [];
-    iss.path.unshift(path27);
+    iss.path.unshift(path29);
     return iss;
   });
 }
@@ -109714,7 +109180,7 @@ function formatError2(error482, mapper = (issue22) => issue22.message) {
 }
 function treeifyError2(error482, mapper = (issue22) => issue22.message) {
   const result = { errors: [] };
-  const processError = (error492, path27 = []) => {
+  const processError = (error492, path29 = []) => {
     var _a47, _b27, _c, _d;
     var _a37, _b28;
     for (const issue22 of error492.issues) {
@@ -109725,7 +109191,7 @@ function treeifyError2(error482, mapper = (issue22) => issue22.message) {
       } else if (issue22.code === "invalid_element") {
         processError({ issues: issue22.issues }, issue22.path);
       } else {
-        const fullpath = [...path27, ...issue22.path];
+        const fullpath = [...path29, ...issue22.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue22));
           continue;
@@ -109757,8 +109223,8 @@ function treeifyError2(error482, mapper = (issue22) => issue22.message) {
 }
 function toDotPath2(_path) {
   const segs = [];
-  const path27 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path27) {
+  const path29 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path29) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -112378,13 +111844,13 @@ function resolveRef2(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path27 = ref.slice(1).split("/").filter(Boolean);
-  if (path27.length === 0) {
+  const path29 = ref.slice(1).split("/").filter(Boolean);
+  if (path29.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path27[0] === defsKey) {
-    const key = path27[1];
+  if (path29[0] === defsKey) {
+    const key = path29[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -112830,12 +112296,12 @@ function convertToZhipuChatMessages(prompt) {
         break;
       }
       case "assistant": {
-        let text2 = "";
+        let text3 = "";
         const toolCalls = [];
         for (const part of content) {
           switch (part.type) {
             case "text": {
-              text2 += part.text;
+              text3 += part.text;
               break;
             }
             case "reasoning": {
@@ -112860,7 +112326,7 @@ function convertToZhipuChatMessages(prompt) {
         }
         messages.push({
           role: "assistant",
-          content: text2,
+          content: text3,
           prefix: isLastMessage ? true : void 0,
           tool_calls: toolCalls.length > 0 ? toolCalls : void 0
         });
@@ -112949,7 +112415,7 @@ function createZhipu(options = {}) {
   });
   const createImageModel = (modelId) => new ZhipuImageModel(modelId, {
     provider: "zhipu.image",
-    url: ({ path: path27 }) => `${baseURL}${path27}`,
+    url: ({ path: path29 }) => `${baseURL}${path29}`,
     headers: getHeaders,
     fetch: options.fetch,
     _internal: {
@@ -119024,8 +118490,8 @@ var init_dist11 = __esm({
         }
       };
     };
-    capitalizeFirstCharacter2 = (text2) => {
-      return text2.charAt(0).toUpperCase() + text2.slice(1);
+    capitalizeFirstCharacter2 = (text3) => {
+      return text3.charAt(0).toUpperCase() + text3.slice(1);
     };
     error262 = () => {
       const Sizable = {
@@ -124025,15 +123491,15 @@ var require_dist3 = __commonJS({
     var _a77;
     var _b76;
     var JSONParseError5 = class extends (_b76 = AISDKError5, _a77 = symbol77, _b76) {
-      constructor({ text: text2, cause }) {
+      constructor({ text: text3, cause }) {
         super({
           name: name67,
-          message: `JSON parsing failed: Text: ${text2}.
+          message: `JSON parsing failed: Text: ${text3}.
 Error message: ${getErrorMessage6(cause)}`,
           cause
         });
         this[_a77] = true;
-        this.text = text2;
+        this.text = text3;
       }
       static isInstance(error50) {
         return AISDKError5.hasMarker(error50, marker77);
@@ -124486,10 +123952,10 @@ var require_util4 = __commonJS({
     function cloneDef3(schema) {
       return mergeDefs3(schema._zod.def);
     }
-    function getElementAtPath3(obj, path27) {
-      if (!path27)
+    function getElementAtPath3(obj, path29) {
+      if (!path29)
         return obj;
-      return path27.reduce((acc, key) => acc?.[key], obj);
+      return path29.reduce((acc, key) => acc?.[key], obj);
     }
     function promiseAllObject3(promisesObj) {
       const keys2 = Object.keys(promisesObj);
@@ -124873,11 +124339,11 @@ var require_util4 = __commonJS({
       }
       return false;
     }
-    function prefixIssues3(path27, issues) {
+    function prefixIssues3(path29, issues) {
       return issues.map((iss) => {
         var _a31;
         (_a31 = iss).path ?? (_a31.path = []);
-        iss.path.unshift(path27);
+        iss.path.unshift(path29);
         return iss;
       });
     }
@@ -125102,7 +124568,7 @@ var require_errors = __commonJS({
     }
     function treeifyError3(error50, mapper = (issue3) => issue3.message) {
       const result = { errors: [] };
-      const processError = (error51, path27 = []) => {
+      const processError = (error51, path29 = []) => {
         var _a31, _b27;
         for (const issue3 of error51.issues) {
           if (issue3.code === "invalid_union" && issue3.errors.length) {
@@ -125112,7 +124578,7 @@ var require_errors = __commonJS({
           } else if (issue3.code === "invalid_element") {
             processError({ issues: issue3.issues }, issue3.path);
           } else {
-            const fullpath = [...path27, ...issue3.path];
+            const fullpath = [...path29, ...issue3.path];
             if (fullpath.length === 0) {
               result.errors.push(mapper(issue3));
               continue;
@@ -125144,8 +124610,8 @@ var require_errors = __commonJS({
     }
     function toDotPath3(_path) {
       const segs = [];
-      const path27 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-      for (const seg of path27) {
+      const path29 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+      for (const seg of path29) {
         if (typeof seg === "number")
           segs.push(`[${seg}]`);
         else if (typeof seg === "symbol")
@@ -132020,8 +131486,8 @@ var require_lt = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.default = default_1;
     var util4 = __importStar(require_util4());
-    var capitalizeFirstCharacter3 = (text2) => {
-      return text2.charAt(0).toUpperCase() + text2.slice(1);
+    var capitalizeFirstCharacter3 = (text3) => {
+      return text3.charAt(0).toUpperCase() + text3.slice(1);
     };
     function getUnitTypeFromNumber3(number5) {
       const abs = Math.abs(number5);
@@ -139646,13 +139112,13 @@ var require_from_json_schema = __commonJS({
       if (!ref.startsWith("#")) {
         throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
       }
-      const path27 = ref.slice(1).split("/").filter(Boolean);
-      if (path27.length === 0) {
+      const path29 = ref.slice(1).split("/").filter(Boolean);
+      if (path29.length === 0) {
         return ctx.rootSchema;
       }
       const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-      if (path27[0] === defsKey) {
-        const key = path27[1];
+      if (path29[0] === defsKey) {
+        const key = path29[1];
         if (!key || !ctx.defs[key]) {
           throw new Error(`Reference not found: ${ref}`);
         }
@@ -140697,8 +140163,8 @@ var require_parseUtil = __commonJS({
     var errors_js_1 = require_errors3();
     var en_js_1 = __importDefault(require_en2());
     var makeIssue2 = (params) => {
-      const { data, path: path27, errorMaps, issueData } = params;
-      const fullPath = [...path27, ...issueData.path || []];
+      const { data, path: path29, errorMaps, issueData } = params;
+      const fullPath = [...path29, ...issueData.path || []];
       const fullIssue = {
         ...issueData,
         path: fullPath
@@ -140852,11 +140318,11 @@ var require_types4 = __commonJS({
     var parseUtil_js_1 = require_parseUtil();
     var util_js_1 = require_util5();
     var ParseInputLazyPath2 = class {
-      constructor(parent, value, path27, key) {
+      constructor(parent, value, path29, key) {
         this._cachedPath = [];
         this.parent = parent;
         this.data = value;
-        this._path = path27;
+        this._path = path29;
         this._key = key;
       }
       get path() {
@@ -145446,12 +144912,12 @@ var require_dist5 = __commonJS({
     var import_provider910 = require_dist3();
     var suspectProtoRx5 = /"(?:_|\\u005[Ff])(?:_|\\u005[Ff])(?:p|\\u0070)(?:r|\\u0072)(?:o|\\u006[Ff])(?:t|\\u0074)(?:o|\\u006[Ff])(?:_|\\u005[Ff])(?:_|\\u005[Ff])"\s*:/;
     var suspectConstructorRx5 = /"(?:c|\\u0063)(?:o|\\u006[Ff])(?:n|\\u006[Ee])(?:s|\\u0073)(?:t|\\u0074)(?:r|\\u0072)(?:u|\\u0075)(?:c|\\u0063)(?:t|\\u0074)(?:o|\\u006[Ff])(?:r|\\u0072)"\s*:/;
-    function _parse7(text2) {
-      const obj = JSON.parse(text2);
+    function _parse7(text3) {
+      const obj = JSON.parse(text3);
       if (obj === null || typeof obj !== "object") {
         return obj;
       }
-      if (suspectProtoRx5.test(text2) === false && suspectConstructorRx5.test(text2) === false) {
+      if (suspectProtoRx5.test(text3) === false && suspectConstructorRx5.test(text3) === false) {
         return obj;
       }
       return filter6(obj);
@@ -145478,15 +144944,15 @@ var require_dist5 = __commonJS({
       }
       return obj;
     }
-    function secureJsonParse5(text2) {
+    function secureJsonParse5(text3) {
       const { stackTraceLimit } = Error;
       try {
         Error.stackTraceLimit = 0;
       } catch (e) {
-        return _parse7(text2);
+        return _parse7(text3);
       }
       try {
-        return _parse7(text2);
+        return _parse7(text3);
       } finally {
         Error.stackTraceLimit = stackTraceLimit;
       }
@@ -146768,11 +146234,11 @@ var require_dist5 = __commonJS({
       }
     }
     async function parseJSON5({
-      text: text2,
+      text: text3,
       schema
     }) {
       try {
-        const value = secureJsonParse5(text2);
+        const value = secureJsonParse5(text3);
         if (schema == null) {
           return value;
         }
@@ -146781,15 +146247,15 @@ var require_dist5 = __commonJS({
         if (import_provider910.JSONParseError.isInstance(error50) || import_provider910.TypeValidationError.isInstance(error50)) {
           throw error50;
         }
-        throw new import_provider910.JSONParseError({ text: text2, cause: error50 });
+        throw new import_provider910.JSONParseError({ text: text3, cause: error50 });
       }
     }
     async function safeParseJSON5({
-      text: text2,
+      text: text3,
       schema
     }) {
       try {
-        const value = secureJsonParse5(text2);
+        const value = secureJsonParse5(text3);
         if (schema == null) {
           return { success: true, value, rawValue: value };
         }
@@ -146797,7 +146263,7 @@ var require_dist5 = __commonJS({
       } catch (error50) {
         return {
           success: false,
-          error: import_provider910.JSONParseError.isInstance(error50) ? error50 : new import_provider910.JSONParseError({ text: text2, cause: error50 }),
+          error: import_provider910.JSONParseError.isInstance(error50) ? error50 : new import_provider910.JSONParseError({ text: text3, cause: error50 }),
           rawValue: void 0
         };
       }
@@ -147362,13 +146828,13 @@ var require_dist6 = __commonJS({
             break;
           }
           case "assistant": {
-            let text2 = "";
+            let text3 = "";
             const toolCalls = [];
             for (const part of content) {
               const partOptions = getQwenOptions(part);
               switch (part.type) {
                 case "text": {
-                  text2 += part.text;
+                  text3 += part.text;
                   break;
                 }
                 case "tool-call": {
@@ -147400,7 +146866,7 @@ var require_dist6 = __commonJS({
             }
             messages.push({
               role: "assistant",
-              content: text2,
+              content: text3,
               tool_calls: toolCalls.length > 0 ? toolCalls : void 0,
               ...options
             });
@@ -147476,13 +146942,13 @@ var require_dist6 = __commonJS({
       };
     }
     var import_provider_utils210 = require_dist5();
-    var import_zod5 = require_zod();
-    var qwenErrorDataSchema = import_zod5.z.object({
-      object: import_zod5.z.literal("error"),
-      message: import_zod5.z.string(),
-      type: import_zod5.z.string(),
-      param: import_zod5.z.string().nullable(),
-      code: import_zod5.z.string().nullable()
+    var import_zod6 = require_zod();
+    var qwenErrorDataSchema = import_zod6.z.object({
+      object: import_zod6.z.literal("error"),
+      message: import_zod6.z.string(),
+      type: import_zod6.z.string(),
+      param: import_zod6.z.string().nullable(),
+      code: import_zod6.z.string().nullable()
     });
     var qwenFailedResponseHandler = (0, import_provider_utils210.createJsonErrorResponseHandler)({
       errorSchema: qwenErrorDataSchema,
@@ -148161,11 +147627,11 @@ var require_dist6 = __commonJS({
       if (inputFormat === "prompt" && prompt.length === 1 && prompt[0].role === "user" && prompt[0].content.length === 1 && prompt[0].content[0].type === "text") {
         return { prompt: prompt[0].content[0].text };
       }
-      let text2 = "";
+      let text3 = "";
       if (prompt[0].role === "system") {
         const systemContent = prompt[0].content;
         if (typeof systemContent === "string") {
-          text2 += `${systemContent}
+          text3 += `${systemContent}
 
 `;
         } else if (Array.isArray(systemContent)) {
@@ -148178,11 +147644,11 @@ var require_dist6 = __commonJS({
               functionality: `system message ${(_a31 = part == null ? void 0 : part.type) != null ? _a31 : "unknown"} content parts`
             });
           }).join("");
-          text2 += `${systemText}
+          text3 += `${systemText}
 
 `;
         } else {
-          text2 += `${String(systemContent)}
+          text3 += `${String(systemContent)}
 
 `;
         }
@@ -148215,7 +147681,7 @@ var require_dist6 = __commonJS({
                 }
               }
             }).join("");
-            text2 += `${user}:
+            text3 += `${user}:
 ${userMessage}
 
 `;
@@ -148249,7 +147715,7 @@ ${userMessage}
                 }
               }
             }).join("");
-            text2 += `${assistant}:
+            text3 += `${assistant}:
 ${assistantMessage}
 
 `;
@@ -148266,10 +147732,10 @@ ${assistantMessage}
           }
         }
       }
-      text2 += `${assistant}:
+      text3 += `${assistant}:
 `;
       return {
-        prompt: text2,
+        prompt: text3,
         stopSequences: [`
 ${user}:`]
       };
@@ -148851,8 +148317,8 @@ ${user}:`]
       });
       const getCommonModelConfig = (modelType) => ({
         provider: `qwen.${modelType}`,
-        url: ({ path: path27 }) => {
-          const url4 = new URL(`${baseURL}${path27}`);
+        url: ({ path: path29 }) => {
+          const url4 = new URL(`${baseURL}${path29}`);
           if (options.queryParams) {
             url4.search = new URLSearchParams(options.queryParams).toString();
           }
@@ -156600,14 +156066,14 @@ function convertToOpenAICompatibleChatMessages(prompt) {
         break;
       }
       case "assistant": {
-        let text2 = "";
+        let text3 = "";
         let reasoning = "";
         const toolCalls = [];
         for (const part of content) {
           const partMetadata = getOpenAIMetadata(part);
           switch (part.type) {
             case "text": {
-              text2 += part.text;
+              text3 += part.text;
               break;
             }
             case "reasoning": {
@@ -156639,7 +156105,7 @@ function convertToOpenAICompatibleChatMessages(prompt) {
         }
         messages.push({
           role: "assistant",
-          content: text2,
+          content: text3,
           ...reasoning.length > 0 ? { reasoning_content: reasoning } : {},
           tool_calls: toolCalls.length > 0 ? toolCalls : void 0,
           ...metadata
@@ -156805,9 +156271,9 @@ function convertToOpenAICompatibleCompletionPrompt({
   user = "user",
   assistant = "assistant"
 }) {
-  let text2 = "";
+  let text3 = "";
   if (prompt[0].role === "system") {
-    text2 += `${prompt[0].content}
+    text3 += `${prompt[0].content}
 
 `;
     prompt = prompt.slice(1);
@@ -156828,7 +156294,7 @@ function convertToOpenAICompatibleCompletionPrompt({
             }
           }
         }).filter(Boolean).join("");
-        text2 += `${user}:
+        text3 += `${user}:
 ${userMessage}
 
 `;
@@ -156847,7 +156313,7 @@ ${userMessage}
             }
           }
         }).join("");
-        text2 += `${assistant}:
+        text3 += `${assistant}:
 ${assistantMessage}
 
 `;
@@ -156864,10 +156330,10 @@ ${assistantMessage}
       }
     }
   }
-  text2 += `${assistant}:
+  text3 += `${assistant}:
 `;
   return {
-    prompt: text2,
+    prompt: text3,
     stopSequences: [`
 ${user}:`]
   };
@@ -156918,8 +156384,8 @@ function createOpenAICompatible(options) {
   const getHeaders = () => withUserAgentSuffix(headers, `ai-sdk/openai-compatible/${VERSION9}`);
   const getCommonModelConfig = (modelType) => ({
     provider: `${providerName}.${modelType}`,
-    url: ({ path: path27 }) => {
-      const url4 = new URL(`${baseURL}${path27}`);
+    url: ({ path: path29 }) => {
+      const url4 = new URL(`${baseURL}${path29}`);
       if (options.queryParams) {
         url4.search = new URLSearchParams(options.queryParams).toString();
       }
@@ -157171,9 +156637,9 @@ var init_dist14 = __esm({
         });
         const choice2 = responseBody.choices[0];
         const content = [];
-        const text2 = choice2.message.content;
-        if (text2 != null && text2.length > 0) {
-          content.push({ type: "text", text: text2 });
+        const text3 = choice2.message.content;
+        if (text3 != null && text3.length > 0) {
+          content.push({ type: "text", text: text3 });
         }
         const reasoning = (_a31 = choice2.message.reasoning_content) != null ? _a31 : choice2.message.reasoning;
         if (reasoning != null && reasoning.length > 0) {
@@ -158143,12 +157609,12 @@ function convertToXaiChatMessages(prompt) {
         break;
       }
       case "assistant": {
-        let text2 = "";
+        let text3 = "";
         const toolCalls = [];
         for (const part of content) {
           switch (part.type) {
             case "text": {
-              text2 += part.text;
+              text3 += part.text;
               break;
             }
             case "tool-call": {
@@ -158166,7 +157632,7 @@ function convertToXaiChatMessages(prompt) {
         }
         messages.push({
           role: "assistant",
-          content: text2,
+          content: text3,
           tool_calls: toolCalls.length > 0 ? toolCalls : void 0
         });
         break;
@@ -159006,13 +158472,13 @@ var init_dist15 = __esm({
         const choice2 = response.choices[0];
         const content = [];
         if (choice2.message.content != null && choice2.message.content.length > 0) {
-          let text2 = choice2.message.content;
+          let text3 = choice2.message.content;
           const lastMessage = body.messages[body.messages.length - 1];
-          if ((lastMessage == null ? void 0 : lastMessage.role) === "assistant" && text2 === lastMessage.content) {
-            text2 = "";
+          if ((lastMessage == null ? void 0 : lastMessage.role) === "assistant" && text3 === lastMessage.content) {
+            text3 = "";
           }
-          if (text2.length > 0) {
-            content.push({ type: "text", text: text2 });
+          if (text3.length > 0) {
+            content.push({ type: "text", text: text3 });
           }
         }
         if (choice2.message.reasoning_content != null && choice2.message.reasoning_content.length > 0) {
@@ -160297,7 +159763,7 @@ var init_dist15 = __esm({
               break;
             }
             case "reasoning": {
-              const summaryTexts = part.summary.map((s) => s.text).filter((text2) => text2 && text2.length > 0);
+              const summaryTexts = part.summary.map((s) => s.text).filter((text3) => text3 && text3.length > 0);
               if (summaryTexts.length > 0) {
                 const reasoningText = summaryTexts.join("");
                 if (part.encrypted_content || part.id) {
@@ -161185,15 +160651,15 @@ var init_dist16 = __esm({
     marker73 = `vercel.ai.error.${name63}`;
     symbol73 = Symbol.for(marker73);
     JSONParseError3 = class extends (_b73 = AISDKError3, _a73 = symbol73, _b73) {
-      constructor({ text: text2, cause }) {
+      constructor({ text: text3, cause }) {
         super({
           name: name63,
-          message: `JSON parsing failed: Text: ${text2}.
+          message: `JSON parsing failed: Text: ${text3}.
 Error message: ${getErrorMessage4(cause)}`,
           cause
         });
         this[_a73] = true;
-        this.text = text2;
+        this.text = text3;
       }
       static isInstance(error50) {
         return AISDKError3.hasMarker(error50, marker73);
@@ -161454,12 +160920,12 @@ function withUserAgentSuffix3(headers, ...userAgentSuffixParts) {
 function isNonNullable2(value) {
   return value != null;
 }
-function _parse5(text2) {
-  const obj = JSON.parse(text2);
+function _parse5(text3) {
+  const obj = JSON.parse(text3);
   if (obj === null || typeof obj !== "object") {
     return obj;
   }
-  if (suspectProtoRx3.test(text2) === false && suspectConstructorRx3.test(text2) === false) {
+  if (suspectProtoRx3.test(text3) === false && suspectConstructorRx3.test(text3) === false) {
     return obj;
   }
   return filter4(obj);
@@ -161486,15 +160952,15 @@ function filter4(obj) {
   }
   return obj;
 }
-function secureJsonParse3(text2) {
+function secureJsonParse3(text3) {
   const { stackTraceLimit } = Error;
   try {
     Error.stackTraceLimit = 0;
   } catch (e) {
-    return _parse5(text2);
+    return _parse5(text3);
   }
   try {
-    return _parse5(text2);
+    return _parse5(text3);
   } finally {
     Error.stackTraceLimit = stackTraceLimit;
   }
@@ -162429,11 +161895,11 @@ async function safeValidateTypes3({
   }
 }
 async function parseJSON3({
-  text: text2,
+  text: text3,
   schema
 }) {
   try {
-    const value = secureJsonParse3(text2);
+    const value = secureJsonParse3(text3);
     if (schema == null) {
       return value;
     }
@@ -162442,15 +161908,15 @@ async function parseJSON3({
     if (JSONParseError3.isInstance(error50) || TypeValidationError3.isInstance(error50)) {
       throw error50;
     }
-    throw new JSONParseError3({ text: text2, cause: error50 });
+    throw new JSONParseError3({ text: text3, cause: error50 });
   }
 }
 async function safeParseJSON3({
-  text: text2,
+  text: text3,
   schema
 }) {
   try {
-    const value = secureJsonParse3(text2);
+    const value = secureJsonParse3(text3);
     if (schema == null) {
       return { success: true, value, rawValue: value };
     }
@@ -162458,7 +161924,7 @@ async function safeParseJSON3({
   } catch (error50) {
     return {
       success: false,
-      error: JSONParseError3.isInstance(error50) ? error50 : new JSONParseError3({ text: text2, cause: error50 }),
+      error: JSONParseError3.isInstance(error50) ? error50 : new JSONParseError3({ text: text3, cause: error50 }),
       rawValue: void 0
     };
   }
@@ -167274,15 +166740,15 @@ var init_dist18 = __esm({
     marker74 = `vercel.ai.error.${name64}`;
     symbol74 = Symbol.for(marker74);
     JSONParseError4 = class extends (_b74 = AISDKError4, _a74 = symbol74, _b74) {
-      constructor({ text: text2, cause }) {
+      constructor({ text: text3, cause }) {
         super({
           name: name64,
-          message: `JSON parsing failed: Text: ${text2}.
+          message: `JSON parsing failed: Text: ${text3}.
 Error message: ${getErrorMessage5(cause)}`,
           cause
         });
         this[_a74] = true;
-        this.text = text2;
+        this.text = text3;
       }
       static isInstance(error50) {
         return AISDKError4.hasMarker(error50, marker74);
@@ -167548,12 +167014,12 @@ function loadApiKey3({
   }
   return apiKey;
 }
-function _parse6(text2) {
-  const obj = JSON.parse(text2);
+function _parse6(text3) {
+  const obj = JSON.parse(text3);
   if (obj === null || typeof obj !== "object") {
     return obj;
   }
-  if (suspectProtoRx4.test(text2) === false && suspectConstructorRx4.test(text2) === false) {
+  if (suspectProtoRx4.test(text3) === false && suspectConstructorRx4.test(text3) === false) {
     return obj;
   }
   return filter5(obj);
@@ -167580,15 +167046,15 @@ function filter5(obj) {
   }
   return obj;
 }
-function secureJsonParse4(text2) {
+function secureJsonParse4(text3) {
   const { stackTraceLimit } = Error;
   try {
     Error.stackTraceLimit = 0;
   } catch (e) {
-    return _parse6(text2);
+    return _parse6(text3);
   }
   try {
-    return _parse6(text2);
+    return _parse6(text3);
   } finally {
     Error.stackTraceLimit = stackTraceLimit;
   }
@@ -168514,11 +167980,11 @@ async function safeValidateTypes4({
   }
 }
 async function parseJSON4({
-  text: text2,
+  text: text3,
   schema
 }) {
   try {
-    const value = secureJsonParse4(text2);
+    const value = secureJsonParse4(text3);
     if (schema == null) {
       return value;
     }
@@ -168527,15 +167993,15 @@ async function parseJSON4({
     if (JSONParseError4.isInstance(error50) || TypeValidationError4.isInstance(error50)) {
       throw error50;
     }
-    throw new JSONParseError4({ text: text2, cause: error50 });
+    throw new JSONParseError4({ text: text3, cause: error50 });
   }
 }
 async function safeParseJSON4({
-  text: text2,
+  text: text3,
   schema
 }) {
   try {
-    const value = secureJsonParse4(text2);
+    const value = secureJsonParse4(text3);
     if (schema == null) {
       return { success: true, value, rawValue: value };
     }
@@ -168543,7 +168009,7 @@ async function safeParseJSON4({
   } catch (error50) {
     return {
       success: false,
-      error: JSONParseError4.isInstance(error50) ? error50 : new JSONParseError4({ text: text2, cause: error50 }),
+      error: JSONParseError4.isInstance(error50) ? error50 : new JSONParseError4({ text: text3, cause: error50 }),
       rawValue: void 0
     };
   }
@@ -169323,7 +168789,7 @@ function convertToMinimaxChatMessages(prompt) {
         break;
       }
       case "assistant": {
-        let text2 = "";
+        let text3 = "";
         const toolCalls = [];
         let reasoningDetails = void 0;
         for (const part of content) {
@@ -169331,7 +168797,7 @@ function convertToMinimaxChatMessages(prompt) {
           const partMinimaxMetadata = getMinimaxMetadata(part);
           switch (part.type) {
             case "text": {
-              text2 += part.text;
+              text3 += part.text;
               break;
             }
             case "tool-call": {
@@ -169356,7 +168822,7 @@ function convertToMinimaxChatMessages(prompt) {
         }
         const messageObj = {
           role: "assistant",
-          content: text2,
+          content: text3,
           tool_calls: toolCalls.length > 0 ? toolCalls : void 0,
           ...metadata
         };
@@ -169503,7 +168969,7 @@ function createMinimax(options = {}) {
   const createLanguageModel = (modelId) => {
     return new MinimaxChatLanguageModel(modelId, {
       provider: `minimax.chat`,
-      url: ({ path: path27 }) => `${baseURL}${path27}`,
+      url: ({ path: path29 }) => `${baseURL}${path29}`,
       headers: getHeaders,
       fetch: options.fetch
     });
@@ -169697,9 +169163,9 @@ var init_dist20 = __esm({
         });
         const choice2 = responseBody.choices[0];
         const content = [];
-        const text2 = choice2.message.content;
-        if (text2 != null && text2.length > 0) {
-          content.push({ type: "text", text: text2 });
+        const text3 = choice2.message.content;
+        if (text3 != null && text3.length > 0) {
+          content.push({ type: "text", text: text3 });
         }
         if (choice2.message.reasoning_details?.length) {
           const reasoningBlock = choice2.message.reasoning_details.find(
@@ -173892,7 +173358,7 @@ function runCode(code, vendor) {
     exports: exports2,
     axios: axios_default,
     FormData: import_form_data2.default,
-    logger,
+    logger: logger2,
     jsonwebtoken: import_jsonwebtoken.default,
     crypto: import_node_crypto4.default,
     dreaminaCli: utils_default2.dreaminaCli
@@ -173910,7 +173376,7 @@ function runCode(code, vendor) {
   vm.run(code);
   return exports2;
 }
-function logger(logstring) {
+function logger2(logstring) {
   console.log("\u3010VM\u3011" + JSON.stringify(logstring));
 }
 async function zipImage(completeBase64, size) {
@@ -174053,17 +173519,17 @@ function replaceUrl(url4) {
   } catch (e) {
     cleanedPath = url4;
   }
-  const normalized = import_node_path9.default.posix.normalize(cleanedPath);
+  const normalized = import_node_path10.default.posix.normalize(cleanedPath);
   if (normalized.startsWith("../") || normalized === "..") {
     return "";
   }
   return normalized.replace(/^\/+/, "");
 }
-var import_node_path9;
+var import_node_path10;
 var init_replaceUrl = __esm({
   "src/utils/replaceUrl.ts"() {
     "use strict";
-    import_node_path9 = __toESM(require("node:path"));
+    import_node_path10 = __toESM(require("node:path"));
   }
 });
 
@@ -174086,17 +173552,17 @@ function normalizeMediaPath(input) {
   return replaceUrl(withoutQuery).replace(/\\/g, "/").replace(/^\/?(oss|smallImage)\//i, "");
 }
 function inferMediaType(input) {
-  const ext = import_node_path10.default.extname(normalizeMediaPath(input)).toLowerCase();
+  const ext = import_node_path11.default.extname(normalizeMediaPath(input)).toLowerCase();
   if (IMAGE_EXT.has(ext)) return "image";
   if (VIDEO_EXT.has(ext)) return "video";
   if (AUDIO_EXT.has(ext)) return "audio";
   return "file";
 }
 function mediaMime(input) {
-  return MIME_BY_EXT[import_node_path10.default.extname(normalizeMediaPath(input)).toLowerCase()];
+  return MIME_BY_EXT[import_node_path11.default.extname(normalizeMediaPath(input)).toLowerCase()];
 }
 function publicFileUrl(userRelPath, prefix = "oss") {
-  const safePath = normalizeMediaPath(userRelPath).split(import_node_path10.default.sep).join("/");
+  const safePath = normalizeMediaPath(userRelPath).split(import_node_path11.default.sep).join("/");
   const base = `http://${RUNTIME_API_HOST}:${RUNTIME_API_PORT}/${prefix}/`;
   return `${base}${safePath}`;
 }
@@ -174111,7 +173577,7 @@ function isMediaLike(input) {
   if (lower.includes("/smallimage/") || lower.startsWith("smallimage/")) return true;
   if (/^https?:\/\/[^/]+\/(oss|assets|skills)\//i.test(value)) return true;
   if (/^\/?(oss|assets|skills)\//i.test(value)) return true;
-  const ext = import_node_path10.default.extname(lower);
+  const ext = import_node_path11.default.extname(lower);
   return IMAGE_EXT.has(ext) || VIDEO_EXT.has(ext) || AUDIO_EXT.has(ext);
 }
 async function toMediaRef(input, options = {}) {
@@ -174252,11 +173718,11 @@ function normalizeTaskResultSync(value) {
   }
   return result;
 }
-var import_node_path10, IMAGE_EXT, VIDEO_EXT, AUDIO_EXT, MIME_BY_EXT;
+var import_node_path11, IMAGE_EXT, VIDEO_EXT, AUDIO_EXT, MIME_BY_EXT;
 var init_mediaRef = __esm({
   "src/services/mediaRef.ts"() {
     "use strict";
-    import_node_path10 = __toESM(require("node:path"));
+    import_node_path11 = __toESM(require("node:path"));
     init_oss();
     init_replaceUrl();
     init_runtimeProtocol();
@@ -174364,6 +173830,16 @@ async function createUnifiedTask(input, database = db_default) {
     const id = Number(rawId);
     const task = await trx("o_tasks").where("id", id).first();
     const [eventId] = await trx("o_taskEvent").insert(taskEventRow(task, resultJson));
+    taskLog.info("Unified task created", {
+      event: "task.created",
+      taskId,
+      businessId: id,
+      projectId: input.projectId,
+      scriptId: input.scriptId,
+      taskType: input.taskType,
+      status: status2,
+      handler: input.handler
+    });
     return { id, legacyTaskId: id, taskId, eventId: Number(eventId), status: status2 };
   });
 }
@@ -174409,6 +173885,15 @@ async function adoptLegacyTask(legacyTaskId, input, database = db_default) {
     if (task?.taskId === taskId) await trx("o_taskEvent").insert(taskEventRow(task));
   });
   const saved = await database("o_tasks").where("id", legacyTaskId).first();
+  taskLog.info("Legacy task adopted", {
+    event: "task.adopted",
+    taskId: saved.taskId,
+    businessId: legacyTaskId,
+    projectId: saved.projectId,
+    scriptId: saved.scriptId,
+    taskType: saved.taskType,
+    status: saved.status
+  });
   return { id: legacyTaskId, legacyTaskId, taskId: saved.taskId, status: saved.status };
 }
 async function updateUnifiedTask(taskIdOrLegacyId, patch, database = db_default) {
@@ -174442,6 +173927,18 @@ async function updateUnifiedTask(taskIdOrLegacyId, patch, database = db_default)
     await trx("o_tasks").where("id", current.id).update(update);
     const task = { ...current, ...update };
     const [eventId] = await trx("o_taskEvent").insert(taskEventRow(task, resultJson, patch.reason));
+    taskLog.info("Unified task updated", {
+      event: "task.updated",
+      taskId: task.taskId,
+      businessId: task.id,
+      projectId: task.projectId,
+      scriptId: task.scriptId,
+      taskType: task.taskType,
+      status: task.status,
+      phase: task.phase,
+      progress: task.progress,
+      reason: patch.reason
+    });
     return { eventId: Number(eventId), taskId: task.taskId, version: nextVersion, status: task.status };
   });
 }
@@ -174464,6 +173961,15 @@ async function claimUnifiedTask(workerId, leaseMs = 12e4, database = db_default,
   if (!claimed) return null;
   const task = await database("o_tasks").where("id", candidate.id).first();
   await database("o_taskEvent").insert(taskEventRow(task));
+  taskLog.info("Unified task claimed", {
+    event: "task.claimed",
+    taskId: task.taskId,
+    businessId: task.id,
+    projectId: task.projectId,
+    scriptId: task.scriptId,
+    taskType: task.taskType,
+    workerId
+  });
   return task;
 }
 async function pruneTaskEvents(database = db_default) {
@@ -174471,7 +173977,7 @@ async function pruneTaskEvents(database = db_default) {
   await database("o_taskEvent").where("createdAt", "<", cutoff).delete();
   await database("o_tasks").whereIn("status", ["completed", "failed", "cancelled"]).where("finishTime", "<", cutoff).update({ payloadJson: null, resultJson: null });
 }
-var import_node_crypto5;
+var import_node_crypto5, taskLog;
 var init_taskCoordinator = __esm({
   "src/services/taskCoordinator.ts"() {
     "use strict";
@@ -174479,6 +173985,8 @@ var init_taskCoordinator = __esm({
     init_db();
     init_taskStatus();
     init_mediaRef();
+    init_logger();
+    taskLog = createLogger("task");
   }
 });
 
@@ -174720,8 +174228,8 @@ var require_auth_config = __commonJS({
       writeAuthConfig: () => writeAuthConfig
     });
     module2.exports = __toCommonJS2(auth_config_exports);
-    var fs23 = __toESM2(require("fs"));
-    var path27 = __toESM2(require("path"));
+    var fs25 = __toESM2(require("fs"));
+    var path29 = __toESM2(require("path"));
     var import_token_util = require_token_util();
     function getAuthConfigPath() {
       const dataDir = (0, import_token_util.getVercelDataDir)();
@@ -174730,15 +174238,15 @@ var require_auth_config = __commonJS({
           `Unable to find Vercel CLI data directory. Your platform: ${process.platform}. Supported: darwin, linux, win32.`
         );
       }
-      return path27.join(dataDir, "auth.json");
+      return path29.join(dataDir, "auth.json");
     }
     function readAuthConfig() {
       try {
         const authPath = getAuthConfigPath();
-        if (!fs23.existsSync(authPath)) {
+        if (!fs25.existsSync(authPath)) {
           return null;
         }
-        const content = fs23.readFileSync(authPath, "utf8");
+        const content = fs25.readFileSync(authPath, "utf8");
         if (!content) {
           return null;
         }
@@ -174749,11 +174257,11 @@ var require_auth_config = __commonJS({
     }
     function writeAuthConfig(config3) {
       const authPath = getAuthConfigPath();
-      const authDir = path27.dirname(authPath);
-      if (!fs23.existsSync(authDir)) {
-        fs23.mkdirSync(authDir, { mode: 504, recursive: true });
+      const authDir = path29.dirname(authPath);
+      if (!fs25.existsSync(authDir)) {
+        fs25.mkdirSync(authDir, { mode: 504, recursive: true });
       }
-      fs23.writeFileSync(authPath, JSON.stringify(config3, null, 2), { mode: 384 });
+      fs25.writeFileSync(authPath, JSON.stringify(config3, null, 2), { mode: 384 });
     }
     function isValidAccessToken(authConfig) {
       if (!authConfig.token)
@@ -174899,8 +174407,8 @@ var require_token_util = __commonJS({
       saveToken: () => saveToken
     });
     module2.exports = __toCommonJS2(token_util_exports);
-    var path27 = __toESM2(require("path"));
-    var fs23 = __toESM2(require("fs"));
+    var path29 = __toESM2(require("path"));
+    var fs25 = __toESM2(require("fs"));
     var import_token_error = require_token_error();
     var import_token_io = require_token_io();
     var import_auth_config = require_auth_config();
@@ -174911,7 +174419,7 @@ var require_token_util = __commonJS({
       if (!dataDir) {
         return null;
       }
-      return path27.join(dataDir, vercelFolder);
+      return path29.join(dataDir, vercelFolder);
     }
     async function getVercelCliToken() {
       const authConfig = (0, import_auth_config.readAuthConfig)();
@@ -174984,13 +174492,13 @@ var require_token_util = __commonJS({
           "Unable to find project root directory. Have you linked your project with `vc link?`"
         );
       }
-      const prjPath = path27.join(dir, ".vercel", "project.json");
-      if (!fs23.existsSync(prjPath)) {
+      const prjPath = path29.join(dir, ".vercel", "project.json");
+      if (!fs25.existsSync(prjPath)) {
         throw new import_token_error.VercelOidcTokenError(
           "project.json not found, have you linked your project with `vc link?`"
         );
       }
-      const prj = JSON.parse(fs23.readFileSync(prjPath, "utf8"));
+      const prj = JSON.parse(fs25.readFileSync(prjPath, "utf8"));
       if (typeof prj.projectId !== "string" && typeof prj.orgId !== "string") {
         throw new TypeError(
           "Expected a string-valued projectId property. Try running `vc link` to re-link your project."
@@ -175005,11 +174513,11 @@ var require_token_util = __commonJS({
           "Unable to find user data directory. Please reach out to Vercel support."
         );
       }
-      const tokenPath = path27.join(dir, "com.vercel.token", `${projectId}.json`);
+      const tokenPath = path29.join(dir, "com.vercel.token", `${projectId}.json`);
       const tokenJson = JSON.stringify(token);
-      fs23.mkdirSync(path27.dirname(tokenPath), { mode: 504, recursive: true });
-      fs23.writeFileSync(tokenPath, tokenJson);
-      fs23.chmodSync(tokenPath, 432);
+      fs25.mkdirSync(path29.dirname(tokenPath), { mode: 504, recursive: true });
+      fs25.writeFileSync(tokenPath, tokenJson);
+      fs25.chmodSync(tokenPath, 432);
       return;
     }
     function loadToken(projectId) {
@@ -175019,11 +174527,11 @@ var require_token_util = __commonJS({
           "Unable to find user data directory. Please reach out to Vercel support."
         );
       }
-      const tokenPath = path27.join(dir, "com.vercel.token", `${projectId}.json`);
-      if (!fs23.existsSync(tokenPath)) {
+      const tokenPath = path29.join(dir, "com.vercel.token", `${projectId}.json`);
+      if (!fs25.existsSync(tokenPath)) {
         return null;
       }
-      const token = JSON.parse(fs23.readFileSync(tokenPath, "utf8"));
+      const token = JSON.parse(fs25.readFileSync(tokenPath, "utf8"));
       assertVercelOidcTokenResponse(token);
       return token;
     }
@@ -176987,12 +176495,12 @@ var init_global_utils = __esm({
 
 // node_modules/@opentelemetry/api/build/esm/diag/ComponentLogger.js
 function logProxy(funcName, namespace, args) {
-  var logger2 = getGlobal2("diag");
-  if (!logger2) {
+  var logger3 = getGlobal2("diag");
+  if (!logger3) {
     return;
   }
   args.unshift(namespace);
-  return logger2[funcName].apply(logger2, __spreadArray([], __read(args), false));
+  return logger3[funcName].apply(logger3, __spreadArray([], __read(args), false));
 }
 var __read, __spreadArray, DiagComponentLogger;
 var init_ComponentLogger = __esm({
@@ -177088,17 +176596,17 @@ var init_types2 = __esm({
 });
 
 // node_modules/@opentelemetry/api/build/esm/diag/internal/logLevelLogger.js
-function createLogLevelDiagLogger(maxLevel, logger2) {
+function createLogLevelDiagLogger(maxLevel, logger3) {
   if (maxLevel < DiagLogLevel.NONE) {
     maxLevel = DiagLogLevel.NONE;
   } else if (maxLevel > DiagLogLevel.ALL) {
     maxLevel = DiagLogLevel.ALL;
   }
-  logger2 = logger2 || {};
+  logger3 = logger3 || {};
   function _filterFunc(funcName, theLevel) {
-    var theFunc = logger2[funcName];
+    var theFunc = logger3[funcName];
     if (typeof theFunc === "function" && maxLevel >= theLevel) {
-      return theFunc.bind(logger2);
+      return theFunc.bind(logger3);
     }
     return function() {
     };
@@ -177163,19 +176671,19 @@ var init_diag = __esm({
             for (var _i = 0; _i < arguments.length; _i++) {
               args[_i] = arguments[_i];
             }
-            var logger2 = getGlobal2("diag");
-            if (!logger2)
+            var logger3 = getGlobal2("diag");
+            if (!logger3)
               return;
-            return logger2[funcName].apply(logger2, __spreadArray2([], __read2(args), false));
+            return logger3[funcName].apply(logger3, __spreadArray2([], __read2(args), false));
           };
         }
         var self2 = this;
-        var setLogger = function(logger2, optionsOrLogLevel) {
+        var setLogger = function(logger3, optionsOrLogLevel) {
           var _a31, _b27, _c;
           if (optionsOrLogLevel === void 0) {
             optionsOrLogLevel = { logLevel: DiagLogLevel.INFO };
           }
-          if (logger2 === self2) {
+          if (logger3 === self2) {
             var err = new Error("Cannot use diag as the logger for itself. Please use a DiagLogger implementation like ConsoleDiagLogger or a custom implementation");
             self2.error((_a31 = err.stack) !== null && _a31 !== void 0 ? _a31 : err.message);
             return false;
@@ -177186,7 +176694,7 @@ var init_diag = __esm({
             };
           }
           var oldLogger = getGlobal2("diag");
-          var newLogger = createLogLevelDiagLogger((_b27 = optionsOrLogLevel.logLevel) !== null && _b27 !== void 0 ? _b27 : DiagLogLevel.INFO, logger2);
+          var newLogger = createLogLevelDiagLogger((_b27 = optionsOrLogLevel.logLevel) !== null && _b27 !== void 0 ? _b27 : DiagLogLevel.INFO, logger3);
           if (oldLogger && !optionsOrLogLevel.suppressOverrideMessage) {
             var stack = (_c = new Error().stack) !== null && _c !== void 0 ? _c : "<failed to generate stacktrace>";
             oldLogger.warn("Current logger will be overwritten from " + stack);
@@ -182003,7 +181511,7 @@ function streamText({
 }
 function createOutputTransformStream(output) {
   let firstTextChunkId = void 0;
-  let text2 = "";
+  let text22 = "";
   let textChunk = "";
   let textProviderMetadata = void 0;
   let lastPublishedJson = "";
@@ -182049,10 +181557,10 @@ function createOutputTransformStream(output) {
         controller.enqueue({ part: chunk, partialOutput: void 0 });
         return;
       }
-      text2 += chunk.text;
+      text22 += chunk.text;
       textChunk += chunk.text;
       textProviderMetadata = (_a212 = chunk.providerMetadata) != null ? _a212 : textProviderMetadata;
-      const result = await output.parsePartialOutput({ text: text2 });
+      const result = await output.parsePartialOutput({ text: text22 });
       if (result !== void 0) {
         const currentJson = JSON.stringify(result.partial);
         if (currentJson !== lastPublishedJson) {
@@ -182066,16 +181574,16 @@ function createOutputTransformStream(output) {
 function createDownload(options) {
   return ({ url: url4, abortSignal }) => download({ url: url4, maxBytes: options == null ? void 0 : options.maxBytes, abortSignal });
 }
-function getPotentialStartIndex(text2, searchedText) {
+function getPotentialStartIndex(text22, searchedText) {
   if (searchedText.length === 0) {
     return null;
   }
-  const directIndex = text2.indexOf(searchedText);
+  const directIndex = text22.indexOf(searchedText);
   if (directIndex !== -1) {
     return directIndex;
   }
-  for (let i = text2.length - 1; i >= 0; i--) {
-    const suffix = text2.substring(i);
+  for (let i = text22.length - 1; i >= 0; i--) {
+    const suffix = text22.substring(i);
     if (searchedText.startsWith(suffix)) {
       return i;
     }
@@ -182099,15 +181607,15 @@ function extractReasoningMiddleware({
           transformedContent.push(part);
           continue;
         }
-        const text2 = startWithReasoning ? openingTag + part.text : part.text;
+        const text22 = startWithReasoning ? openingTag + part.text : part.text;
         const regexp = new RegExp(`${openingTag}(.*?)${closingTag}`, "gs");
-        const matches = Array.from(text2.matchAll(regexp));
+        const matches = Array.from(text22.matchAll(regexp));
         if (!matches.length) {
           transformedContent.push(part);
           continue;
         }
         const reasoningText = matches.map((match) => match[1]).join(separator);
-        let textWithoutReasoning = text2;
+        let textWithoutReasoning = text22;
         for (let i = matches.length - 1; i >= 0; i--) {
           const match = matches[i];
           const beforeMatch = textWithoutReasoning.slice(0, match.index);
@@ -182160,8 +181668,8 @@ function extractReasoningMiddleware({
               }
               const activeExtraction = reasoningExtractions[chunk.id];
               activeExtraction.buffer += chunk.delta;
-              function publish(text2) {
-                if (text2.length > 0) {
+              function publish(text22) {
+                if (text22.length > 0) {
                   const prefix = activeExtraction.afterSwitch && (activeExtraction.isReasoning ? !activeExtraction.isFirstReasoning : !activeExtraction.isFirstText) ? separator : "";
                   if (activeExtraction.isReasoning && (activeExtraction.afterSwitch || activeExtraction.isFirstReasoning)) {
                     controller.enqueue({
@@ -182172,7 +181680,7 @@ function extractReasoningMiddleware({
                   if (activeExtraction.isReasoning) {
                     controller.enqueue({
                       type: "reasoning-delta",
-                      delta: prefix + text2,
+                      delta: prefix + text22,
                       id: `reasoning-${activeExtraction.idCounter}`
                     });
                   } else {
@@ -182182,7 +181690,7 @@ function extractReasoningMiddleware({
                     }
                     controller.enqueue({
                       type: "text-delta",
-                      delta: prefix + text2,
+                      delta: prefix + text22,
                       id: activeExtraction.textId
                     });
                   }
@@ -182415,14 +181923,14 @@ var init_dist22 = __esm({
       constructor({
         message = "No object generated.",
         cause,
-        text: text2,
+        text: text22,
         response,
         usage,
         finishReason
       }) {
         super({ name: name85, message, cause });
         this[_a86] = true;
-        this.text = text2;
+        this.text = text22;
         this.response = response;
         this.usage = usage;
         this.finishReason = finishReason;
@@ -182579,12 +182087,12 @@ var init_dist22 = __esm({
       if (options.warnings.length === 0) {
         return;
       }
-      const logger2 = globalThis.AI_SDK_LOG_WARNINGS;
-      if (logger2 === false) {
+      const logger3 = globalThis.AI_SDK_LOG_WARNINGS;
+      if (logger3 === false) {
         return;
       }
-      if (typeof logger2 === "function") {
-        logger2(options);
+      if (typeof logger3 === "function") {
+        logger3(options);
         return;
       }
       if (!hasLoggedBefore) {
@@ -183050,11 +182558,11 @@ var init_dist22 = __esm({
     text = () => ({
       name: "text",
       responseFormat: Promise.resolve({ type: "text" }),
-      async parseCompleteOutput({ text: text2 }) {
-        return text2;
+      async parseCompleteOutput({ text: text22 }) {
+        return text22;
       },
-      async parsePartialOutput({ text: text2 }) {
-        return { partial: text2 };
+      async parsePartialOutput({ text: text22 }) {
+        return { partial: text22 };
       },
       createElementStreamTransform() {
         return void 0;
@@ -183074,13 +182582,13 @@ var init_dist22 = __esm({
           ...name212 != null && { name: name212 },
           ...description != null && { description }
         })),
-        async parseCompleteOutput({ text: text2 }, context2) {
-          const parseResult = await safeParseJSON({ text: text2 });
+        async parseCompleteOutput({ text: text22 }, context2) {
+          const parseResult = await safeParseJSON({ text: text22 });
           if (!parseResult.success) {
             throw new NoObjectGeneratedError({
               message: "No object generated: could not parse the response.",
               cause: parseResult.error,
-              text: text2,
+              text: text22,
               response: context2.response,
               usage: context2.usage,
               finishReason: context2.finishReason
@@ -183094,7 +182602,7 @@ var init_dist22 = __esm({
             throw new NoObjectGeneratedError({
               message: "No object generated: response did not match schema.",
               cause: validationResult.error,
-              text: text2,
+              text: text22,
               response: context2.response,
               usage: context2.usage,
               finishReason: context2.finishReason
@@ -183102,8 +182610,8 @@ var init_dist22 = __esm({
           }
           return validationResult.value;
         },
-        async parsePartialOutput({ text: text2 }) {
-          const result = await parsePartialJson(text2);
+        async parsePartialOutput({ text: text22 }) {
+          const result = await parsePartialJson(text22);
           switch (result.state) {
             case "failed-parse":
             case "undefined-input": {
@@ -183149,13 +182657,13 @@ var init_dist22 = __esm({
             ...description != null && { description }
           };
         }),
-        async parseCompleteOutput({ text: text2 }, context2) {
-          const parseResult = await safeParseJSON({ text: text2 });
+        async parseCompleteOutput({ text: text22 }, context2) {
+          const parseResult = await safeParseJSON({ text: text22 });
           if (!parseResult.success) {
             throw new NoObjectGeneratedError({
               message: "No object generated: could not parse the response.",
               cause: parseResult.error,
-              text: text2,
+              text: text22,
               response: context2.response,
               usage: context2.usage,
               finishReason: context2.finishReason
@@ -183169,7 +182677,7 @@ var init_dist22 = __esm({
                 value: outerValue,
                 cause: "response must be an object with an elements array"
               }),
-              text: text2,
+              text: text22,
               response: context2.response,
               usage: context2.usage,
               finishReason: context2.finishReason
@@ -183184,7 +182692,7 @@ var init_dist22 = __esm({
               throw new NoObjectGeneratedError({
                 message: "No object generated: response did not match schema.",
                 cause: validationResult.error,
-                text: text2,
+                text: text22,
                 response: context2.response,
                 usage: context2.usage,
                 finishReason: context2.finishReason
@@ -183193,8 +182701,8 @@ var init_dist22 = __esm({
           }
           return outerValue.elements;
         },
-        async parsePartialOutput({ text: text2 }) {
-          const result = await parsePartialJson(text2);
+        async parsePartialOutput({ text: text22 }) {
+          const result = await parsePartialJson(text22);
           switch (result.state) {
             case "failed-parse":
             case "undefined-input": {
@@ -183257,13 +182765,13 @@ var init_dist22 = __esm({
           ...name212 != null && { name: name212 },
           ...description != null && { description }
         }),
-        async parseCompleteOutput({ text: text2 }, context2) {
-          const parseResult = await safeParseJSON({ text: text2 });
+        async parseCompleteOutput({ text: text22 }, context2) {
+          const parseResult = await safeParseJSON({ text: text22 });
           if (!parseResult.success) {
             throw new NoObjectGeneratedError({
               message: "No object generated: could not parse the response.",
               cause: parseResult.error,
-              text: text2,
+              text: text22,
               response: context2.response,
               usage: context2.usage,
               finishReason: context2.finishReason
@@ -183277,7 +182785,7 @@ var init_dist22 = __esm({
                 value: outerValue,
                 cause: "response must be an object that contains a choice value."
               }),
-              text: text2,
+              text: text22,
               response: context2.response,
               usage: context2.usage,
               finishReason: context2.finishReason
@@ -183285,8 +182793,8 @@ var init_dist22 = __esm({
           }
           return outerValue.result;
         },
-        async parsePartialOutput({ text: text2 }) {
-          const result = await parsePartialJson(text2);
+        async parsePartialOutput({ text: text22 }) {
+          const result = await parsePartialJson(text22);
           switch (result.state) {
             case "failed-parse":
             case "undefined-input": {
@@ -183325,13 +182833,13 @@ var init_dist22 = __esm({
           ...name212 != null && { name: name212 },
           ...description != null && { description }
         }),
-        async parseCompleteOutput({ text: text2 }, context2) {
-          const parseResult = await safeParseJSON({ text: text2 });
+        async parseCompleteOutput({ text: text22 }, context2) {
+          const parseResult = await safeParseJSON({ text: text22 });
           if (!parseResult.success) {
             throw new NoObjectGeneratedError({
               message: "No object generated: could not parse the response.",
               cause: parseResult.error,
-              text: text2,
+              text: text22,
               response: context2.response,
               usage: context2.usage,
               finishReason: context2.finishReason
@@ -183339,8 +182847,8 @@ var init_dist22 = __esm({
           }
           return parseResult.value;
         },
-        async parsePartialOutput({ text: text2 }) {
-          const result = await parsePartialJson(text2);
+        async parsePartialOutput({ text: text22 }) {
+          const result = await parsePartialJson(text22);
           switch (result.state) {
             case "failed-parse":
             case "undefined-input": {
@@ -185614,14 +185122,14 @@ var init_dist22 = __esm({
 });
 
 // node_modules/@ai-sdk/devtools/dist/index.js
-var import_node_path11, import_node_fs3, DB_DIR, DB_PATH, DEVTOOLS_PORT, notifyServer, notifyServerAsync, ensureGitignore, readDb, writeDb, dbCache, getDb, saveDb, createRun, createStep, updateStepResult, generateId5, activeSteps, signalHandlersRegistered, registerSignalHandlers, generateRunId, devToolsMiddleware;
+var import_node_path12, import_node_fs4, DB_DIR, DB_PATH, DEVTOOLS_PORT, notifyServer, notifyServerAsync, ensureGitignore, readDb, writeDb, dbCache, getDb, saveDb, createRun, createStep, updateStepResult, generateId5, activeSteps, signalHandlersRegistered, registerSignalHandlers, generateRunId, devToolsMiddleware;
 var init_dist23 = __esm({
   "node_modules/@ai-sdk/devtools/dist/index.js"() {
     "use strict";
-    import_node_path11 = __toESM(require("node:path"), 1);
-    import_node_fs3 = __toESM(require("node:fs"), 1);
-    DB_DIR = import_node_path11.default.join(process.cwd(), ".devtools");
-    DB_PATH = import_node_path11.default.join(DB_DIR, "generations.json");
+    import_node_path12 = __toESM(require("node:path"), 1);
+    import_node_fs4 = __toESM(require("node:fs"), 1);
+    DB_DIR = import_node_path12.default.join(process.cwd(), ".devtools");
+    DB_PATH = import_node_path12.default.join(DB_DIR, "generations.json");
     DEVTOOLS_PORT = process.env.AI_SDK_DEVTOOLS_PORT ? parseInt(process.env.AI_SDK_DEVTOOLS_PORT) : 4983;
     notifyServer = (event) => {
       notifyServerAsync(event);
@@ -185637,11 +185145,11 @@ var init_dist23 = __esm({
       }
     };
     ensureGitignore = () => {
-      const gitignorePath = import_node_path11.default.join(process.cwd(), ".gitignore");
-      if (!import_node_fs3.default.existsSync(gitignorePath)) {
+      const gitignorePath = import_node_path12.default.join(process.cwd(), ".gitignore");
+      if (!import_node_fs4.default.existsSync(gitignorePath)) {
         return;
       }
-      const content = import_node_fs3.default.readFileSync(gitignorePath, "utf-8");
+      const content = import_node_fs4.default.readFileSync(gitignorePath, "utf-8");
       const lines = content.split("\n");
       const alreadyIgnored = lines.some(
         (line) => line.trim() === ".devtools" || line.trim() === ".devtools/"
@@ -185651,13 +185159,13 @@ var init_dist23 = __esm({
 ` : `${content}
 .devtools
 `;
-        import_node_fs3.default.writeFileSync(gitignorePath, newContent);
+        import_node_fs4.default.writeFileSync(gitignorePath, newContent);
       }
     };
     readDb = () => {
       try {
-        if (import_node_fs3.default.existsSync(DB_PATH)) {
-          const content = import_node_fs3.default.readFileSync(DB_PATH, "utf-8");
+        if (import_node_fs4.default.existsSync(DB_PATH)) {
+          const content = import_node_fs4.default.readFileSync(DB_PATH, "utf-8");
           return JSON.parse(content);
         }
       } catch {
@@ -185665,12 +185173,12 @@ var init_dist23 = __esm({
       return { runs: [], steps: [] };
     };
     writeDb = (db2) => {
-      const isFirstRun = !import_node_fs3.default.existsSync(DB_DIR);
+      const isFirstRun = !import_node_fs4.default.existsSync(DB_DIR);
       if (isFirstRun) {
-        import_node_fs3.default.mkdirSync(DB_DIR, { recursive: true });
+        import_node_fs4.default.mkdirSync(DB_DIR, { recursive: true });
         ensureGitignore();
       }
-      import_node_fs3.default.writeFileSync(DB_PATH, JSON.stringify(db2, null, 2));
+      import_node_fs4.default.writeFileSync(DB_PATH, JSON.stringify(db2, null, 2));
     };
     dbCache = null;
     getDb = () => {
@@ -186121,7 +185629,9 @@ var init_ai = __esm({
     AiTypeValues = [
       "scriptAgent",
       "productionAgent",
+      "storyAgent",
       "universalAi",
+      "storyAgent:decisionAgent",
       "scriptAgent:decisionAgent",
       "scriptAgent:supervisionAgent",
       "scriptAgent:storySkeletonAgent",
@@ -186200,8 +185710,8 @@ var init_ai = __esm({
         await exec(modelName);
         return this;
       }
-      async save(path27) {
-        await utils_default2.oss.writeFile(path27, this.result);
+      async save(path29) {
+        await utils_default2.oss.writeFile(path29, this.result);
         return this;
       }
     };
@@ -186230,8 +185740,8 @@ var init_ai = __esm({
           throw e;
         }
       }
-      async save(path27) {
-        await utils_default2.oss.writeFile(path27, this.result);
+      async save(path29) {
+        await utils_default2.oss.writeFile(path29, this.result);
         return this;
       }
     };
@@ -186258,8 +185768,8 @@ var init_ai = __esm({
         }
         return await exec(modelName);
       }
-      async save(path27) {
-        await utils_default2.oss.writeFile(path27, this.result);
+      async save(path29) {
+        await utils_default2.oss.writeFile(path29, this.result);
         return this;
       }
     };
@@ -186338,22 +185848,63 @@ var init_getPrompts = __esm({
   }
 });
 
+// src/services/builtinData.ts
+function unique(values) {
+  return [...new Set(values.map((item) => import_node_path13.default.resolve(item)))];
+}
+function builtinDataCandidates(...parts) {
+  const repoDataPath = import_node_path13.default.resolve(process.cwd(), "data", ...parts);
+  const runtimeSystemPath = systemDataPath(...parts);
+  return process.env.NODE_ENV !== "prod" ? unique([repoDataPath, runtimeSystemPath]) : unique([runtimeSystemPath, repoDataPath]);
+}
+function findBuiltinDataFile(...parts) {
+  return builtinDataCandidates(...parts).find((file3) => import_node_fs5.default.existsSync(file3) && import_node_fs5.default.statSync(file3).isFile()) || null;
+}
+function findBuiltinDataDir(...parts) {
+  return builtinDataCandidates(...parts).find((dir) => import_node_fs5.default.existsSync(dir) && import_node_fs5.default.statSync(dir).isDirectory()) || null;
+}
+async function readBuiltinDataFile(...parts) {
+  const file3 = findBuiltinDataFile(...parts);
+  if (!file3) return null;
+  return {
+    file: file3,
+    content: await import_node_fs5.default.promises.readFile(file3, "utf8")
+  };
+}
+var import_node_fs5, import_node_path13;
+var init_builtinData = __esm({
+  "src/services/builtinData.ts"() {
+    "use strict";
+    import_node_fs5 = __toESM(require("node:fs"));
+    import_node_path13 = __toESM(require("node:path"));
+    init_storagePaths();
+  }
+});
+
 // src/utils/getArtPrompt.ts
+function artPromptBaseDirs(source, styleName) {
+  const dirs = [
+    findBuiltinDataDir("skills", source, styleName),
+    getPath_default(["skills", source, styleName])
+  ].filter(Boolean);
+  return [...new Set(dirs.map((dir) => import_path4.default.resolve(dir)))];
+}
 function getArtPrompt(styleName, source, fileName) {
-  const baseDir = getPath_default(["skills", source, styleName]);
-  if (!import_fs4.default.existsSync(baseDir)) {
-    return "";
-  }
-  const prefixFile = findFileRecursive(baseDir, "prefix.md");
-  const prefixContent = prefixFile ? import_fs4.default.readFileSync(prefixFile, "utf-8") : "";
-  const target = fileName.endsWith(".md") ? fileName : `${fileName}.md`;
-  const found = findFileRecursive(baseDir, target);
-  if (!found) {
-    return prefixContent;
-  }
-  const fileContent = import_fs4.default.readFileSync(found, "utf-8");
-  return prefixContent ? `${prefixContent}
+  for (const baseDir of artPromptBaseDirs(source, styleName)) {
+    if (!import_fs4.default.existsSync(baseDir)) continue;
+    const prefixFile = findFileRecursive(baseDir, "prefix.md");
+    const prefixContent = prefixFile ? import_fs4.default.readFileSync(prefixFile, "utf-8") : "";
+    const target = fileName.endsWith(".md") ? fileName : `${fileName}.md`;
+    const found = findFileRecursive(baseDir, target);
+    if (!found) {
+      if (prefixContent) return prefixContent;
+      continue;
+    }
+    const fileContent = import_fs4.default.readFileSync(found, "utf-8");
+    return prefixContent ? `${prefixContent}
 ${fileContent}` : fileContent;
+  }
+  return "";
 }
 function findFileRecursive(dir, targetName) {
   const entries = import_fs4.default.readdirSync(dir, { withFileTypes: true });
@@ -186376,6 +185927,7 @@ var init_getArtPrompt = __esm({
     import_fs4 = __toESM(require("fs"));
     import_path4 = __toESM(require("path"));
     init_getPath();
+    init_builtinData();
   }
 });
 
@@ -186568,15 +186120,12 @@ function runRaw(args, timeoutMs = 12e4) {
   const command = normalizedArgs[0] || "-h";
   if (!ALLOWED_COMMANDS.has(command)) throw new Error(`\u4E0D\u5141\u8BB8\u6267\u884C\u7684\u5373\u68A6 CLI \u547D\u4EE4: ${command}`);
   const startedAt = Date.now();
-  console.info(
-    `[dreamina-cli] ${JSON.stringify({
-      time: (/* @__PURE__ */ new Date()).toISOString(),
-      event: "command.started",
-      command,
-      timeoutMs,
-      argCount: normalizedArgs.length - 1
-    })}`
-  );
+  dreaminaLog.info("Dreamina CLI command started", {
+    event: "command.started",
+    command,
+    timeoutMs,
+    argCount: normalizedArgs.length - 1
+  });
   return new Promise((resolve3, reject) => {
     const child = (0, import_child_process.spawn)(cliPath(), normalizedArgs, {
       cwd: cliDir(),
@@ -186591,14 +186140,11 @@ function runRaw(args, timeoutMs = 12e4) {
     let stderr = "";
     const timer2 = setTimeout(() => {
       child.kill();
-      console.warn(
-        `[dreamina-cli] ${JSON.stringify({
-          time: (/* @__PURE__ */ new Date()).toISOString(),
-          event: "command.timeout",
-          command,
-          elapsedMs: Date.now() - startedAt
-        })}`
-      );
+      dreaminaLog.warn("Dreamina CLI command timeout", {
+        event: "command.timeout",
+        command,
+        elapsedMs: Date.now() - startedAt
+      });
       reject(new Error(`\u5373\u68A6 CLI \u6267\u884C\u8D85\u65F6: dreamina ${command}`));
     }, timeoutMs);
     child.stdout?.on("data", (chunk) => {
@@ -186610,31 +186156,25 @@ function runRaw(args, timeoutMs = 12e4) {
     child.on("error", (err) => {
       if (child.pid) activeCliProcesses.delete(child.pid);
       clearTimeout(timer2);
-      console.error(
-        `[dreamina-cli] ${JSON.stringify({
-          time: (/* @__PURE__ */ new Date()).toISOString(),
-          event: "command.error",
-          command,
-          elapsedMs: Date.now() - startedAt,
-          message: err.message
-        })}`
-      );
+      dreaminaLog.error("Dreamina CLI command error", {
+        event: "command.error",
+        command,
+        elapsedMs: Date.now() - startedAt,
+        error: err
+      });
       reject(err);
     });
     child.on("close", (code) => {
       if (child.pid) activeCliProcesses.delete(child.pid);
       clearTimeout(timer2);
-      const message = `[dreamina-cli] ${JSON.stringify({
-        time: (/* @__PURE__ */ new Date()).toISOString(),
+      dreaminaLog[code === 0 ? "info" : "warn"]("Dreamina CLI command finished", {
         event: "command.finished",
         command,
         code,
         elapsedMs: Date.now() - startedAt,
         stdoutBytes: Buffer.byteLength(stdout),
         stderrBytes: Buffer.byteLength(stderr)
-      })}`;
-      if (code === 0) console.info(message);
-      else console.warn(message);
+      });
       resolve3({ stdout, stderr, code });
     });
   });
@@ -186695,15 +186235,15 @@ async function uninstall() {
   currentLogin = null;
   return status();
 }
-function parseLoginMarkers(text2) {
-  const qr = text2.match(/\[DREAMINA:QR_READY\]\s+(.+)/);
-  const success3 = /\[DREAMINA:LOGIN_SUCCESS\]|登录成功|授?权成功|login\s+success|auth(?:orization)?\s+success/i.test(text2);
-  const reused = /\[DREAMINA:LOGIN_REUSED\]|已经登录|已登录|login\s+reused|credential\s+valid/i.test(text2);
-  const verificationUri = text2.match(/verification_uri\s*:\s*(\S+)/i)?.[1]?.trim();
-  const userCode = text2.match(/user_code\s*:\s*(\S+)/i)?.[1]?.trim();
-  const deviceCode = text2.match(/device_code\s*:\s*(\S+)/i)?.[1]?.trim();
-  const pollIntervalText = text2.match(/poll_interval\s*:\s*(\d+)\s*s?/i)?.[1];
-  const expiresAt = text2.match(/expires_at\s*:\s*([^\r\n]+)/i)?.[1]?.trim();
+function parseLoginMarkers(text3) {
+  const qr = text3.match(/\[DREAMINA:QR_READY\]\s+(.+)/);
+  const success3 = /\[DREAMINA:LOGIN_SUCCESS\]|登录成功|授?权成功|login\s+success|auth(?:orization)?\s+success/i.test(text3);
+  const reused = /\[DREAMINA:LOGIN_REUSED\]|已经登录|已登录|login\s+reused|credential\s+valid/i.test(text3);
+  const verificationUri = text3.match(/verification_uri\s*:\s*(\S+)/i)?.[1]?.trim();
+  const userCode = text3.match(/user_code\s*:\s*(\S+)/i)?.[1]?.trim();
+  const deviceCode = text3.match(/device_code\s*:\s*(\S+)/i)?.[1]?.trim();
+  const pollIntervalText = text3.match(/poll_interval\s*:\s*(\d+)\s*s?/i)?.[1];
+  const expiresAt = text3.match(/expires_at\s*:\s*([^\r\n]+)/i)?.[1]?.trim();
   return {
     qrPath: qr?.[1]?.trim(),
     verificationUri,
@@ -186978,10 +186518,37 @@ async function runRawWithLogs(args, timeoutMs) {
   const offsets = snapshotLogOffsets();
   const result = await runRaw(args, timeoutMs);
   await new Promise((resolve3) => setTimeout(resolve3, 250));
+  const logs = readLogDelta(offsets);
+  if (logs || result.stdout || result.stderr) {
+    const command = args[0] || "unknown";
+    const diagnosticFile = writeDiagnosticFile(
+      `${command}-${result.code ?? "unknown"}`,
+      [
+        `command: dreamina ${args.join(" ")}`,
+        `code: ${result.code}`,
+        "----- stdout -----",
+        result.stdout,
+        "----- stderr -----",
+        result.stderr,
+        "----- cli logs -----",
+        logs
+      ].join("\n"),
+      { provider: "dreamina", event: "command.diagnostic", model: args.find((arg) => arg.startsWith("--model_version=")) }
+    );
+    dreaminaLog.info("Dreamina CLI diagnostic captured", {
+      event: "command.diagnostic",
+      command,
+      code: result.code,
+      diagnosticFile,
+      stdoutBytes: Buffer.byteLength(result.stdout || ""),
+      stderrBytes: Buffer.byteLength(result.stderr || ""),
+      logBytes: Buffer.byteLength(logs || "")
+    });
+  }
   return {
     ...result,
     result,
-    logs: readLogDelta(offsets)
+    logs
   };
 }
 function parseDreaminaRemoteEvidence(output, submitId) {
@@ -187293,8 +186860,8 @@ async function videoRequest(config3, model) {
 function cleanModelToken(value) {
   return value.trim().replace(/^["'`]+|["'`,，。；;]+$/g, "").replace(/[，。；;]$/g, "");
 }
-function splitSupportedValues(text2) {
-  return text2.split(/[,，;；]|\s+or\s+/i).map((value) => cleanModelToken(value)).filter((value) => value && !/^(default|omit|all|other|models?|supported|values?|by|model)$/i.test(value));
+function splitSupportedValues(text3) {
+  return text3.split(/[,，;；]|\s+or\s+/i).map((value) => cleanModelToken(value)).filter((value) => value && !/^(default|omit|all|other|models?|supported|values?|by|model)$/i.test(value));
 }
 function extractFlagValues(help, flagName) {
   const values = /* @__PURE__ */ new Set();
@@ -187526,7 +187093,7 @@ ${result.stderr}`.trim(),
     downloadDir
   };
 }
-var import_fs7, import_path7, import_node_os, import_child_process, DOWNLOAD_URL, VERSION_URL, COMMANDS, ALLOWED_COMMANDS, currentLogin, queueState, activeCliProcesses, dreaminaCli_default;
+var import_fs7, import_path7, import_node_os, import_child_process, dreaminaLog, DOWNLOAD_URL, VERSION_URL, COMMANDS, ALLOWED_COMMANDS, currentLogin, queueState, activeCliProcesses, dreaminaCli_default;
 var init_dreaminaCli = __esm({
   "src/utils/dreaminaCli.ts"() {
     "use strict";
@@ -187536,6 +187103,8 @@ var init_dreaminaCli = __esm({
     import_node_os = __toESM(require("node:os"));
     import_child_process = require("child_process");
     init_getPath();
+    init_logger();
+    dreaminaLog = createLogger("dreamina-cli", { provider: "dreamina" });
     DOWNLOAD_URL = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/dreamina_cli_beta/dreamina_cli_windows_amd64.exe";
     VERSION_URL = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/dreamina_cli_beta/version.json";
     COMMANDS = ["text2image", "image2image", "text2video", "image2video", "multiframe2video", "multimodal2video"];
@@ -187660,11 +187229,11 @@ function detectFileType(type, filePath) {
   const normalizedType = String(type || "").toLowerCase();
   if (normalizedType === "audio") return "audio";
   if (normalizedType === "video" || normalizedType === "clip") {
-    const ext2 = import_node_path12.default.extname(filePath || "").toLowerCase();
+    const ext2 = import_node_path14.default.extname(filePath || "").toLowerCase();
     if (audioExtensions.has(ext2)) return "audio";
     if (videoExtensions.has(ext2)) return "video";
   }
-  const ext = import_node_path12.default.extname(filePath || "").toLowerCase();
+  const ext = import_node_path14.default.extname(filePath || "").toLowerCase();
   if (audioExtensions.has(ext)) return "audio";
   if (videoExtensions.has(ext)) return "video";
   if (imageExtensions.has(ext) || !ext) return "image";
@@ -187693,7 +187262,7 @@ async function resolveOne(input, options) {
       name: `P${Number(row.index ?? 0) + 1}`,
       prompt: row.prompt || "",
       index: row.index ?? void 0,
-      videoDesc: row.videoDesc || "",
+      videoDesc: "",
       duration: row.duration ?? void 0,
       track: row.track || "",
       shouldGenerateImage: row.shouldGenerateImage ?? void 0,
@@ -187781,11 +187350,11 @@ async function resolveQueuedWorkbenchReferences(inputs, options = {}) {
   }
   return result;
 }
-var import_node_path12, imageExtensions, videoExtensions, audioExtensions;
+var import_node_path14, imageExtensions, videoExtensions, audioExtensions;
 var init_workbenchReference = __esm({
   "src/services/workbenchReference.ts"() {
     "use strict";
-    import_node_path12 = __toESM(require("node:path"));
+    import_node_path14 = __toESM(require("node:path"));
     init_utils3();
     init_directorAsset();
     imageExtensions = /* @__PURE__ */ new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg", ".tif", ".tiff"]);
@@ -187810,19 +187379,10 @@ __export(videoGenerationQueue_exports, {
   tryAcquireVideoQueueSchedulerLease: () => tryAcquireVideoQueueSchedulerLease
 });
 function queueLog(event, details = {}, level = "info") {
-  const payload = {
-    time: (/* @__PURE__ */ new Date()).toISOString(),
-    processId: process.pid,
+  videoQueueLog[level](`video-queue ${event}`, {
     event,
     ...details
-  };
-  const message = `[video-queue] ${JSON.stringify(payload)}`;
-  if (level === "error") console.error(message);
-  else if (level === "warn") console.warn(message);
-  else console.info(message);
-  const fileName = `${payload.time.slice(0, 10)}.log`;
-  void queueLogReady.then(() => import_promises9.default.appendFile(import_node_path13.default.join(queueLogDir, fileName), `${message}
-`, "utf8")).catch((err) => console.warn(`[video-queue] failed to write log file: ${String(err)}`));
+  });
 }
 function taskLogDetails(row) {
   return {
@@ -188186,7 +187746,7 @@ async function saveResult(row, data, dataType = "base64", rawOutput) {
   await completeTask(row, rawOutput);
 }
 function mimeFromPath(filePath) {
-  const ext = import_node_path13.default.extname(filePath).toLowerCase();
+  const ext = import_node_path15.default.extname(filePath).toLowerCase();
   return {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -188512,7 +188072,7 @@ async function cleanupLegacyReferences(row) {
   try {
     const request = JSON.parse(row.requestJson || "{}");
     const dirs = new Set(
-      (request.legacyReferences || []).map((item) => import_node_path13.default.dirname(item.filePath)).filter((dir) => dir.startsWith(getPath_default(["temp", "video-queue-legacy"])))
+      (request.legacyReferences || []).map((item) => import_node_path15.default.dirname(item.filePath)).filter((dir) => dir.startsWith(utils_default2.getPath(["temp", "video-queue-legacy"])))
     );
     await Promise.all([...dirs].map((dir) => import_promises9.default.rm(dir, { recursive: true, force: true })));
   } catch {
@@ -188659,19 +188219,19 @@ async function stopVideoGenerationQueue() {
   schedulerHasLease = false;
   queueLog("scheduler.stopped", { schedulerOwner, leaseReleased: released });
 }
-var import_promises9, import_node_path13, import_node_crypto8, RAW_OUTPUT_LIMIT2, CONFIRM_INTERVAL_MS, PROCESSING_INTERVAL_MS, QUEUED_PROVIDER_INTERVAL_MS, CAPACITY_RETRY_MS, SCHEDULER_LEASE_KEY, SCHEDULER_LEASE_TTL_MS, submissionModels, pollingTasks, queueLogDir, queueLogReady, timer, tickRunning, schedulerStarted, schedulerHasLease, schedulerOwner, VideoQueueCancelError;
+var import_promises9, import_node_path15, import_node_crypto8, RAW_OUTPUT_LIMIT2, CONFIRM_INTERVAL_MS, PROCESSING_INTERVAL_MS, QUEUED_PROVIDER_INTERVAL_MS, CAPACITY_RETRY_MS, SCHEDULER_LEASE_KEY, SCHEDULER_LEASE_TTL_MS, submissionModels, pollingTasks, videoQueueLog, timer, tickRunning, schedulerStarted, schedulerHasLease, schedulerOwner, VideoQueueCancelError;
 var init_videoGenerationQueue = __esm({
   "src/utils/videoGenerationQueue.ts"() {
     "use strict";
     init_axios2();
     import_promises9 = __toESM(require("node:fs/promises"));
-    import_node_path13 = __toESM(require("node:path"));
+    import_node_path15 = __toESM(require("node:path"));
     import_node_crypto8 = require("node:crypto");
     init_utils3();
-    init_getPath();
     init_dreaminaCli();
     init_workbenchReference();
     init_taskCoordinator();
+    init_logger();
     RAW_OUTPUT_LIMIT2 = 32 * 1024;
     CONFIRM_INTERVAL_MS = 6e4;
     PROCESSING_INTERVAL_MS = 6e4;
@@ -188681,8 +188241,7 @@ var init_videoGenerationQueue = __esm({
     SCHEDULER_LEASE_TTL_MS = 9e4;
     submissionModels = /* @__PURE__ */ new Set();
     pollingTasks = /* @__PURE__ */ new Set();
-    queueLogDir = getPath_default(["logs", "video-queue"]);
-    queueLogReady = import_promises9.default.mkdir(queueLogDir, { recursive: true });
+    videoQueueLog = createLogger("video-queue");
     timer = null;
     tickRunning = false;
     schedulerStarted = false;
@@ -188707,17 +188266,17 @@ __export(projectPortable_exports, {
   importPortableProject: () => importPortableProject
 });
 function mediaRoot(projectId) {
-  return storageMode() === "workspace" ? projectMediaDirectory(projectId) : import_node_path14.default.join(legacyDataRoot(), "oss", String(projectId));
+  return storageMode() === "workspace" ? projectMediaDirectory(projectId) : import_node_path16.default.join(legacyDataRoot(), "oss", String(projectId));
 }
 async function listFiles(root2, current = root2) {
   try {
     const entries = await import_promises10.default.readdir(current, { withFileTypes: true });
     const files = [];
     for (const entry of entries) {
-      const fullPath = import_node_path14.default.join(current, entry.name);
+      const fullPath = import_node_path16.default.join(current, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) files.push(...await listFiles(root2, fullPath));
-      else if (entry.isFile()) files.push(import_node_path14.default.relative(root2, fullPath).split(import_node_path14.default.sep).join("/"));
+      else if (entry.isFile()) files.push(import_node_path16.default.relative(root2, fullPath).split(import_node_path16.default.sep).join("/"));
     }
     return files;
   } catch (error50) {
@@ -188728,7 +188287,7 @@ async function listFiles(root2, current = root2) {
 async function fileDigest(filePath) {
   const hash3 = (0, import_node_crypto9.createHash)("sha256");
   await new Promise((resolve3, reject) => {
-    const stream4 = (0, import_node_fs4.createReadStream)(filePath);
+    const stream4 = (0, import_node_fs6.createReadStream)(filePath);
     stream4.on("data", (chunk) => hash3.update(chunk));
     stream4.on("error", reject);
     stream4.on("end", resolve3);
@@ -188770,6 +188329,12 @@ async function collectProjectTables(database, projectId) {
       "o_videoTrack",
       "o_workbenchMergedReference",
       "o_directorAsset",
+      "o_storyArtifact",
+      "o_storyAnnotation",
+      "o_storyRevisionMap",
+      "o_productionReviewSuggestion",
+      "o_productionReviewFeedback",
+      "o_textAsset",
       "o_editImageTask"
     ];
     tables.o_project = await read("o_project", (query) => query.where("id", projectId));
@@ -188830,7 +188395,7 @@ async function generateProjectSnapshot(projectId, database = db_default, options
     const files = await listFiles(root2);
     const media = [];
     for (const relativePath of files) {
-      const fullPath = import_node_path14.default.join(root2, ...relativePath.split("/"));
+      const fullPath = import_node_path16.default.join(root2, ...relativePath.split("/"));
       const stat = await import_promises10.default.stat(fullPath);
       media.push({ path: relativePath, size: stat.size, sha256: await fileDigest(fullPath) });
     }
@@ -188844,9 +188409,9 @@ async function generateProjectSnapshot(projectId, database = db_default, options
       tables,
       media
     };
-    const directory = options.workspaceRoot ? import_node_path14.default.join(options.workspaceRoot, "projects", String(storage.storageKey || projectId)) : projectDirectory(storage.storageKey || projectId);
+    const directory = options.workspaceRoot ? import_node_path16.default.join(options.workspaceRoot, "projects", String(storage.storageKey || projectId)) : projectDirectory(storage.storageKey || projectId);
     await import_promises10.default.mkdir(directory, { recursive: true });
-    const snapshotPath = import_node_path14.default.join(directory, "project.toonflow");
+    const snapshotPath = import_node_path16.default.join(directory, "project.toonflow");
     const temporaryPath = `${snapshotPath}.tmp`;
     await import_promises10.default.writeFile(temporaryPath, JSON.stringify(snapshot), "utf8");
     JSON.parse(await import_promises10.default.readFile(temporaryPath, "utf8"));
@@ -188862,7 +188427,7 @@ async function generateProjectSnapshot(projectId, database = db_default, options
       mediaCount: media.length,
       mediaBytes: media.reduce((total, item) => total + item.size, 0)
     };
-    const manifestPath = import_node_path14.default.join(directory, "manifest.json");
+    const manifestPath = import_node_path16.default.join(directory, "manifest.json");
     await import_promises10.default.writeFile(`${manifestPath}.tmp`, JSON.stringify(manifest, null, 2), "utf8");
     await atomicReplace(`${manifestPath}.tmp`, manifestPath);
     const snapshotStat = await import_promises10.default.stat(snapshotPath);
@@ -188950,16 +188515,22 @@ function rewritePath(value, oldProjectId, newProjectId) {
   return value.replace(
     new RegExp(`^(\\/?)${oldProjectId}(?=[/\\\\])`),
     (_match, slash) => `${slash}${newProjectId}`
+  ).replace(
+    new RegExp(`^projects[/\\\\]${oldProjectId}(?=[/\\\\])`),
+    `projects/${newProjectId}`
+  ).replace(
+    new RegExp(`^textAssets[/\\\\]${oldProjectId}[/\\\\](.+)$`),
+    (_match, rest) => `projects/${newProjectId}/text/${rest}`
   );
 }
 async function importPortableProject(sourceDirectory, database = db_default) {
-  const snapshotPath = import_node_path14.default.join(import_node_path14.default.resolve(sourceDirectory), "project.toonflow");
+  const snapshotPath = import_node_path16.default.join(import_node_path16.default.resolve(sourceDirectory), "project.toonflow");
   const snapshot = JSON.parse(await import_promises10.default.readFile(snapshotPath, "utf8"));
   if (snapshot.format !== FORMAT || snapshot.version !== VERSION16 || !snapshot.tables?.o_project?.[0]) {
     throw new Error("Invalid Toonflow portable project");
   }
   for (const media of snapshot.media || []) {
-    const filePath = import_node_path14.default.join(sourceDirectory, "media", ...media.path.split("/"));
+    const filePath = import_node_path16.default.join(sourceDirectory, "media", ...media.path.split("/"));
     const stat = await import_promises10.default.stat(filePath);
     if (!stat.isFile() || stat.size !== Number(media.size) || await fileDigest(filePath) !== media.sha256) {
       throw new Error(`Portable project media validation failed: ${media.path}`);
@@ -188985,6 +188556,12 @@ async function importPortableProject(sourceDirectory, database = db_default) {
     "o_videoTrack",
     "o_workbenchMergedReference",
     "o_directorAsset",
+    "o_storyArtifact",
+    "o_storyAnnotation",
+    "o_storyRevisionMap",
+    "o_productionReviewSuggestion",
+    "o_productionReviewFeedback",
+    "o_textAsset",
     "o_imageFlow",
     "o_editImageTask",
     "o_videoGenerationTask",
@@ -189064,6 +188641,11 @@ async function importPortableProject(sourceDirectory, database = db_default) {
       ["assetsAudioId", "o_assets"],
       ["imageId", "o_image"],
       ["directorAssetId", "o_directorAsset"],
+      ["artifactId", "o_storyArtifact"],
+      ["sourceArtifactId", "o_storyArtifact"],
+      ["newArtifactId", "o_storyArtifact"],
+      ["suggestionId", "o_productionReviewSuggestion"],
+      ["parentId", "o_productionReviewSuggestion"],
       ["storyboardId", "o_storyboard"],
       ["flowId", "o_imageFlow"],
       ["trackId", "o_videoTrack"],
@@ -189083,7 +188665,21 @@ async function importPortableProject(sourceDirectory, database = db_default) {
       else if (businessType === "video-track-prompt") row.businessId = mapId("o_videoTrack", row.businessId);
     }
     if (row.targetId != null) {
-      row.targetId = /storyboard/i.test(String(row.targetType)) ? mapId("o_storyboard", row.targetId) : mapId("o_assets", row.targetId);
+      if (table === "o_productionReviewSuggestion") {
+        const targetType = String(row.targetType || "");
+        if (targetType === "storyboard" || targetType === "storyboardImage") {
+          row.targetId = mapId("o_storyboard", row.targetId);
+        } else if (targetType === "asset" || targetType === "deriveAsset") {
+          row.targetId = mapId("o_assets", row.targetId);
+        } else if (targetType === "videoPrompt" || targetType === "storyboardGroup" || targetType === "bgmSuggestion") {
+          const numeric = Number(row.targetId);
+          row.targetId = Number.isFinite(numeric) ? mapId("o_videoTrack", numeric) : row.targetId;
+        } else if (targetType === "videoResult") {
+          row.targetId = mapId("o_video", row.targetId);
+        }
+      } else {
+        row.targetId = /storyboard/i.test(String(row.targetType)) ? mapId("o_storyboard", row.targetId) : mapId("o_assets", row.targetId);
+      }
     }
     if (row.taskId && taskIds.has(row.taskId)) row.taskId = taskIds.get(row.taskId);
     if (row.filePath) row.filePath = rewritePath(row.filePath, oldProjectId, newProjectId);
@@ -189092,6 +188688,11 @@ async function importPortableProject(sourceDirectory, database = db_default) {
       "flowData",
       "referenceImages",
       "sourceRefs",
+      "musicPlanJson",
+      "reviewIssuesJson",
+      "contentJson",
+      "annotationIds",
+      "proposedPatch",
       "references",
       "requestJson",
       "payloadJson",
@@ -189134,6 +188735,12 @@ async function importPortableProject(sourceDirectory, database = db_default) {
     "o_image",
     "o_assets",
     "o_directorAsset",
+    "o_storyArtifact",
+    "o_storyAnnotation",
+    "o_storyRevisionMap",
+    "o_productionReviewSuggestion",
+    "o_productionReviewFeedback",
+    "o_textAsset",
     "o_videoTrack",
     "o_storyboard",
     "o_video",
@@ -189186,10 +188793,16 @@ async function importPortableProject(sourceDirectory, database = db_default) {
       }
     }
   });
-  const sourceMedia = import_node_path14.default.join(sourceDirectory, "media");
+  const sourceMedia = import_node_path16.default.join(sourceDirectory, "media");
   const targetMedia = projectMediaDirectory(newProjectId);
-  await import_promises10.default.mkdir(import_node_path14.default.dirname(targetMedia), { recursive: true });
+  await import_promises10.default.mkdir(import_node_path16.default.dirname(targetMedia), { recursive: true });
   await import_promises10.default.cp(sourceMedia, targetMedia, { recursive: true, force: false }).catch((error50) => {
+    if (error50?.code !== "ENOENT") throw error50;
+  });
+  const sourceText = import_node_path16.default.join(sourceDirectory, "text");
+  const targetText = import_node_path16.default.join(projectDirectory(newProjectId), "text");
+  await import_promises10.default.mkdir(import_node_path16.default.dirname(targetText), { recursive: true });
+  await import_promises10.default.cp(sourceText, targetText, { recursive: true, force: false }).catch((error50) => {
     if (error50?.code !== "ENOENT") throw error50;
   });
   const result = await generateProjectSnapshot(newProjectId, database);
@@ -189208,14 +188821,14 @@ async function importPortableProject(sourceDirectory, database = db_default) {
     warnings
   };
 }
-var import_node_crypto9, import_promises10, import_node_fs4, import_node_path14, FORMAT, VERSION16, ACTIVE_STATUSES3, EXIT_SNAPSHOT_TIMEOUT_MS;
+var import_node_crypto9, import_promises10, import_node_fs6, import_node_path16, FORMAT, VERSION16, ACTIVE_STATUSES3, EXIT_SNAPSHOT_TIMEOUT_MS;
 var init_projectPortable = __esm({
   "src/services/projectPortable.ts"() {
     "use strict";
     import_node_crypto9 = require("node:crypto");
     import_promises10 = __toESM(require("node:fs/promises"));
-    import_node_fs4 = require("node:fs");
-    import_node_path14 = __toESM(require("node:path"));
+    import_node_fs6 = require("node:fs");
+    import_node_path16 = __toESM(require("node:path"));
     init_db();
     init_storagePaths();
     FORMAT = "toonflow-project";
@@ -189352,15 +188965,221 @@ var init_imageFlowTask = __esm({
   }
 });
 
-// src/services/workbenchVideoPrompt.ts
+// src/services/videoPromptSafetyGuard.ts
+function inspectVideoPromptEngineering(text3) {
+  const value = String(text3 || "");
+  const issues = [];
+  if (!value.trim()) {
+    issues.push({
+      issueType: "empty_prompt",
+      severity: "blocking",
+      message: "\u89C6\u9891\u63D0\u793A\u8BCD\u4E3A\u7A7A\uFF0C\u8BF7\u5148\u751F\u6210\u6216\u624B\u52A8\u586B\u5199\u63D0\u793A\u8BCD\u3002"
+    });
+  }
+  if (Buffer.byteLength(value, "utf8") > 64e3) {
+    issues.push({
+      issueType: "prompt_too_large",
+      severity: "warning",
+      message: "\u89C6\u9891\u63D0\u793A\u8BCD\u8FC7\u957F\uFF0C\u5EFA\u8BAE\u901A\u8FC7 AI \u5BA1\u6821\u6216\u4EBA\u5DE5\u7F16\u8F91\u538B\u7F29\u540E\u518D\u751F\u6210\u3002",
+      reason: "The prompt is close to the task payload size limit."
+    });
+  }
+  return { text: value, issues };
+}
+var init_videoPromptSafetyGuard = __esm({
+  "src/services/videoPromptSafetyGuard.ts"() {
+    "use strict";
+  }
+});
+
+// src/services/storyboardTableContract.ts
+function parseStoryboardJsonObject(value) {
+  if (!value) return null;
+  if (typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function parseStoryboardTableRow(value) {
+  const object4 = parseStoryboardJsonObject(value);
+  if (!object4) return null;
+  const result = storyboardTableRowV2Schema.safeParse(object4);
+  return result.success ? result.data : null;
+}
+function stringifyDialogue(dialogue) {
+  if (!dialogue.length) return "\u65E0\u53F0\u8BCD";
+  return dialogue.map((item) => {
+    const suffix = item.voiceTone ? `\uFF08${item.voiceTone}\uFF09` : "";
+    return `${item.speaker}\uFF1A${item.text}${suffix}`;
+  }).join("\uFF1B");
+}
+function stringifySoundEffects(soundEffects) {
+  return soundEffects.join("\u3001");
+}
+function factStatusForStoryboardJson(value) {
+  if (!parseStoryboardJsonObject(value)) return "legacy";
+  return parseStoryboardTableRow(value) ? "ready" : "draft";
+}
+var requiredText, optionalText, storyboardCharacterSchema, storyboardDialogueSchema, storyboardRequiredAssetSchema, storyboardTableRowV2Schema, storyboardGroupPlanV2Schema;
+var init_storyboardTableContract = __esm({
+  "src/services/storyboardTableContract.ts"() {
+    "use strict";
+    init_zod();
+    requiredText = external_exports.string().trim().min(1);
+    optionalText = external_exports.string().trim().min(1).optional();
+    storyboardCharacterSchema = external_exports.object({
+      assetId: external_exports.number().int().positive().optional(),
+      name: requiredText,
+      action: requiredText,
+      orientation: requiredText,
+      spatialPosition: requiredText,
+      posture: optionalText,
+      expression: optionalText,
+      gaze: optionalText,
+      handAction: optionalText,
+      movement: optionalText
+    });
+    storyboardDialogueSchema = external_exports.object({
+      speaker: external_exports.string().trim(),
+      text: requiredText,
+      voiceTone: optionalText
+    });
+    storyboardRequiredAssetSchema = external_exports.object({
+      assetId: external_exports.number().int().positive(),
+      name: requiredText,
+      type: external_exports.enum(["role", "scene", "tool", "clip"]),
+      order: external_exports.number().int().nonnegative()
+    });
+    storyboardTableRowV2Schema = external_exports.object({
+      version: external_exports.literal(1),
+      index: external_exports.number().int().nonnegative(),
+      sceneNo: optionalText,
+      groupKey: requiredText,
+      groupName: requiredText,
+      groupIntent: requiredText,
+      beatId: requiredText,
+      durationSec: external_exports.number().positive(),
+      location: requiredText,
+      timeOfDay: requiredText,
+      sceneContinuityId: optionalText,
+      picture: requiredText,
+      shotSize: requiredText,
+      cameraMove: requiredText,
+      cameraAngle: optionalText,
+      transitionFromPrevious: optionalText,
+      action: requiredText,
+      characters: external_exports.array(storyboardCharacterSchema),
+      visibleEmotion: requiredText,
+      dialogue: external_exports.array(storyboardDialogueSchema),
+      soundEffects: external_exports.array(requiredText),
+      requiredAssets: external_exports.array(storyboardRequiredAssetSchema)
+    });
+    storyboardGroupPlanV2Schema = external_exports.object({
+      groupKey: requiredText,
+      groupName: requiredText,
+      groupIntent: requiredText,
+      storyboardIndexes: external_exports.array(external_exports.number().int().nonnegative()).min(1)
+    });
+  }
+});
+
+// src/services/storyboardFacts.ts
+function text2(value) {
+  return String(value ?? "").trim();
+}
+function objectDialogue(value) {
+  if (!Array.isArray(value)) return "";
+  const normalized = value.map((item) => ({
+    speaker: text2(item?.speaker),
+    text: text2(item?.text),
+    voiceTone: text2(item?.voiceTone) || void 0
+  })).filter((item) => item.text);
+  if (!normalized.length) return "";
+  return normalized.map((item) => `${item.speaker ? `${item.speaker}\uFF1A` : ""}${item.text}${item.voiceTone ? `\uFF08${item.voiceTone}\uFF09` : ""}`).join("\uFF1B");
+}
+function objectSound(value) {
+  return Array.isArray(value) ? value.map(text2).filter(Boolean).join("\u3001") : "";
+}
+function resolveStoryboardFactStatus(row) {
+  const derived = factStatusForStoryboardJson(row?.tableRowJson);
+  if (derived !== "ready") return derived;
+  return row?.factStatus === "draft" ? "draft" : "ready";
+}
+function buildStoryboardVideoFact(row, associateAssetsIds = []) {
+  const tableRow = parseStoryboardTableRow(row?.tableRowJson);
+  const object4 = parseStoryboardJsonObject(row?.tableRowJson);
+  const factStatus = resolveStoryboardFactStatus(row);
+  const displayIndex = row.index == null ? Number(row.id) : Number(row.index) + 1;
+  const structured = tableRow || object4;
+  return {
+    storyboardId: Number(row.id),
+    displayIndex,
+    factSource: factStatus === "ready" && tableRow ? "storyboardTable" : "minimalFallback",
+    factStatus,
+    scene: text2(structured?.location) || (factStatus === "legacy" ? text2(row.scene) : ""),
+    location: text2(structured?.location) || (factStatus === "legacy" ? text2(row.location || row.scene) : ""),
+    timeOfDay: text2(structured?.timeOfDay) || (factStatus === "legacy" ? text2(row.timeOfDay) : ""),
+    picture: text2(structured?.picture) || (factStatus === "legacy" ? text2(row.picture) : ""),
+    action: text2(structured?.action) || (factStatus === "legacy" ? text2(row.action) : ""),
+    shotSize: text2(structured?.shotSize) || (factStatus === "legacy" ? text2(row.shotSize) : ""),
+    cameraMove: text2(structured?.cameraMove) || (factStatus === "legacy" ? text2(row.cameraMove) : ""),
+    duration: structured?.durationSec ?? (factStatus === "legacy" ? row.duration ?? null : null),
+    dialogue: tableRow ? stringifyDialogue(tableRow.dialogue) : objectDialogue(object4?.dialogue) || (factStatus === "legacy" ? text2(row.dialogue) : ""),
+    sound: tableRow ? stringifySoundEffects(tableRow.soundEffects) : objectSound(object4?.soundEffects) || (factStatus === "legacy" ? text2(row.sound) : ""),
+    visibleEmotion: text2(structured?.visibleEmotion) || (factStatus === "legacy" ? text2(row.visibleEmotion) : ""),
+    groupKey: text2(structured?.groupKey) || (factStatus === "legacy" ? text2(row.groupKey) : "") || void 0,
+    groupName: text2(structured?.groupName) || (factStatus === "legacy" ? text2(row.groupName) : "") || void 0,
+    groupIntent: text2(structured?.groupIntent) || (factStatus === "legacy" ? text2(row.groupIntent) : "") || void 0,
+    beatId: text2(structured?.beatId) || (factStatus === "legacy" ? text2(row.beatId) : "") || void 0,
+    shouldGenerateImage: row.shouldGenerateImage ?? void 0,
+    associateAssetsIds,
+    tableRow: tableRow || void 0,
+    rawVideoDesc: ""
+  };
+}
+function summarizeFactSources(facts) {
+  return facts.reduce(
+    (result, item) => {
+      result[item.factSource] += 1;
+      return result;
+    },
+    { storyboardTable: 0, minimalFallback: 0 }
+  );
+}
+function assertStoryboardFactsReady(facts) {
+  if (!facts.length) throw new Error("\u5F53\u524D\u89C6\u9891\u8F68\u9053\u6CA1\u6709\u53EF\u7528\u5206\u955C\uFF0C\u65E0\u6CD5\u751F\u6210\u89C6\u9891\u3002");
+  const blocked = facts.filter((item) => item.factStatus !== "ready" || !item.tableRow);
+  if (!blocked.length) return;
+  throw new Error(
+    `\u5206\u955C\u5C1A\u672A\u5B8C\u6210\u7ED3\u6784\u5316\u6574\u7406\uFF0C\u65E0\u6CD5\u751F\u6210\u89C6\u9891\u3002\u8BF7\u5148\u6574\u7406\u5206\u955C\uFF1A${blocked.map((item) => item.displayIndex).join(", ")}`
+  );
+}
+var init_storyboardFacts = __esm({
+  "src/services/storyboardFacts.ts"() {
+    "use strict";
+    init_storyboardTableContract();
+    init_utils3();
+  }
+});
+
+// src/services/videoPromptCompiler.ts
 function escapeAttribute(value) {
   return String(value ?? "").replace(/&/g, "&amp;").replace(/'/g, "&apos;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function truncate(value, max = 500) {
+  const text3 = String(value ?? "").trim();
+  return text3.length > max ? `${text3.slice(0, max)}...` : text3;
 }
 async function resolveSystemPrompt(vendorId, modelName, mode) {
   const configured = await utils_default2.db("o_modelPrompt").where("vendorId", vendorId).where("model", modelName).first();
   if (configured?.path) {
     try {
-      return await import_promises11.default.readFile(import_node_path15.default.join(utils_default2.getPath(["modelPrompt"]), configured.path), "utf8");
+      const file3 = import_node_path17.default.join(utils_default2.getPath(["modelPrompt"]), configured.path);
+      return { content: await import_promises11.default.readFile(file3, "utf8"), source: `o_modelPrompt:${configured.path}` };
     } catch {
     }
   }
@@ -189376,13 +189195,16 @@ async function resolveSystemPrompt(vendorId, modelName, mode) {
     fileName = "universalMulti-parameterMode.md";
   }
   if (fileName) {
+    const builtin = await readBuiltinDataFile("modelPrompt", "video", fileName);
+    if (builtin) return { content: builtin.content, source: builtin.file };
     try {
-      return await import_promises11.default.readFile(import_node_path15.default.join(utils_default2.getPath(["modelPrompt"]), "video", fileName), "utf8");
+      const file3 = import_node_path17.default.join(utils_default2.getPath(["modelPrompt"]), "video", fileName);
+      return { content: await import_promises11.default.readFile(file3, "utf8"), source: file3 };
     } catch {
     }
   }
   const fallback = await utils_default2.db("o_prompt").where("type", "videoPromptGeneration").first();
-  return fallback?.useData || fallback?.data || "";
+  return { content: fallback?.useData || fallback?.data || "", source: "o_prompt:videoPromptGeneration" };
 }
 function constraintBlock(prefix, suffix) {
   const cleanPrefix = prefix?.trim();
@@ -189392,59 +189214,332 @@ function constraintBlock(prefix, suffix) {
 **\u5168\u5C40\u751F\u6210\u7EA6\u675F**
 ${cleanPrefix ? `- \u524D\u7F6E\u7EA6\u675F\uFF1A${cleanPrefix}` : ""}
 ${cleanSuffix ? `- \u540E\u7F6E\u7EA6\u675F\uFF1A${cleanSuffix}` : ""}
-\u8FD9\u4E9B\u5185\u5BB9\u53EA\u7528\u4E8E\u7EA6\u675F\u672C\u6B21\u63D0\u793A\u8BCD\u751F\u6210\uFF0C\u4E0D\u8981\u628A\u5B83\u4EEC\u9010\u5B57\u91CD\u590D\u5199\u5165\u8FD4\u56DE\u7684\u8F68\u9053\u63D0\u793A\u8BCD\u6B63\u6587\u3002`;
+\u8FD9\u4E9B\u5185\u5BB9\u53EA\u7528\u4E8E\u7EA6\u675F\u672C\u6B21\u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210\uFF0C\u4E0D\u8981\u9010\u5B57\u91CD\u590D\u5199\u5165\u8F68\u9053\u63D0\u793A\u8BCD\u6B63\u6587\u3002`;
 }
-async function generateWorkbenchVideoPrompt(input) {
+function referenceLine(item, index) {
+  if (item.sources === "storyboard") {
+    return `${index + 1}. <visualReference
+  source='storyboard'
+  referenceId='${item.id}'
+  name='${escapeAttribute(item.name)}'
+  fileType='${item.fileType}'
+  note='\u8BE5\u5206\u955C\u56FE\u53EA\u4F5C\u4E3A\u89C6\u89C9\u53C2\u8003\uFF1B\u5B8C\u6574\u5206\u955C\u53D9\u4E8B\u4EE5 trackId \u67E5\u8BE2\u5230\u7684\u5206\u955C\u8868\u4E8B\u5B9E\u4E3A\u51C6'
+></visualReference>`;
+  }
+  if (item.sources === "merged") {
+    const sourceRefs = (item.sourceRefs || []).map((ref) => `${ref.sources}:${ref.id}${ref.label ? `(${ref.label})` : ""}`).join(", ");
+    return `${index + 1}. <visualReference
+  source='merged'
+  referenceId='${item.id}'
+  name='${escapeAttribute(item.name)}'
+  fileType='${item.fileType}'
+  sourceRefs='${escapeAttribute(sourceRefs)}'
+  note='\u5408\u56FE\u662F\u89C6\u89C9\u53C2\u8003\u5FEB\u7167\uFF0C\u4E0D\u4EE3\u8868\u5355\u4E2A\u5206\u955C\uFF0C\u4E5F\u4E0D\u80FD\u66FF\u4EE3\u8F68\u9053\u4E0B\u7684\u5206\u955C\u8868\u660E\u7EC6'
+></visualReference>`;
+  }
+  const sourceType = item.category || item.fileType;
+  return `${index + 1}. [${item.id}, ${sourceType}, ${item.name}, fileType=${item.fileType}]`;
+}
+function buildTrackFacts(track) {
+  if (!track) return "";
+  let groupPlan = null;
+  try {
+    groupPlan = track.groupPlanJson ? JSON.parse(track.groupPlanJson) : null;
+  } catch {
+  }
+  const facts = [
+    track.groupKey ? `- groupKey: ${track.groupKey}` : "",
+    track.groupName ? `- groupName: ${track.groupName}` : "",
+    track.groupIntent ? `- groupIntent: ${track.groupIntent}` : "",
+    track.duration ? `- plannedDuration: ${track.duration}s` : "",
+    groupPlan?.transition ? `- transition: ${groupPlan.transition}` : "",
+    groupPlan?.pacing ? `- pacing: ${groupPlan.pacing}` : ""
+  ].filter(Boolean);
+  if (!facts.length) return "";
+  return `
+**\u5206\u955C\u7EC4\u65E2\u5B9A\u4E8B\u5B9E**
+${facts.join("\n")}
+\u8FD9\u4E9B\u662F\u5206\u955C\u8868\u9636\u6BB5\u5DF2\u7ECF\u89C4\u5212\u7684\u4E8B\u5B9E\u3002\u4E0D\u8981\u91CD\u65B0\u62C6\u7EC4\uFF0C\u4E0D\u8981\u628A\u4E0B\u4E00\u573A\u666F\u955C\u5934\u6DF7\u5165\u672C\u7EC4\u3002`;
+}
+async function loadTrackStoryboards(input) {
+  if (!input.trackId) return [];
+  const query = utils_default2.db("o_storyboard").where({ trackId: input.trackId, projectId: input.projectId }).select(
+    "id",
+    "index",
+    "duration",
+    "videoDesc",
+    "scene",
+    "picture",
+    "action",
+    "shotSize",
+    "cameraMove",
+    "dialogue",
+    "sound",
+    "visibleEmotion",
+    "location",
+    "timeOfDay",
+    "sceneContinuityId",
+    "tableRowJson",
+    "factStatus",
+    "factVersion",
+    "groupKey",
+    "groupName",
+    "groupIntent",
+    "beatId",
+    "shouldGenerateImage"
+  ).orderBy("index", "asc").orderBy("id", "asc");
+  if (input.scriptId != null) query.where("scriptId", input.scriptId);
+  const rows = await query;
+  if (!rows.length) return [];
+  const ids = rows.map((row) => Number(row.id));
+  const assetRows = ids.length ? await utils_default2.db("o_assets2Storyboard").whereIn("storyboardId", ids).orderBy("rowid").select("storyboardId", "assetId") : [];
+  const assetMap = /* @__PURE__ */ new Map();
+  for (const row of assetRows) {
+    const storyboardId = Number(row.storyboardId);
+    if (!assetMap.has(storyboardId)) assetMap.set(storyboardId, []);
+    assetMap.get(storyboardId).push(Number(row.assetId));
+  }
+  return rows.map((row) => buildStoryboardVideoFact(row, assetMap.get(Number(row.id)) || []));
+}
+function storyboardLine(item, index) {
+  return `${index + 1}. <trackStoryboard
+  storyboardId='${item.storyboardId}'
+  displayIndex='${escapeAttribute(item.displayIndex)}'
+  factSource='${item.factSource}'
+  duration='${escapeAttribute(item.duration)}'
+  location='${escapeAttribute(item.location)}'
+  timeOfDay='${escapeAttribute(item.timeOfDay)}'
+  groupKey='${escapeAttribute(item.groupKey)}'
+  groupName='${escapeAttribute(item.groupName)}'
+  groupIntent='${escapeAttribute(item.groupIntent)}'
+  beatId='${escapeAttribute(item.beatId)}'
+  scene='${escapeAttribute(item.scene)}'
+  picture='${escapeAttribute(item.picture)}'
+  action='${escapeAttribute(item.action)}'
+  shotSize='${escapeAttribute(item.shotSize)}'
+  cameraMove='${escapeAttribute(item.cameraMove)}'
+  dialogue='${escapeAttribute(item.dialogue)}'
+  sound='${escapeAttribute(item.sound)}'
+  visibleEmotion='${escapeAttribute(item.visibleEmotion)}'
+  characters='${escapeAttribute(JSON.stringify(item.tableRow?.characters || []))}'
+  requiredAssets='${escapeAttribute(JSON.stringify(item.tableRow?.requiredAssets || []))}'
+  shouldGenerateImage='${item.shouldGenerateImage ?? ""}'
+  associateAssetsIds='${JSON.stringify(item.associateAssetsIds)}'
+></trackStoryboard>`;
+}
+function mostCommon(values) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const value of values.map((item) => item.trim()).filter(Boolean)) {
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+}
+function buildGroupSummary(storyboards, track) {
+  const totalDuration = storyboards.reduce((sum, item) => {
+    const duration4 = Number(item.duration);
+    return sum + (Number.isFinite(duration4) ? duration4 : 0);
+  }, 0);
+  return {
+    storyboardCount: storyboards.length,
+    totalDuration,
+    scene: mostCommon(storyboards.map((item) => item.scene)),
+    groupKey: track?.groupKey || storyboards.find((item) => item.groupKey)?.groupKey,
+    groupName: track?.groupName || storyboards.find((item) => item.groupName)?.groupName,
+    groupIntent: track?.groupIntent || storyboards.find((item) => item.groupIntent)?.groupIntent
+  };
+}
+function buildStoryboardFacts(storyboards, track) {
+  if (!storyboards.length) {
+    return `
+**\u5206\u955C\u7EC4\u5B8C\u6574\u660E\u7EC6**
+- \u5F53\u524D\u8F68\u9053\u672A\u67E5\u8BE2\u5230\u5206\u955C\u8868\u660E\u7EC6\u3002\u82E5\u5F15\u7528\u533A\u5305\u542B storyboard\uFF0C\u53EF\u4F7F\u7528\u5F15\u7528\u533A\u7684\u89C6\u89C9\u53C2\u8003\uFF1B\u5426\u5219\u4E0D\u5F97\u81C6\u9020\u5206\u955C\u6570\u91CF\u3002`;
+  }
+  const summary = buildGroupSummary(storyboards, track);
+  const sourceSummary = summarizeFactSources(storyboards);
+  const actionChain = storyboards.map((item) => item.action || item.picture).filter(Boolean).map((item) => truncate(item, 80)).join(" -> ");
+  return `
+**\u5206\u955C\u8868\u4E8B\u5B9E\u6458\u8981**
+- storyboardCount: ${summary.storyboardCount}
+- totalDuration: ${summary.totalDuration || "\u672A\u6307\u5B9A"}s
+- groupKey: ${summary.groupKey || "\u672A\u6307\u5B9A"}
+- groupName: ${summary.groupName || "\u672A\u6307\u5B9A"}
+- groupIntent: ${summary.groupIntent || "\u672A\u6307\u5B9A"}
+- scene: ${summary.scene || "\u672A\u6307\u5B9A"}
+- factSources: storyboardTable=${sourceSummary.storyboardTable}, minimalFallback=${sourceSummary.minimalFallback}
+- actionContinuity: ${actionChain || "\u672A\u6307\u5B9A"}
+
+**\u5206\u955C\u7EC4\u5B8C\u6574\u660E\u7EC6\uFF08\u4EE5 trackId \u67E5\u8BE2\u7ED3\u679C\u4E3A\u51C6\uFF09**
+- \u5FC5\u987B\u6309\u4E0B\u9762 ${storyboards.length} \u4E2A\u5206\u955C\u9010\u6761\u751F\u6210\u89C6\u9891\u63D0\u793A\u8BCD\uFF0C\u4E0D\u5F97\u628A\u5408\u56FE\u3001\u8D44\u4EA7\u56FE\u6216\u4EFB\u610F\u5355\u5F20\u53C2\u8003\u56FE\u5F53\u4F5C\u552F\u4E00\u5206\u955C\u3002
+- \u5206\u955C\u56FE/\u5408\u56FE\u53EA\u7528\u4E8E\u7EA6\u675F\u4EBA\u7269\u5916\u89C2\u3001\u573A\u666F\u7A7A\u95F4\u3001\u6784\u56FE\u3001\u5149\u7EBF\u548C\u8272\u5F69\uFF1B\u52A8\u4F5C\u3001\u53F0\u8BCD\u3001\u97F3\u6548\u3001\u8282\u594F\u4EE5\u5206\u955C\u8868\u4E8B\u5B9E\u4E3A\u51C6\u3002
+- visibleEmotion \u53EA\u80FD\u4F5C\u4E3A\u8868\u6F14\u7EBF\u7D22\uFF0C\u4E0D\u80FD\u539F\u6837\u5199\u6210\u62BD\u8C61\u60C5\u7EEA\u8BCD\u3002\u8BF7\u8F6C\u5199\u4E3A\u53EF\u89C1\u52A8\u4F5C\u3001\u9762\u90E8\u8868\u60C5\u3001\u547C\u5438\u3001\u6B65\u4F10\u3001\u624B\u90E8\u52A8\u4F5C\u6216\u53F0\u8BCD\u8BED\u6C14\u3002
+${storyboards.map(storyboardLine).join("\n")}`;
+}
+function buildGenerationConstraints() {
+  return `
+**\u751F\u6210\u9636\u6BB5\u8D28\u91CF\u7EA6\u675F**
+- \u4FDD\u7559\u6A21\u578B\u4E13\u5C5E Prompt \u7684\u8BE6\u7EC6\u683C\u5F0F\u548C\u5F15\u7528\u7F16\u53F7\u89C4\u5219\u3002
+- \u5206\u955C\u8868\u4E8B\u5B9E\u662F\u89C6\u9891\u63D0\u793A\u8BCD\u4E3B\u8F93\u5165\uFF1B\u5206\u955C\u9762\u677F prompt / imagePrompt \u4E0D\u4F5C\u4E3A\u89C6\u9891\u4E3B\u4E0A\u4E0B\u6587\u3002
+- \u4E0D\u521B\u9020\u65B0\u5267\u60C5\uFF0C\u4E0D\u81EA\u884C\u6539\u5199\u573A\u666F\u65F6\u95F4\u3001\u5149\u5F71\u3001\u8272\u8C03\u3001\u4EBA\u7269\u5173\u7CFB\u3002
+- \u6709\u5206\u955C\u56FE\u3001\u5408\u56FE\u6216\u53C2\u8003\u56FE\u65F6\uFF0C\u6CBF\u7528\u53C2\u8003\u56FE\u4E2D\u7684\u73AF\u5883\u3001\u5149\u7EBF\u3001\u8272\u5F69\u3001\u4EBA\u7269\u5916\u89C2\u3001\u6784\u56FE\uFF1B\u4E0D\u8981\u5F3A\u5199\u4E0E\u53C2\u8003\u56FE\u51B2\u7A81\u7684\u7AD9\u4F4D\u548C\u671D\u5411\u3002
+- \u65E0\u53C2\u8003\u56FE\u65F6\uFF0C\u53EA\u80FD\u4F7F\u7528\u5BFC\u6F14\u89C4\u5212\u6216\u5206\u955C\u8868\u4E2D\u7684\u6700\u5C0F\u5FC5\u8981\u573A\u666F\u4E8B\u5B9E\u3002
+- \u60C5\u7EEA\u5FC5\u987B\u5C3D\u91CF\u5199\u6210\u53EF\u89C1\u52A8\u4F5C\u3001\u773C\u795E\u3001\u547C\u5438\u3001\u59FF\u6001\u3001\u624B\u90E8\u52A8\u4F5C\u3001\u6B65\u4F10\u8282\u594F\u6216\u53F0\u8BCD\u8BED\u6C14\uFF0C\u907F\u514D\u53EA\u5199\u201C\u575A\u5B9A\u3001\u51B3\u7EDD\u3001\u538B\u8FEB\u3001\u8B66\u60D5\u201D\u7B49\u62BD\u8C61\u8BCD\u3002
+- \u753B\u5185\u97F3\u6548\u53EF\u4EE5\u8FDB\u5165\u89C6\u9891\u63D0\u793A\u8BCD\uFF0C\u4F8B\u5982\u811A\u6B65\u58F0\u3001\u5E7F\u64AD\u58F0\u3001\u8863\u6599\u6469\u64E6\u58F0\u3001\u547C\u5438\u58F0\u3001\u73AF\u5883\u58F0\u3001\u52A8\u4F5C\u58F0\u3002
+- BGM\u3001\u914D\u4E50\u3001OST\u3001\u975E\u753B\u5185\u97F3\u4E50\u53EA\u5C5E\u4E8E\u540E\u671F\u5EFA\u8BAE\uFF0C\u4E0D\u5F97\u5199\u5165\u89C6\u9891\u63D0\u793A\u8BCD\u3002
+- \u4E0D\u8981\u52A0\u5165\u56FE\u7247\u751F\u6210\u7528\u753B\u8D28\u5806\u53E0\u8BCD\uFF0C\u4F8B\u5982\u201C\u6781\u81F4\u7EC6\u8282\u3001\u53D1\u4E1D\u6839\u6839\u5206\u660E\u3001\u9762\u5BB9\u7EC6\u817B\u6E32\u67D3\u3001\u7EB9\u7406\u7EC6\u8282\u8D85\u6E05\u6670\u3001\u5F3A\u5BF9\u6BD4\u5EA6\u4E0E\u6781\u81F4\u7EC6\u8282\u201D\u3002
+- \u751F\u6210\u9636\u6BB5\u53EA\u8F93\u51FA\u89C6\u9891\u63D0\u793A\u8BCD\u6B63\u6587\uFF0C\u4E0D\u8F93\u51FA\u5BA1\u6821\u5EFA\u8BAE\u3001\u5206\u6790\u8FC7\u7A0B\u6216\u4FEE\u8BA2\u8BF4\u660E\uFF1B\u5BA1\u6821\u5EFA\u8BAE\u7531\u540E\u7EED reviewer \u8D1F\u8D23\u3002`;
+}
+function buildVideoStyleGuide(project) {
+  const style = String(project?.artStyle || "").trim();
+  return `
+**\u89C6\u9891\u89C6\u89C9\u98CE\u683C\u7EA6\u675F**
+- \u9879\u76EE\u98CE\u683C\u6807\u8BC6\uFF1A${style || "\u672A\u6307\u5B9A"}\u3002
+- \u7528\u4E00\u53E5\u77ED\u8BED\u63CF\u8FF0\u5A92\u4ECB\u548C\u7C7B\u578B\u5373\u53EF\uFF0C\u4F18\u5148\u5199\u201C\u90FD\u5E02\u5199\u5B9E\u6444\u5F71 / \u771F\u4EBA\u5B9E\u62CD\u8D28\u611F / \u73B0\u4EE3\u90FD\u5E02\u7EAA\u5B9E\u201D\u7B49\u5FC5\u8981\u98CE\u683C\u3002
+- \u89C6\u89C9\u7EC6\u8282\u4EE5\u53C2\u8003\u56FE\u4E3A\u51C6\uFF0C\u4E0D\u8981\u590D\u5236\u56FE\u7247\u63D0\u793A\u8BCD\u91CC\u7684\u753B\u8D28\u5806\u53E0\u8BCD\u3002`;
+}
+async function compileWorkbenchVideoPrompt(input, options = {}) {
   const [vendorId, modelName = ""] = input.model.split(/:(.+)/);
   const project = await utils_default2.db("o_project").where("id", input.projectId).first();
   if (!project) throw new Error("\u9879\u76EE\u4E0D\u5B58\u5728");
+  const track = input.trackId ? await utils_default2.db("o_videoTrack").where({ id: input.trackId, projectId: input.projectId }).first() : null;
   const system = await resolveSystemPrompt(vendorId, modelName, input.mode);
-  const references = await resolveWorkbenchReferences(input.references, {
+  const trackStoryboards = await loadTrackStoryboards(input);
+  assertStoryboardFactsReady(trackStoryboards);
+  const referenceInputs = input.references || [];
+  const references = await resolveWorkbenchReferences(referenceInputs, {
     projectId: input.projectId,
     scriptId: input.scriptId,
     trackId: input.trackId,
     requireFile: false
   });
-  const orderedReferenceText = references.map((item, index) => {
-    if (item.sources === "storyboard") {
-      return `${index + 1}. <storyboardItem
-  source='storyboard'
-  referenceId='${item.id}'
-  videoDesc='${escapeAttribute(item.videoDesc)}'
-  duration='${escapeAttribute(item.duration)}'
-  shouldGenerateImage='${item.shouldGenerateImage ?? ""}'
-  associateAssetsIds='${JSON.stringify(item.associateAssetsIds || [])}'
-></storyboardItem>`;
-    }
-    const sourceType = item.sources === "merged" ? "merged" : item.category || item.fileType;
-    return `${index + 1}. [${item.id}, ${sourceType}, ${item.name}]`;
-  }).join("\n");
-  const artStyle = project.artStyle || "\u65E0";
-  const visualManual = utils_default2.getArtPrompt(artStyle, "art_skills", "art_storyboard_video");
-  const content = `
+  const orderedReferenceText = references.map(referenceLine).join("\n");
+  const promptContext = `
 **\u6A21\u578B\u540D\u79F0**\uFF1A${modelName}
 **\u6A21\u5F0F**\uFF1A${input.mode}
-**\u5F15\u7528\u987A\u5E8F**\uFF08\u7F16\u53F7\u4E25\u683C\u5BF9\u5E94\u6A21\u578B\u8F93\u5165\u987A\u5E8F\uFF0C\u4E0D\u5F97\u6309\u7C7B\u578B\u91CD\u6392\uFF09\uFF1A
-${orderedReferenceText}
+**\u5F15\u7528\u987A\u5E8F**\uFF08\u7F16\u53F7\u4E25\u683C\u5BF9\u5E94\u6A21\u578B\u8F93\u5165\u987A\u5E8F\uFF0C\u4E0D\u5F97\u6309\u7C7B\u578B\u91CD\u6392\uFF09\uFF1A${orderedReferenceText}
+${buildTrackFacts(track)}
+${buildStoryboardFacts(trackStoryboards, track)}
 ${constraintBlock(input.promptPrefix, input.promptSuffix)}
+${buildGenerationConstraints()}
 `;
-  const { text: text2 } = await utils_default2.Ai.Text("universalAi").invoke({
-    system,
-    messages: [
-      { role: "assistant", content: `${visualManual}` },
-      { role: "user", content }
-    ]
+  const groupSummary = buildGroupSummary(trackStoryboards, track);
+  const factSourceSummary = summarizeFactSources(trackStoryboards);
+  const diagnosticBase = {
+    taskId: options.taskId,
+    legacyTaskId: options.legacyTaskId,
+    projectId: input.projectId,
+    scriptId: input.scriptId,
+    trackId: input.trackId,
+    model: input.model,
+    mode: input.mode,
+    systemPromptSource: system.source,
+    references: referenceInputs,
+    resolvedReferences: references.map((item, index) => ({
+      order: index + 1,
+      id: item.id,
+      sources: item.sources,
+      fileType: item.fileType,
+      name: item.name,
+      sourceRefs: item.sourceRefs
+    })),
+    storyboardCount: trackStoryboards.length,
+    factSourceSummary,
+    groupSummary
+  };
+  let text3 = "";
+  try {
+    const result = await utils_default2.Ai.Text("universalAi").invoke({
+      system: system.content,
+      messages: [
+        { role: "assistant", content: buildVideoStyleGuide(project) },
+        { role: "user", content: promptContext }
+      ]
+    });
+    text3 = result.text;
+  } catch (error50) {
+    const diagnosticFile2 = writeDiagnosticFile(
+      `video-prompt-failed-track-${input.trackId || "unknown"}`,
+      JSON.stringify({ ...diagnosticBase, promptContext, systemPrompt: system.content, error: utils_default2.error(error50).message }, null, 2),
+      { provider: "prompt", taskId: options.taskId, projectId: input.projectId, scriptId: input.scriptId, model: input.model }
+    );
+    promptLog.error("Video prompt generation failed", {
+      event: "video-prompt.failed",
+      taskId: options.taskId,
+      projectId: input.projectId,
+      scriptId: input.scriptId,
+      businessId: input.trackId,
+      model: input.model,
+      diagnosticFile: diagnosticFile2,
+      error: error50
+    });
+    throw error50;
+  }
+  const inspection = inspectVideoPromptEngineering(text3);
+  const diagnosticFile = writeDiagnosticFile(
+    `video-prompt-track-${input.trackId || "unknown"}`,
+    JSON.stringify(
+      {
+        ...diagnosticBase,
+        promptContext,
+        systemPrompt: system.content,
+        aiOutputSummary: text3.slice(0, 4e3),
+        aiOutputLength: text3.length,
+        engineeringIssues: inspection.issues
+      },
+      null,
+      2
+    ),
+    { provider: "prompt", taskId: options.taskId, projectId: input.projectId, scriptId: input.scriptId, model: input.model }
+  );
+  promptLog.info("Video prompt diagnostic captured", {
+    event: "video-prompt.diagnostic",
+    taskId: options.taskId,
+    projectId: input.projectId,
+    scriptId: input.scriptId,
+    businessId: input.trackId,
+    model: input.model,
+    storyboardCount: trackStoryboards.length,
+    referenceCount: references.length,
+    systemPromptSource: system.source,
+    diagnosticFile
   });
-  return text2;
+  if (inspection.issues.some((issue3) => issue3.severity === "blocking")) {
+    throw new Error(inspection.issues.find((issue3) => issue3.severity === "blocking")?.message || "\u89C6\u9891\u63D0\u793A\u8BCD\u751F\u6210\u5931\u8D25");
+  }
+  return {
+    text: text3.trim(),
+    systemPrompt: system.content,
+    systemPromptSource: system.source,
+    promptContext,
+    engineeringIssues: inspection.issues,
+    diagnosticFile,
+    factSourceSummary,
+    groupSummary
+  };
 }
-var import_promises11, import_node_path15;
+var import_promises11, import_node_path17, promptLog;
+var init_videoPromptCompiler = __esm({
+  "src/services/videoPromptCompiler.ts"() {
+    "use strict";
+    import_promises11 = __toESM(require("node:fs/promises"));
+    import_node_path17 = __toESM(require("node:path"));
+    init_utils3();
+    init_logger();
+    init_builtinData();
+    init_workbenchReference();
+    init_videoPromptSafetyGuard();
+    init_storyboardFacts();
+    promptLog = createLogger("video-prompt-compiler");
+  }
+});
+
+// src/services/workbenchVideoPrompt.ts
+async function generateWorkbenchVideoPromptResult(input, options = {}) {
+  return compileWorkbenchVideoPrompt(input, options);
+}
 var init_workbenchVideoPrompt = __esm({
   "src/services/workbenchVideoPrompt.ts"() {
     "use strict";
-    import_promises11 = __toESM(require("node:fs/promises"));
-    import_node_path15 = __toESM(require("node:path"));
-    init_utils3();
-    init_workbenchReference();
+    init_videoPromptCompiler();
   }
 });
 
@@ -189618,11 +189713,11 @@ var init_p_limit = __esm({
 
 // src/utils/image.ts
 function isThumbnailImagePath(filePath) {
-  return THUMBNAIL_IMAGE_EXTENSIONS.has(import_node_path16.default.extname(filePath).toLowerCase());
+  return THUMBNAIL_IMAGE_EXTENSIONS.has(import_node_path18.default.extname(filePath).toLowerCase());
 }
 async function resizeImage(srcPath, dstPath, opts) {
   const { width, height, fit, withoutEnlargement } = { ...defaultResizeOptions, ...opts };
-  await import_promises12.default.mkdir(import_node_path16.default.dirname(dstPath), { recursive: true });
+  await import_promises12.default.mkdir(import_node_path18.default.dirname(dstPath), { recursive: true });
   await (0, import_sharp2.default)(srcPath).resize(width, height, { fit, withoutEnlargement }).toFile(dstPath);
 }
 async function ensureThumbnail(originalPath, thumbnailPath, size) {
@@ -189668,13 +189763,13 @@ async function ensureThumbnail(originalPath, thumbnailPath, size) {
   thumbnailJobs.set(thumbnailPath, job);
   return job;
 }
-var import_promises12, import_fs8, import_node_path16, import_sharp2, defaultResizeOptions, THUMBNAIL_IMAGE_EXTENSIONS, thumbnailLimit, thumbnailJobs;
+var import_promises12, import_fs8, import_node_path18, import_sharp2, defaultResizeOptions, THUMBNAIL_IMAGE_EXTENSIONS, thumbnailLimit, thumbnailJobs;
 var init_image = __esm({
   "src/utils/image.ts"() {
     "use strict";
     import_promises12 = __toESM(require("node:fs/promises"));
     import_fs8 = __toESM(require("fs"));
-    import_node_path16 = __toESM(require("node:path"));
+    import_node_path18 = __toESM(require("node:path"));
     import_sharp2 = __toESM(require("sharp"));
     init_p_limit();
     defaultResizeOptions = {
@@ -189892,17 +189987,17 @@ async function executeNovelEventTask(payload) {
 }
 async function executeThumbnailTask(payload) {
   const originalPath = await utils_default2.oss.getLocalFilePath(payload.originalPath);
-  const thumbnailPath = storageMode() === "workspace" ? import_node_path17.default.join(cacheDataPath("thumbnails"), payload.thumbnailPath.replace(/^[/\\]+/, "")) : import_node_path17.default.join(getPath_default("oss"), payload.thumbnailPath.replace(/^[/\\]+/, ""));
+  const thumbnailPath = storageMode() === "workspace" ? import_node_path19.default.join(cacheDataPath("thumbnails"), payload.thumbnailPath.replace(/^[/\\]+/, "")) : import_node_path19.default.join(getPath_default("oss"), payload.thumbnailPath.replace(/^[/\\]+/, ""));
   const result = await ensureThumbnail(originalPath, thumbnailPath, payload.size);
   if (!result) throw new Error(`\u7F29\u7565\u56FE\u751F\u6210\u5931\u8D25: ${payload.originalPath}`);
   return {};
 }
-var import_promises13, import_node_path17, assetTypeConfig;
+var import_promises13, import_node_path19, assetTypeConfig;
 var init_backgroundTaskHandlers = __esm({
   "src/services/backgroundTaskHandlers.ts"() {
     "use strict";
     import_promises13 = __toESM(require("node:fs/promises"));
-    import_node_path17 = __toESM(require("node:path"));
+    import_node_path19 = __toESM(require("node:path"));
     init_dist22();
     init_zod();
     init_utils3();
@@ -189940,7 +190035,7 @@ var init_backgroundTaskHandlers = __esm({
 
 // src/services/storageMigration.ts
 function storageMigrationLockPath() {
-  return import_node_path18.default.join(appDataRoot(), "temp", "storage-migration.lock");
+  return import_node_path20.default.join(appDataRoot(), "temp", "storage-migration.lock");
 }
 async function directorySize(directory) {
   let files = 0;
@@ -189954,7 +190049,7 @@ async function directorySize(directory) {
     }
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
-      const fullPath = import_node_path18.default.join(current, entry.name);
+      const fullPath = import_node_path20.default.join(current, entry.name);
       if (entry.isDirectory()) await visit4(fullPath);
       else if (entry.isFile()) {
         const stat = await import_promises14.default.stat(fullPath);
@@ -189967,12 +190062,12 @@ async function directorySize(directory) {
   return { files, bytes };
 }
 function databaseFileFor(root2) {
-  const workspaceFile = import_node_path18.default.join(root2, "workspace.sqlite");
-  const legacyFile = import_node_path18.default.join(root2, "db2.sqlite");
-  return import_node_fs5.default.existsSync(workspaceFile) ? workspaceFile : legacyFile;
+  const workspaceFile = import_node_path20.default.join(root2, "workspace.sqlite");
+  const legacyFile = import_node_path20.default.join(root2, "db2.sqlite");
+  return import_node_fs7.default.existsSync(workspaceFile) ? workspaceFile : legacyFile;
 }
 function inspectSqlite(databasePath) {
-  if (!import_node_fs5.default.existsSync(databasePath)) return { healthy: false, projectCount: 0, message: "Database not found" };
+  if (!import_node_fs7.default.existsSync(databasePath)) return { healthy: false, projectCount: 0, message: "Database not found" };
   try {
     const database = new Database(databasePath, { readonly: true });
     const integrity = String(database.pragma("integrity_check", { simple: true }));
@@ -189992,31 +190087,31 @@ async function activeMigrationBlockers(database = db_default) {
   return { unified, video, count: unified.length + video.length };
 }
 async function validateWorkspaceTarget(targetPath) {
-  const target = import_node_path18.default.resolve(targetPath);
-  const current = import_node_path18.default.resolve(workspaceRoot());
-  const appRoot = import_node_path18.default.resolve(appDataRoot());
-  const installRoot = import_node_path18.default.resolve(process.cwd());
+  const target = import_node_path20.default.resolve(targetPath);
+  const current = import_node_path20.default.resolve(workspaceRoot());
+  const appRoot = import_node_path20.default.resolve(appDataRoot());
+  const installRoot = import_node_path20.default.resolve(process.cwd());
   const forbiddenRoots = [appRoot, installRoot];
   const lower = target.toLowerCase();
-  const isInside = (child, parent2) => child === parent2 || child.startsWith(`${parent2}${import_node_path18.default.sep}`);
-  if (!import_node_path18.default.isAbsolute(targetPath)) throw new Error("Workspace path must be absolute");
-  if (target === import_node_path18.default.parse(target).root) throw new Error("A disk root cannot be used as the workspace");
+  const isInside = (child, parent2) => child === parent2 || child.startsWith(`${parent2}${import_node_path20.default.sep}`);
+  if (!import_node_path20.default.isAbsolute(targetPath)) throw new Error("Workspace path must be absolute");
+  if (target === import_node_path20.default.parse(target).root) throw new Error("A disk root cannot be used as the workspace");
   if (forbiddenRoots.some((root2) => isInside(lower, root2.toLowerCase()))) {
     throw new Error("The workspace cannot be inside application data or the installation directory");
   }
   if (isInside(lower, current.toLowerCase()) || isInside(current.toLowerCase(), lower)) {
     throw new Error("The target cannot be the current workspace or its parent/child directory");
   }
-  const parent = import_node_path18.default.dirname(target);
+  const parent = import_node_path20.default.dirname(target);
   await import_promises14.default.mkdir(parent, { recursive: true });
-  if (import_node_fs5.default.existsSync(target)) {
+  if (import_node_fs7.default.existsSync(target)) {
     const stat = await import_promises14.default.lstat(target);
     if (stat.isSymbolicLink()) throw new Error("Symbolic links cannot be used as a workspace");
     if (!stat.isDirectory()) throw new Error("The target must be a directory");
     if ((await import_promises14.default.readdir(target)).length) throw new Error("The target directory must be empty");
   }
-  const probeRoot = import_node_fs5.default.existsSync(target) ? target : parent;
-  const probe = import_node_path18.default.join(probeRoot, `.toonflow-write-${process.pid}-${Date.now()}`);
+  const probeRoot = import_node_fs7.default.existsSync(target) ? target : parent;
+  const probe = import_node_path20.default.join(probeRoot, `.toonflow-write-${process.pid}-${Date.now()}`);
   await import_promises14.default.writeFile(probe, "ok", "utf8");
   await import_promises14.default.rm(probe, { force: true });
   const sourceSize = await directorySize(storageMode() === "workspace" ? workspaceRoot() : legacyDataRoot());
@@ -190065,18 +190160,18 @@ function ensureProjectStorageTable(databasePath) {
   database.close();
 }
 async function copyLegacyMedia(sourceRoot, stagingRoot, projectIds) {
-  const sourceOss = import_node_path18.default.join(sourceRoot, "oss");
+  const sourceOss = import_node_path20.default.join(sourceRoot, "oss");
   for (const projectId of projectIds) {
-    const source = import_node_path18.default.join(sourceOss, String(projectId));
-    const target = import_node_path18.default.join(stagingRoot, "projects", String(projectId), "media");
-    if (import_node_fs5.default.existsSync(source)) await import_promises14.default.cp(source, target, { recursive: true, filter: (item) => !/[/\\]smallImage([/\\]|$)/i.test(item) });
+    const source = import_node_path20.default.join(sourceOss, String(projectId));
+    const target = import_node_path20.default.join(stagingRoot, "projects", String(projectId), "media");
+    if (import_node_fs7.default.existsSync(source)) await import_promises14.default.cp(source, target, { recursive: true, filter: (item) => !/[/\\]smallImage([/\\]|$)/i.test(item) });
   }
 }
 async function copyUserConfiguration(sourceRoot) {
   for (const name28 of ["vendor", "skills", "modelPrompt"]) {
-    const source = import_node_path18.default.join(sourceRoot, name28);
+    const source = import_node_path20.default.join(sourceRoot, name28);
     const target = userDataPath(name28);
-    if (import_node_fs5.default.existsSync(source)) {
+    if (import_node_fs7.default.existsSync(source)) {
       await import_promises14.default.mkdir(target, { recursive: true });
       await import_promises14.default.cp(source, target, { recursive: true, force: false, errorOnExist: false });
     }
@@ -190086,30 +190181,30 @@ async function performStorageMigration(input, taskId) {
   const validation = await validateWorkspaceTarget(input.targetPath);
   const blockers = await activeMigrationBlockers();
   if (blockers.count) throw new Error("Active provider tasks must finish before workspace migration");
-  const sourceRoot = import_node_path18.default.resolve(input.sourcePath || workspaceRoot());
+  const sourceRoot = import_node_path20.default.resolve(input.sourcePath || workspaceRoot());
   const sourceDatabase = databaseFileFor(sourceRoot);
   const sourceHealth = inspectSqlite(sourceDatabase);
   if (!sourceHealth.healthy) throw new Error(`Source database is unhealthy: ${sourceHealth.message}`);
   const target = validation.targetPath;
-  const staging = import_node_path18.default.join(import_node_path18.default.dirname(target), `.${import_node_path18.default.basename(target)}.toonflow-migrate-${randomSuffix()}`);
+  const staging = import_node_path20.default.join(import_node_path20.default.dirname(target), `.${import_node_path20.default.basename(target)}.toonflow-migrate-${randomSuffix()}`);
   const lock = storageMigrationLockPath();
-  await import_promises14.default.mkdir(import_node_path18.default.dirname(lock), { recursive: true });
+  await import_promises14.default.mkdir(import_node_path20.default.dirname(lock), { recursive: true });
   await import_promises14.default.writeFile(lock, JSON.stringify({ taskId, sourceRoot, target, startedAt: Date.now() }), "utf8");
   const progress = async (value, phase) => updateUnifiedTask(taskId, { status: "processing", progress: value, phase });
   try {
     await progress(5, "backup");
     await import_promises14.default.rm(staging, { recursive: true, force: true });
-    await import_promises14.default.mkdir(import_node_path18.default.join(staging, "backups"), { recursive: true });
-    const backupPath = import_node_path18.default.join(staging, "backups", `source-before-migration-${Date.now()}.sqlite`);
+    await import_promises14.default.mkdir(import_node_path20.default.join(staging, "backups"), { recursive: true });
+    const backupPath = import_node_path20.default.join(staging, "backups", `source-before-migration-${Date.now()}.sqlite`);
     const sourceDb = new Database(sourceDatabase, { readonly: true });
     sourceDb.prepare("VACUUM INTO ?").run(backupPath);
     sourceDb.close();
     await progress(20, "split-database");
-    const stagedWorkspaceDb = import_node_path18.default.join(staging, "workspace.sqlite");
-    const pendingProfile = import_node_path18.default.join(appDataRoot(), "temp", `profile-migration-${Date.now()}.sqlite`);
-    await import_promises14.default.mkdir(import_node_path18.default.dirname(pendingProfile), { recursive: true });
+    const stagedWorkspaceDb = import_node_path20.default.join(staging, "workspace.sqlite");
+    const pendingProfile = import_node_path20.default.join(appDataRoot(), "temp", `profile-migration-${Date.now()}.sqlite`);
+    await import_promises14.default.mkdir(import_node_path20.default.dirname(pendingProfile), { recursive: true });
     await import_promises14.default.copyFile(backupPath, stagedWorkspaceDb);
-    const existingProfile = storageMode() === "workspace" && import_node_fs5.default.existsSync(profileDatabasePath()) ? profileDatabasePath() : backupPath;
+    const existingProfile = storageMode() === "workspace" && import_node_fs7.default.existsSync(profileDatabasePath()) ? profileDatabasePath() : backupPath;
     await import_promises14.default.copyFile(existingProfile, pendingProfile);
     stripDatabase(stagedWorkspaceDb, false);
     stripDatabase(pendingProfile, true);
@@ -190118,8 +190213,8 @@ async function performStorageMigration(input, taskId) {
     const projectDb = new Database(stagedWorkspaceDb, { readonly: true });
     const projectIds = projectDb.prepare("SELECT id FROM o_project ORDER BY id").all().map((row) => Number(row.id));
     projectDb.close();
-    if (storageMode() === "workspace" && import_node_fs5.default.existsSync(import_node_path18.default.join(sourceRoot, "projects"))) {
-      await import_promises14.default.cp(import_node_path18.default.join(sourceRoot, "projects"), import_node_path18.default.join(staging, "projects"), {
+    if (storageMode() === "workspace" && import_node_fs7.default.existsSync(import_node_path20.default.join(sourceRoot, "projects"))) {
+      await import_promises14.default.cp(import_node_path20.default.join(sourceRoot, "projects"), import_node_path20.default.join(staging, "projects"), {
         recursive: true,
         filter: (item) => !/[/\\](project\.toonflow|manifest\.json|smallImage)([/\\]|$)/i.test(item)
       });
@@ -190147,18 +190242,18 @@ async function performStorageMigration(input, taskId) {
       const projectId = projectIds[index];
       await generateProjectSnapshot(projectId, stagedDb, {
         workspaceRoot: staging,
-        mediaRoot: import_node_path18.default.join(staging, "projects", String(projectId), "media")
+        mediaRoot: import_node_path20.default.join(staging, "projects", String(projectId), "media")
       });
       await progress(60 + Math.floor((index + 1) / Math.max(1, projectIds.length) * 25), "project-snapshots");
     }
     await stagedDb.destroy();
     await import_promises14.default.writeFile(
-      import_node_path18.default.join(staging, "workspace.json"),
+      import_node_path20.default.join(staging, "workspace.json"),
       JSON.stringify({ version: 1, createdAt: Date.now(), projectCount: projectIds.length }, null, 2),
       "utf8"
     );
     await progress(90, "activate");
-    if (import_node_fs5.default.existsSync(target)) await import_promises14.default.rm(target, { recursive: true, force: true });
+    if (import_node_fs7.default.existsSync(target)) await import_promises14.default.rm(target, { recursive: true, force: true });
     await import_promises14.default.rename(staging, target);
     writeRuntimeStorageConfig({
       version: 1,
@@ -190183,13 +190278,13 @@ async function performStorageMigration(input, taskId) {
 function randomSuffix() {
   return `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
-var import_promises14, import_node_fs5, import_node_path18, import_knex4, Database, ACTIVE_PROVIDER_STATUSES;
+var import_promises14, import_node_fs7, import_node_path20, import_knex4, Database, ACTIVE_PROVIDER_STATUSES;
 var init_storageMigration = __esm({
   "src/services/storageMigration.ts"() {
     "use strict";
     import_promises14 = __toESM(require("node:fs/promises"));
-    import_node_fs5 = __toESM(require("node:fs"));
-    import_node_path18 = __toESM(require("node:path"));
+    import_node_fs7 = __toESM(require("node:fs"));
+    import_node_path20 = __toESM(require("node:path"));
     import_knex4 = __toESM(require_knex());
     init_db();
     init_storagePaths();
@@ -190367,10 +190462,15 @@ var init_unifiedTaskWorker = __esm({
     init_storageMigration();
     handlers = {
       "image-flow": async (payload) => executeImageFlowTask(payload),
-      "workbench-prompt": async (payload) => {
-        const text2 = await generateWorkbenchVideoPrompt(payload);
-        await utils_default2.db("o_videoTrack").where({ id: payload.trackId }).update({ prompt: text2, state: "\u5DF2\u5B8C\u6210", reason: "" });
-        return { businessId: payload.trackId };
+      "workbench-prompt": async (payload, task) => {
+        const result = await generateWorkbenchVideoPromptResult(payload, { taskId: task.taskId, legacyTaskId: task.id });
+        await utils_default2.db("o_videoTrack").where({ id: payload.trackId }).update({ prompt: result.text, state: "\u5DF2\u5B8C\u6210", reason: "" });
+        return {
+          businessId: payload.trackId,
+          diagnosticFile: result.diagnosticFile,
+          factSourceSummary: result.factSourceSummary,
+          groupSummary: result.groupSummary
+        };
       },
       "asset-image": async (payload) => executeAssetImageTask(payload),
       "asset-prompt": async (payload) => executeAssetPromptTask(payload),
@@ -190439,8 +190539,11 @@ function startRuntimeMetrics(role, publish) {
 
 // src/runtime/taskWorker.ts
 init_runtimeProtocol();
+init_logger();
 process.env.TOONFLOW_UTILITY = "1";
 process.env.TOONFLOW_RUNTIME_ROLE = "worker";
+initLogger({ role: "worker", hijackConsole: true });
+var runtimeLog = createLogger("runtime-worker");
 var parentPort = process.parentPort;
 var apiPort = null;
 var shuttingDown = false;
@@ -190474,12 +190577,17 @@ async function shutdown() {
   stopMetrics();
   stopHeartbeat();
   try {
+    runtimeLog.info("Worker shutdown started", { event: "shutdown.start" });
     await stopWorker?.();
     const queue = (init_videoGenerationQueue(), __toCommonJS(videoGenerationQueue_exports));
     await queue.stopVideoGenerationQueue();
     const portable = (init_projectPortable(), __toCommonJS(projectPortable_exports));
     const summary = await portable.generateStaleProjectSnapshotsOnExit(void 0, { timeoutMs: 6e4 });
     if (summary.scanned) {
+      runtimeLog.info("Exit project snapshot flush completed", {
+        event: "project-snapshot.exit-flush",
+        ...summary
+      });
       parentPort?.postMessage({
         type: "runtime:log",
         role: "worker",
@@ -190494,6 +190602,7 @@ async function shutdown() {
   }
 }
 void (async () => {
+  runtimeLog.info("Worker utility process starting", { event: "startup" });
   const dbModule = (init_db(), __toCommonJS(db_exports));
   const { dbReady: dbReady2 } = dbModule;
   readDbDiagnostics = dbModule.getDbDiagnostics;
@@ -190508,8 +190617,10 @@ void (async () => {
     }
   });
   stopWorker = () => unified.stop();
+  runtimeLog.info("Worker utility process ready", { event: "ready" });
   parentPort?.postMessage({ type: "runtime:ready", role: "worker", pid: process.pid });
 })().catch((error50) => {
+  runtimeLog.error("Worker utility process failed", { event: "fatal", error: error50 });
   parentPort?.postMessage({
     type: "runtime:error",
     role: "worker",

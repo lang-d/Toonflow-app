@@ -1,4 +1,4 @@
-// @db-hash d1a92526983df2f265122592b75b322f
+// @db-hash c72af27803f04b4072559ff377245dad
 //该文件由脚本自动生成，请勿手动修改
 
 export interface memories {
@@ -152,6 +152,33 @@ export interface o_novel {
   'projectId'?: number | null;
   'reel'?: string | null;
 }
+export interface o_productionReviewFeedback {
+  'comment': string;
+  'createTime': number;
+  'id'?: number;
+  'mode': string;
+  'projectId': number;
+  'scriptId'?: number | null;
+  'suggestionId': number;
+}
+export interface o_productionReviewSuggestion {
+  'createTime': number;
+  'id'?: number;
+  'issueType': string;
+  'message': string;
+  'parentId'?: number | null;
+  'projectId': number;
+  'proposedAction'?: string | null;
+  'proposedPatch'?: string | null;
+  'reason'?: string | null;
+  'scriptId'?: number | null;
+  'severity': string;
+  'status'?: string;
+  'targetId': string;
+  'targetType': string;
+  'updateTime': number;
+  'version'?: number;
+}
 export interface o_project {
   'artStyle'?: string | null;
   'createTime'?: number | null;
@@ -218,23 +245,100 @@ export interface o_skillList {
   'type': string;
   'updateTime': number;
 }
-export interface o_storyboard {
+export interface o_storyAnnotation {
+  'artifactId': number;
+  'artifactVersion'?: number;
+  'blockId'?: string | null;
+  'comment': string;
   'createTime'?: number | null;
+  'endOffset'?: number | null;
+  'id'?: number;
+  'projectId': number;
+  'selectedText': string;
+  'startOffset'?: number | null;
+  'status'?: string;
+  'updateTime'?: number | null;
+}
+export interface o_storyArtifact {
+  'content': string;
+  'contentJson'?: string | null;
+  'createTime'?: number | null;
+  'id'?: number;
+  'parentId'?: number | null;
+  'projectId': number;
+  'status'?: string;
+  'title': string;
+  'type': string;
+  'updateTime'?: number | null;
+  'version'?: number;
+}
+export interface o_storyboard {
+  'action'?: string | null;
+  'beatId'?: string | null;
+  'cameraMove'?: string | null;
+  'createTime'?: number | null;
+  'dialogue'?: string | null;
   'duration'?: string | null;
+  'factRevision'?: number | null;
+  'factStatus'?: string | null;
+  'factVersion'?: number | null;
   'filePath'?: string | null;
   'flowId'?: number | null;
+  'groupIntent'?: string | null;
+  'groupKey'?: string | null;
+  'groupName'?: string | null;
   'id'?: number;
   'index'?: number | null;
+  'location'?: string | null;
+  'picture'?: string | null;
   'projectId'?: number | null;
   'prompt'?: string | null;
   'reason'?: string | null;
   'referenceImages'?: string | null;
+  'scene'?: string | null;
+  'sceneContinuityId'?: string | null;
   'scriptId'?: number | null;
+  'shotSize'?: string | null;
   'shouldGenerateImage'?: number | null;
+  'sound'?: string | null;
   'state'?: string | null;
+  'tableRowJson'?: string | null;
+  'timeOfDay'?: string | null;
   'track'?: string | null;
   'trackId'?: number | null;
   'videoDesc'?: string | null;
+  'visibleEmotion'?: string | null;
+}
+export interface o_storyboardGeneration {
+  'createdAt': number;
+  'errorJson'?: string | null;
+  'expectedRowCount': number;
+  'generationId': string;
+  'groupPlanJson': string;
+  'id'?: number | null;
+  'projectId': number;
+  'revision'?: number | null;
+  'scriptId': number;
+  'state': string;
+  'updatedAt': number;
+}
+export interface o_storyboardGenerationRow {
+  'createdAt': number;
+  'generationId': string;
+  'id'?: number | null;
+  'rowHash': string;
+  'rowIndex': number;
+  'rowJson': string;
+  'updatedAt': number;
+}
+export interface o_storyRevisionMap {
+  'annotationIds'?: string | null;
+  'changeSummary'?: string | null;
+  'createTime'?: number | null;
+  'id'?: number;
+  'newArtifactId': number;
+  'projectId': number;
+  'sourceArtifactId': number;
 }
 export interface o_taskEvent {
   'createdAt': number;
@@ -291,6 +395,21 @@ export interface o_tasks {
   'taskType'?: string | null;
   'updateTime'?: number | null;
   'version'?: number | null;
+}
+export interface o_textAsset {
+  'createTime': number;
+  'filePath': string;
+  'hash': string;
+  'id'?: number;
+  'projectId': number;
+  'scriptId'?: number | null;
+  'size'?: number;
+  'state'?: string;
+  'summary'?: string | null;
+  'targetId'?: string | null;
+  'targetType': string;
+  'updateTime': number;
+  'version'?: number;
 }
 export interface o_user {
   'id'?: number;
@@ -363,11 +482,19 @@ export interface o_videoProviderCapacity {
   'vendorId': string;
 }
 export interface o_videoTrack {
+  'archived'?: number | null;
   'duration'?: number | null;
+  'groupIntent'?: string | null;
+  'groupKey'?: string | null;
+  'groupName'?: string | null;
+  'groupPlanJson'?: string | null;
   'id'?: number;
+  'musicPlanJson'?: string | null;
   'projectId'?: number | null;
   'prompt'?: string | null;
   'reason'?: string | null;
+  'reviewIssuesJson'?: string | null;
+  'reviewState'?: string | null;
   'scriptId'?: number | null;
   'selectVideoId'?: number | null;
   'state'?: string | null;
@@ -406,6 +533,8 @@ export interface DB {
   "o_imageFlow": o_imageFlow;
   "o_modelPrompt": o_modelPrompt;
   "o_novel": o_novel;
+  "o_productionReviewFeedback": o_productionReviewFeedback;
+  "o_productionReviewSuggestion": o_productionReviewSuggestion;
   "o_project": o_project;
   "o_projectStorage": o_projectStorage;
   "o_prompt": o_prompt;
@@ -414,9 +543,15 @@ export interface DB {
   "o_setting": o_setting;
   "o_skillAttribution": o_skillAttribution;
   "o_skillList": o_skillList;
+  "o_storyAnnotation": o_storyAnnotation;
+  "o_storyArtifact": o_storyArtifact;
   "o_storyboard": o_storyboard;
+  "o_storyboardGeneration": o_storyboardGeneration;
+  "o_storyboardGenerationRow": o_storyboardGenerationRow;
+  "o_storyRevisionMap": o_storyRevisionMap;
   "o_taskEvent": o_taskEvent;
   "o_tasks": o_tasks;
+  "o_textAsset": o_textAsset;
   "o_user": o_user;
   "o_vendorConfig": o_vendorConfig;
   "o_video": o_video;

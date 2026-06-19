@@ -18,26 +18,53 @@ async function verifyToken(rawToken: string): Promise<Boolean> {
   }
 }
 
+type ProductionAgentSocketContext = {
+  isolationKey: string;
+  projectId: number;
+  scriptId: number;
+};
+
+async function validateProductionAgentContext(input: any): Promise<ProductionAgentSocketContext> {
+  const projectId = Number(input?.projectId);
+  const scriptId = Number(input?.scriptId);
+  const isolationKey = String(input?.isolationKey || "");
+  if (!Number.isFinite(projectId) || !Number.isFinite(scriptId) || !isolationKey) {
+    throw new Error("invalid production agent context");
+  }
+  const expectedIsolationKey = `${projectId}:productionAgent:${scriptId}`;
+  if (isolationKey !== expectedIsolationKey) {
+    throw new Error(`production agent isolationKey mismatch: expected ${expectedIsolationKey}`);
+  }
+  const script = await u.db("o_script").where({ id: scriptId, projectId }).first("id");
+  if (!script) {
+    throw new Error(`script ${scriptId} does not belong to project ${projectId}`);
+  }
+  return { isolationKey, projectId, scriptId };
+}
+
 export default (nsp: Namespace) => {
   nsp.on("connection", async (socket: Socket) => {
     const token = socket.handshake.auth.token;
     if (!token || !(await verifyToken(token))) {
-      console.log("[productionAgent] 连接失败，token无效");
-      socket.disconnect();
-      return;
-    }
-    let isolationKey = socket.handshake.auth.isolationKey;
-    if (!isolationKey) {
-      console.log("[productionAgent] 连接失败，缺少 isolationKey");
+      console.log("[productionAgent] connection rejected: invalid token");
       socket.disconnect();
       return;
     }
 
-    console.log("[productionAgent] 已连接:", socket.id);
+    let context: ProductionAgentSocketContext;
+    try {
+      context = await validateProductionAgentContext(socket.handshake.auth);
+    } catch (error) {
+      console.log("[productionAgent] connection rejected:", u.error(error).message);
+      socket.disconnect();
+      return;
+    }
+
+    console.log("[productionAgent] connected:", socket.id, context.isolationKey);
 
     let resTool = new ResTool(socket, {
-      projectId: socket.handshake.auth.projectId,
-      scriptId: socket.handshake.auth.scriptId,
+      projectId: context.projectId,
+      scriptId: context.scriptId,
     });
     let abortController: AbortController | null = null;
 
@@ -46,14 +73,20 @@ export default (nsp: Namespace) => {
       thinlLevel: 0,
     };
 
-    socket.on("updateContext", (data: { isolationKey: string; projectId: number; scriptId: number }, callback) => {
-      isolationKey = data.isolationKey;
-      resTool = new ResTool(socket, {
-        projectId: data.projectId,
-        scriptId: data.scriptId,
-      });
-      console.log("[productionAgent] 上下文已更新:", isolationKey);
-      callback?.({ success: true });
+    socket.on("updateContext", async (data: { isolationKey: string; projectId: number; scriptId: number }, callback) => {
+      try {
+        if (abortController) throw new Error("production agent is running; stop it before switching context");
+        const nextContext = await validateProductionAgentContext(data);
+        context = nextContext;
+        resTool = new ResTool(socket, {
+          projectId: nextContext.projectId,
+          scriptId: nextContext.scriptId,
+        });
+        console.log("[productionAgent] context updated:", context.isolationKey);
+        callback?.({ success: true });
+      } catch (error) {
+        callback?.({ success: false, message: u.error(error).message });
+      }
     });
 
     socket.on("chat", async (data: { content: string }) => {
@@ -65,7 +98,7 @@ export default (nsp: Namespace) => {
       const msg = resTool.newMessage("assistant", "视频策划");
       const ctx: agent.AgentContext = {
         socket,
-        isolationKey,
+        isolationKey: context.isolationKey,
         text: content,
         userMessageTime: new Date(msg.datetime).getTime() - 1,
         abortSignal: currentController.signal,
@@ -90,7 +123,7 @@ export default (nsp: Namespace) => {
     socket.on("updateThinkConfig", (data: { think: boolean; thinlLevel: 0 | 1 | 2 | 3 }) => {
       thinkConfig.think = data.think;
       thinkConfig.thinlLevel = data.thinlLevel;
-      console.log("[productionAgent] 更新思考配置:", thinkConfig);
+      console.log("[productionAgent] think config updated:", thinkConfig);
     });
 
     socket.on("stop", () => {
@@ -99,6 +132,6 @@ export default (nsp: Namespace) => {
     });
   });
   nsp.on("disconnect", (socket: Socket) => {
-    console.log("[productionAgent] 已断开连接:", socket.id);
+    console.log("[productionAgent] disconnected:", socket.id);
   });
 };

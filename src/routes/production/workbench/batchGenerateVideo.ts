@@ -2,11 +2,24 @@ import express from "express";
 import u from "@/utils";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import { success } from "@/lib/responseFormat";
+import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { enqueueVideoGeneration } from "@/utils/videoGenerationQueue";
 import { resolveWorkbenchReferences, validateReferenceLimits } from "@/services/workbenchReference";
+import { assertVideoDurationSupported, getVideoModelPolicy } from "@/services/videoModelPolicy";
+import { assertTrackStoryboardsReady } from "@/services/storyboardFacts";
+
 const router = express.Router();
+
+function parseMode(mode: unknown) {
+  if (Array.isArray(mode)) return mode;
+  if (typeof mode === "string" && mode.trim().startsWith("[")) {
+    try {
+      return JSON.parse(mode);
+    } catch {}
+  }
+  return mode;
+}
 
 export default router.post(
   "/",
@@ -33,24 +46,54 @@ export default router.post(
   }),
   async (req, res) => {
     const { scriptId, projectId, trackData, model, resolution, audio, mode } = req.body;
+    const modeData = parseMode(mode);
+    const durationPolicy = await getVideoModelPolicy(model, { resolution });
 
-    let modeData = [];
-    if (Array.isArray(mode)) {
-    } else if (typeof mode === "string" && mode.startsWith('["') && mode.endsWith('"]')) {
+    for (const track of trackData) {
       try {
-        modeData = JSON.parse(mode);
-      } catch (e) {}
+        assertVideoDurationSupported(durationPolicy, track.duration);
+      } catch (cause) {
+        return res.status(400).send(error(u.error(cause).message, { trackId: track.trackId, durationPolicy }));
+      }
     }
 
-    // 获取生成视频比例
     const ratio = await u.db("o_project").select("videoRatio").where("id", projectId).first();
+    const trackIds = trackData.map((track: any) => Number(track.trackId));
+    const tracks = await u.db("o_videoTrack").where({ projectId, scriptId }).whereIn("id", trackIds);
+    const validTrackIds = new Set(tracks.map((track: any) => Number(track.id)));
+    const invalidTrackId = trackIds.find((trackId: number) => !validTrackIds.has(trackId));
+    if (invalidTrackId != null) {
+      return res.status(400).send(error("Video track does not exist or does not belong to the current script", { trackId: invalidTrackId }));
+    }
+    const blockedTrack = tracks.find((track: any) => track.reviewState === "blocked");
+    if (blockedTrack) {
+      return res.status(400).send(error("Video generation is blocked by open production review issues", { trackId: blockedTrack.id }));
+    }
+    const blockingTargets = new Set<string>();
+    for (const track of tracks) {
+      blockingTargets.add(String(track.id));
+      if (track.groupKey) blockingTargets.add(String(track.groupKey));
+    }
+    const blockingReview = await u
+      .db("o_productionReviewSuggestion")
+      .where({ projectId, scriptId, status: "open", severity: "blocking" })
+      .whereIn("targetType", ["storyboardGroup", "videoPrompt", "videoResult"])
+      .whereIn("targetId", [...blockingTargets])
+      .first();
+    if (blockingReview) {
+      return res.status(400).send(error("Video generation is blocked by open production review issues", { blockingReview }));
+    }
+    try {
+      await assertTrackStoryboardsReady({ projectId, scriptId, trackIds });
+    } catch (cause) {
+      return res.status(400).send(error(u.error(cause).message));
+    }
 
-    // 为每个 track 预处理数据并插入数据库，返回任务列表
     const tasks = await Promise.all(
       (trackData as { uploadData: { id: number; sources: "storyboard" | "assets" | "merged" | "directorAsset" }[]; trackId: number; prompt: string; duration: number }[]).map(async (track) => {
         const { uploadData, trackId, prompt, duration } = track;
         const references = await resolveWorkbenchReferences(uploadData, { projectId, scriptId, trackId });
-        validateReferenceLimits(references, modeData.length > 0 ? modeData : mode);
+        validateReferenceLimits(references, modeData);
 
         const videoPath = `/${projectId}/video/${uuidv4()}.mp4`;
         const [videoId] = await u.db("o_video").insert({
@@ -75,8 +118,7 @@ export default router.post(
 
     const queuedTasks = [];
     for (const { videoId, videoPath, prompt, duration, queuedReferences, trackId } of tasks) {
-      const relatedObjects = { projectId, videoId, scriptId, type: "视频" };
-      (relatedObjects as any).trackId = trackId;
+      const relatedObjects = { projectId, videoId, scriptId, type: "视频", trackId };
       const queued = await enqueueVideoGeneration({
         videoId,
         videoPath,
@@ -86,7 +128,7 @@ export default router.post(
         input: {
           prompt,
           references: queuedReferences,
-          mode: modeData.length > 0 ? modeData : mode,
+          mode: modeData,
           duration,
           aspectRatio: (ratio?.videoRatio as "16:9" | "9:16") || "16:9",
           resolution,

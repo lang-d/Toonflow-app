@@ -1,6 +1,15 @@
 import fs from "fs";
 import path from "path";
 import getPath from "./getPath";
+import { findBuiltinDataDir } from "@/services/builtinData";
+
+function artPromptBaseDirs(source: string, styleName: string) {
+  const dirs = [
+    findBuiltinDataDir("skills", source, styleName),
+    getPath(["skills", source, styleName]),
+  ].filter(Boolean) as string[];
+  return [...new Set(dirs.map((dir) => path.resolve(dir)))];
+}
 
 /**
  * 传入一个指定路径参数（风格名称），以及一个指定文件名，递归获取该文件并返回其内容
@@ -9,25 +18,20 @@ import getPath from "./getPath";
  * @returns 文件内容字符串，未找到时返回空字符串
  */
 export function getArtPrompt(styleName: string, source: string, fileName: string): string {
-  const baseDir = getPath(["skills", source, styleName]);
-
-  if (!fs.existsSync(baseDir)) {
-    return "";
+  for (const baseDir of artPromptBaseDirs(source, styleName)) {
+    if (!fs.existsSync(baseDir)) continue;
+    const prefixFile = findFileRecursive(baseDir, "prefix.md");
+    const prefixContent = prefixFile ? fs.readFileSync(prefixFile, "utf-8") : "";
+    const target = fileName.endsWith(".md") ? fileName : `${fileName}.md`;
+    const found = findFileRecursive(baseDir, target);
+    if (!found) {
+      if (prefixContent) return prefixContent;
+      continue;
+    }
+    const fileContent = fs.readFileSync(found, "utf-8");
+    return prefixContent ? `${prefixContent}\n${fileContent}` : fileContent;
   }
-
-  // 获取 prefix.md 内容
-  const prefixFile = findFileRecursive(baseDir, "prefix.md");
-  const prefixContent = prefixFile ? fs.readFileSync(prefixFile, "utf-8") : "";
-
-  const target = fileName.endsWith(".md") ? fileName : `${fileName}.md`;
-  const found = findFileRecursive(baseDir, target);
-
-  if (!found) {
-    return prefixContent;
-  }
-
-  const fileContent = fs.readFileSync(found, "utf-8");
-  return prefixContent ? `${prefixContent}\n${fileContent}` : fileContent;
+  return "";
 }
 /**
  * 传入风格目录名，获取该风格下所有 .md 文件内容，按文件名映射返回
@@ -35,14 +39,10 @@ export function getArtPrompt(styleName: string, source: string, fileName: string
  * @returns Record<文件名(不含后缀), 文件内容>
  */
 export function getAllArtPrompts(styleName: string, source: string): Record<string, string> {
-  const baseDir = getPath(["skills", source, styleName]);
-
-  if (!fs.existsSync(baseDir)) {
-    return {};
-  }
-
   const result: Record<string, string> = {};
-  collectMdFiles(baseDir, result);
+  for (const baseDir of artPromptBaseDirs(source, styleName).reverse()) {
+    if (fs.existsSync(baseDir)) collectMdFiles(baseDir, result);
+  }
   return result;
 }
 

@@ -107,7 +107,6 @@ export default router.post(
           associateAssetsIds: assetRecord[i.id!],
           src: null,
           state: i.state,
-          videoDesc: i.videoDesc,
           shouldGenerateImage: i.shouldGenerateImage,
           taskId: queuedTasks.find((task) => task.storyboardId === i.id)?.taskId,
         })),

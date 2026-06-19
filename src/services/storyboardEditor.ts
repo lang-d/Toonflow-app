@@ -1,5 +1,13 @@
 import u from "@/utils";
 import { resolveDirectorAsset } from "@/services/directorAsset";
+import {
+  buildStoryboardDraftRow,
+  parseStoryboardTableRow,
+  storyboardRowToDbPatch,
+  storyboardTableRowV2Schema,
+  stringifyDialogue,
+  stringifySoundEffects,
+} from "@/services/storyboardTableContract";
 
 export type StoryboardReferenceSource = "local" | "storyboard" | "directorAsset";
 
@@ -21,6 +29,26 @@ export interface StoryboardEditorInput {
   duration: number;
   associateAssetsIds: number[];
   referenceImages: StoryboardReferenceImage[];
+  scene?: string;
+  picture?: string;
+  action?: string;
+  shotSize?: string;
+  cameraMove?: string;
+  dialogue?: string;
+  sound?: string;
+  visibleEmotion?: string;
+  location?: string;
+  timeOfDay?: string;
+  sceneContinuityId?: string;
+  groupKey?: string;
+  groupName?: string;
+  groupIntent?: string;
+  beatId?: string;
+  characters?: any[];
+  dialogueItems?: any[];
+  soundEffects?: string[];
+  requiredAssets?: any[];
+  tableRowJson?: unknown;
 }
 
 export class StoryboardContractError extends Error {
@@ -158,8 +186,11 @@ async function validateReferences(
 
 export async function updateTrackDuration(trx: any, trackId: number | null | undefined) {
   if (!trackId) return;
-  const rows = await trx("o_storyboard").where("trackId", trackId).select("duration");
-  const duration = rows.reduce((sum: number, row: any) => sum + (Number(row.duration) || 0), 0);
+  const rows = await trx("o_storyboard").where("trackId", trackId).select("duration", "tableRowJson");
+  const duration = rows.reduce((sum: number, row: any) => {
+    const fact = parseStoryboardTableRow(row.tableRowJson);
+    return sum + (fact?.durationSec ?? (Number(row.duration) || 0));
+  }, 0);
   await trx("o_videoTrack").where("id", trackId).update({ duration });
 }
 
@@ -167,7 +198,7 @@ export async function saveStoryboardEditor(input: StoryboardEditorInput) {
   return u.db.transaction(async (trx: any) => {
     const storyboard = await trx("o_storyboard")
       .where("id", input.id)
-      .first("id", "projectId", "scriptId", "trackId");
+      .first("id", "projectId", "scriptId", "trackId", "index", "tableRowJson", "factRevision");
     if (!storyboard) {
       throw new StoryboardContractError("分镜数据校验失败", [{ path: "id", message: "分镜不存在" }]);
     }
@@ -184,18 +215,80 @@ export async function saveStoryboardEditor(input: StoryboardEditorInput) {
       references,
     );
 
-    await trx("o_storyboard").where("id", input.id).update({
+    const existingFact = parseStoryboardTableRow(storyboard.tableRowJson);
+    const dialogueInput =
+      input.dialogueItems !== undefined
+        ? input.dialogueItems
+        : input.dialogue !== undefined && (!existingFact || input.dialogue !== stringifyDialogue(existingFact.dialogue))
+          ? input.dialogue
+          : undefined;
+    const soundInput =
+      input.soundEffects !== undefined
+        ? input.soundEffects
+        : input.sound !== undefined && (!existingFact || input.sound !== stringifySoundEffects(existingFact.soundEffects))
+          ? input.sound
+          : undefined;
+    const explicitFacts: Record<string, unknown> = {
+      ...(input.tableRowJson && typeof input.tableRowJson === "object" ? (input.tableRowJson as Record<string, unknown>) : {}),
+      index: Number(storyboard.index ?? 0),
+      duration: input.duration,
+      scene: input.scene,
+      location: input.location,
+      timeOfDay: input.timeOfDay,
+      sceneContinuityId: input.sceneContinuityId,
+      picture: input.picture,
+      action: input.action,
+      shotSize: input.shotSize,
+      cameraMove: input.cameraMove,
+      visibleEmotion: input.visibleEmotion,
+      groupKey: input.groupKey,
+      groupName: input.groupName,
+      groupIntent: input.groupIntent,
+      beatId: input.beatId,
+      characters: input.characters,
+      dialogue: dialogueInput,
+      soundEffects: soundInput,
+      requiredAssets: input.requiredAssets,
+    };
+    for (const key of Object.keys(explicitFacts)) {
+      if (explicitFacts[key] === undefined) delete explicitFacts[key];
+    }
+    const factObject = buildStoryboardDraftRow(explicitFacts, Number(storyboard.index ?? 0), storyboard.tableRowJson);
+    const parsedFact = storyboardTableRowV2Schema.safeParse(factObject);
+    const storyboardPatch: Record<string, unknown> = {
       prompt: input.prompt,
-      videoDesc: input.videoDesc,
-      duration: String(input.duration),
       referenceImages: serializeStoryboardReferences(references),
-    });
+      tableRowJson: JSON.stringify(factObject),
+      factStatus: parsedFact.success ? "ready" : "draft",
+      factVersion: 1,
+      factRevision: Number(storyboard.factRevision || 0) + 1,
+    };
+    if (parsedFact.success) {
+      Object.assign(storyboardPatch, storyboardRowToDbPatch(parsedFact.data, Number(storyboard.factRevision || 0) + 1));
+    } else {
+      storyboardPatch.duration = String(input.duration);
+    }
+    await trx("o_storyboard").where("id", input.id).update(storyboardPatch);
     await trx("o_assets2Storyboard").where("storyboardId", input.id).delete();
     if (assetIds.length) {
       await trx("o_assets2Storyboard").insert(assetIds.map((assetId) => ({ storyboardId: input.id, assetId })));
     }
     await updateTrackDuration(trx, storyboard.trackId);
-    return { id: input.id, associateAssetsIds: assetIds };
+    return {
+      id: input.id,
+      associateAssetsIds: assetIds,
+      scene: input.scene || null,
+      picture: input.picture || null,
+      action: input.action || null,
+      shotSize: input.shotSize || null,
+      cameraMove: input.cameraMove || null,
+      dialogue: input.dialogue || null,
+      sound: input.sound || null,
+      visibleEmotion: input.visibleEmotion || null,
+      tableRowJson: JSON.stringify(factObject),
+      factStatus: parsedFact.success ? "ready" : "draft",
+      issues: parsedFact.success ? [] : parsedFact.error.issues,
+    };
   });
 }
 

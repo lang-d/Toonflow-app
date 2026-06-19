@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { buildStoryboardVideoFact } from "@/services/storyboardFacts";
 const router = express.Router();
 
 export default router.post(
@@ -54,6 +55,7 @@ export default router.post(
     const result = await Promise.all(
       data.map(async (item) => {
         const characters = storyboardCharactersMap[item.id as number] ?? [];
+        const fact = buildStoryboardVideoFact(item, []);
         // 处理 characters 中的 avatar OSS 路径
         const charactersWithUrl = await Promise.all(
           characters.map(async (c) => {
@@ -66,10 +68,28 @@ export default router.post(
         return {
           id: String(item.id),
           createTime: item.createTime ?? undefined,
-          duration: item.duration ? Number(item.duration) : undefined,
           filePath: item.filePath || undefined,
           prompt: item.prompt ?? undefined,
           scriptId: item.scriptId ?? undefined,
+          groupKey: item.groupKey ?? undefined,
+          groupName: item.groupName ?? undefined,
+          groupIntent: item.groupIntent ?? undefined,
+          beatId: item.beatId ?? undefined,
+          scene: fact.scene || undefined,
+          picture: fact.picture || undefined,
+          action: fact.action || undefined,
+          shotSize: fact.shotSize || undefined,
+          cameraMove: fact.cameraMove || undefined,
+          dialogue: fact.dialogue || undefined,
+          sound: fact.sound || undefined,
+          visibleEmotion: fact.visibleEmotion || undefined,
+          location: fact.location || undefined,
+          timeOfDay: fact.timeOfDay || undefined,
+          sceneContinuityId: item.sceneContinuityId || undefined,
+          tableRowJson: item.tableRowJson || undefined,
+          factSource: fact.factSource,
+          factStatus: fact.factStatus,
+          duration: fact.duration == null ? undefined : Number(fact.duration),
           characters: charactersWithUrl,
         };
       }),

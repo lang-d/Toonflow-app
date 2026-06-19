@@ -14,6 +14,7 @@ import {
   storageMode,
   workspaceDatabasePath,
 } from "@/services/storagePaths";
+import { createLogger } from "@/logger";
 
 type TableName = keyof DB & string;
 type RowType<TName extends TableName> = DB[TName];
@@ -35,13 +36,14 @@ const dbDiagnostics = {
   slowTransactions: 0,
   recentSlowQueries: [] as SlowQuery[],
 };
+const dbLog = createLogger("db");
 
 function runtimeRole() {
   return process.env.TOONFLOW_RUNTIME_ROLE || "main";
 }
 
 function busyTimeoutMs() {
-  if (runtimeRole() === "api") return 500;
+  if (runtimeRole() === "api") return 5000;
   if (runtimeRole() === "worker") return 5000;
   return 2000;
 }
@@ -73,7 +75,7 @@ export function getDbDiagnostics() {
 }
 
 const dbPath = workspaceDatabasePath();
-console.log("数据库目录:", dbPath);
+dbLog.info("Database path resolved", { event: "db.path", path: dbPath });
 const dbDir = path.dirname(dbPath);
 const splitStorage = storageMode() === "workspace";
 const profilePath = profileDatabasePath();
@@ -157,13 +159,26 @@ db.on("query-response", (_response: unknown, query: any) => {
       at: Date.now(),
     });
     dbDiagnostics.recentSlowQueries.splice(0, Math.max(0, dbDiagnostics.recentSlowQueries.length - 50));
-    console.warn(`[db:${runtimeRole()}] slow query ${durationMs.toFixed(1)}ms: ${summarizeSql(query?.sql)}`);
+    dbLog.warn("Slow database query", {
+      event: "db.slow-query",
+      durationMs: Number(durationMs.toFixed(2)),
+      sql: summarizeSql(query?.sql),
+      role: runtimeRole(),
+    });
   }
 });
 db.on("query-error", (error: any, query: any) => {
   const key = queryKey(query);
   if (key) queryStartedAt.delete(key);
-  if (String(error?.code || error?.message).includes("SQLITE_BUSY")) dbDiagnostics.busyCount += 1;
+  if (String(error?.code || error?.message).includes("SQLITE_BUSY")) {
+    dbDiagnostics.busyCount += 1;
+    dbLog.warn("SQLite busy", {
+      event: "db.sqlite-busy",
+      sql: summarizeSql(query?.sql),
+      role: runtimeRole(),
+      error,
+    });
+  }
 });
 
 export const dbReady =
@@ -189,7 +204,11 @@ const rawTransaction = db.transaction.bind(db);
     dbDiagnostics.transactionTotalMs += durationMs;
     if (durationMs >= 100) {
       dbDiagnostics.slowTransactions += 1;
-      console.warn(`[db:${runtimeRole()}] slow transaction ${durationMs.toFixed(1)}ms`);
+      dbLog.warn("Slow database transaction", {
+        event: "db.slow-transaction",
+        durationMs: Number(durationMs.toFixed(2)),
+        role: runtimeRole(),
+      });
     }
   }
 };

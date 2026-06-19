@@ -3,6 +3,15 @@ import { z } from "zod";
 import _ from "lodash";
 import ResTool from "@/socket/resTool";
 import u from "@/utils";
+import {
+  storyboardGroupPlanV2Schema,
+  storyboardTableRowV2Schema,
+} from "@/services/storyboardTableContract";
+import {
+  appendStoryboardRows,
+  beginStoryboardGeneration,
+  commitStoryboardGeneration,
+} from "@/services/storyboardGeneration";
 
 const deriveAssetSchema = z.object({
   id: z.number().describe("衍生资产ID,如果新增则为空"),
@@ -29,6 +38,21 @@ const storyboardSchema = z.object({
   associateAssetsIds: z.array(z.number()).describe("关联资产ID列表"),
   src: z.string().nullable().describe("分镜资源路径"),
   index: z.number().nullable().optional().describe("分镜排序字段"),
+  groupKey: z.string().optional().describe("Storyboard group key"),
+  groupName: z.string().optional().describe("Storyboard group name"),
+  groupIntent: z.string().optional().describe("Storyboard group dramatic intent"),
+  beatId: z.string().optional().describe("Beat id inside the storyboard group"),
+  tableRowJson: z.string().nullable().optional().describe("唯一结构化分镜事实 JSON"),
+  factStatus: z.enum(["draft", "ready", "legacy"]).optional().describe("分镜事实状态"),
+  location: z.string().optional(),
+  timeOfDay: z.string().optional(),
+  picture: z.string().optional(),
+  action: z.string().optional(),
+  shotSize: z.string().optional(),
+  cameraMove: z.string().optional(),
+  dialogue: z.string().optional(),
+  sound: z.string().optional(),
+  visibleEmotion: z.string().optional(),
 });
 const workbenchDataSchema = z.object({
   name: z.string().describe("项目名称"),
@@ -37,6 +61,35 @@ const workbenchDataSchema = z.object({
   fps: z.string().describe("帧率"),
   cover: z.string().optional().describe("封面图片路径"),
   gradient: z.string().optional().describe("渐变色配置"),
+});
+const beginStoryboardTableInputSchema = z.object({
+  projectId: z.number().optional(),
+  scriptId: z.number().optional(),
+  expectedRowCount: z.number().int().positive(),
+  groups: z.array(storyboardGroupPlanV2Schema).min(1),
+});
+
+const appendStoryboardRowsInputSchema = z.object({
+  generationId: z.string().uuid(),
+  startIndex: z.number().int().nonnegative(),
+  rows: z.array(storyboardTableRowV2Schema).min(1).max(10),
+});
+
+const commitStoryboardTableInputSchema = z.object({
+  generationId: z.string().uuid(),
+});
+const updateStoryboardPanelV2InputSchema = z.object({
+  projectId: z.number().optional(),
+  scriptId: z.number().optional(),
+  items: z.array(
+    z.object({
+      storyboardId: z.number().optional(),
+      index: z.number().optional(),
+      prompt: z.string(),
+      shouldGenerateImage: z.boolean(),
+      associateAssetsIds: z.array(z.number()).optional().default([]),
+    }),
+  ),
 });
 const posterItemSchema = z.object({
   id: z.number().describe("海报ID"),
@@ -63,6 +116,21 @@ interface ToolConfig {
   msg: ReturnType<ResTool["newMessage"]>;
 }
 
+function scopedNumber(value: unknown, field: string) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`missing production agent ${field}`);
+  return number;
+}
+
+function assertOptionalScopeMatches(input: { projectId?: number; scriptId?: number }, projectId: number, scriptId: number) {
+  if (input.projectId != null && Number(input.projectId) !== projectId) {
+    throw new Error(`projectId ${input.projectId} does not match current production agent projectId ${projectId}`);
+  }
+  if (input.scriptId != null && Number(input.scriptId) !== scriptId) {
+    throw new Error(`scriptId ${input.scriptId} does not match current production agent scriptId ${scriptId}`);
+  }
+}
+
 export default (toolCpnfig: ToolConfig) => {
   const { resTool, toolsNames, msg } = toolCpnfig;
   const { socket } = resTool;
@@ -84,6 +152,127 @@ export default (toolCpnfig: ToolConfig) => {
         thinking.updateTitle(`获取${flowDataKeyLabels[key]}完成`);
         thinking.complete();
         return flowData[key];
+      },
+    }),
+    begin_storyboard_table: tool({
+      description: "Start an atomic storyboard-table generation and submit the complete group plan before writing rows.",
+      inputSchema: jsonSchema<z.infer<typeof beginStoryboardTableInputSchema>>(beginStoryboardTableInputSchema.toJSONSchema()),
+      execute: async (raw) => {
+        const input = beginStoryboardTableInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        assertOptionalScopeMatches(input, projectId, scriptId);
+        const thinking = msg.thinking("正在创建分镜表写入批次...");
+        try {
+          const result = await beginStoryboardGeneration({
+            projectId,
+            scriptId,
+            expectedRowCount: input.expectedRowCount,
+            groups: input.groups,
+          });
+          thinking.appendText(`generationId=${result.generationId}, expectedRows=${input.expectedRowCount}`);
+          return result;
+        } catch (error: any) {
+          thinking.appendText(error?.message || String(error));
+          thinking.updateTitle?.("storyboard table begin failed");
+          throw error;
+        } finally {
+          thinking.complete();
+        }
+      },
+    }),
+    append_storyboard_rows: tool({
+      description: "Append 1-10 authoritative structured storyboard rows. Retry identical rows safely after interruption.",
+      inputSchema: jsonSchema<z.infer<typeof appendStoryboardRowsInputSchema>>(appendStoryboardRowsInputSchema.toJSONSchema()),
+      execute: async (raw) => {
+        const input = appendStoryboardRowsInputSchema.parse(raw);
+        const thinking = msg.thinking(`正在写入分镜 ${input.startIndex + 1}-${input.startIndex + input.rows.length}...`);
+        try {
+          const result = await appendStoryboardRows(input);
+          thinking.appendText(`accepted=${result.accepted}, nextIndex=${result.nextIndex}, issues=${result.issues.length}`);
+          return result;
+        } catch (error: any) {
+          thinking.appendText(error?.message || String(error));
+          thinking.updateTitle?.("storyboard rows append failed");
+          throw error;
+        } finally {
+          thinking.complete();
+        }
+      },
+    }),
+    commit_storyboard_table: tool({
+      description: "Validate all submitted rows and atomically replace the formal storyboard table.",
+      inputSchema: jsonSchema<z.infer<typeof commitStoryboardTableInputSchema>>(commitStoryboardTableInputSchema.toJSONSchema()),
+      execute: async (raw) => {
+        const input = commitStoryboardTableInputSchema.parse(raw);
+        const thinking = msg.thinking("正在校验并提交完整分镜表...");
+        try {
+          const result = await commitStoryboardGeneration(input.generationId);
+          if (result.status === "committed") {
+            thinking.appendText(`rows=${result.rowCount}, groups=${result.groupCount}, revision=${result.revision}`);
+            thinking.updateTitle?.("storyboard table committed");
+          } else if (result.status === "invalid") {
+            thinking.appendText(JSON.stringify(result.issues));
+            thinking.updateTitle?.("storyboard table validation failed");
+          } else {
+            const message =
+              result.error.code === "COMMIT_IN_PROGRESS"
+                ? "提交仍被后端任务占用，请稍后重试或重新开始分镜表生成。"
+                : JSON.stringify(result.error);
+            thinking.appendText(message);
+            thinking.updateTitle?.("storyboard table commit failed");
+          }
+          return result;
+        } catch (error: any) {
+          thinking.appendText(error?.message || String(error));
+          thinking.updateTitle?.("storyboard table commit failed");
+          throw error;
+        } finally {
+          thinking.complete();
+        }
+      },
+    }),
+    update_storyboard_panel_v2: tool({
+      description:
+        "Update visual-generation fields for existing storyboard rows. It never creates storyboard rows and never rewrites storyboard-table narrative facts.",
+      inputSchema: jsonSchema<z.infer<typeof updateStoryboardPanelV2InputSchema>>(
+        updateStoryboardPanelV2InputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = updateStoryboardPanelV2InputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        assertOptionalScopeMatches(input, projectId, scriptId);
+        const updatedIds: number[] = [];
+        const issues: Array<{ item: number; message: string }> = [];
+        await u.db.transaction(async (trx) => {
+          for (const [itemIndex, item] of input.items.entries()) {
+            const query = trx("o_storyboard").where({ projectId, scriptId });
+            if (item.storyboardId != null) query.andWhere("id", item.storyboardId);
+            else if (item.index != null) query.andWhere("index", item.index);
+            else {
+              issues.push({ item: itemIndex, message: "storyboardId or index is required" });
+              continue;
+            }
+            const storyboard = await query.first("id");
+            if (!storyboard) {
+              issues.push({ item: itemIndex, message: "storyboard not found" });
+              continue;
+            }
+            const storyboardId = Number(storyboard.id);
+            await trx("o_storyboard").where("id", storyboardId).update({
+              prompt: item.prompt,
+              shouldGenerateImage: item.shouldGenerateImage ? 1 : 0,
+            });
+            await trx("o_assets2Storyboard").where("storyboardId", storyboardId).del();
+            const assetIds = [...new Set(item.associateAssetsIds || [])];
+            if (assetIds.length) {
+              await trx("o_assets2Storyboard").insert(assetIds.map((assetId) => ({ storyboardId, assetId })));
+            }
+            updatedIds.push(storyboardId);
+          }
+        });
+        return { ok: issues.length === 0, updatedIds, issues };
       },
     }),
     add_deriveAsset: tool({

@@ -15,7 +15,7 @@ export default router.post(
     info: z.array(
       z.object({
         id: z.number(),
-        sources: z.enum(["storyboard", "assets", "merged"]),
+        sources: z.enum(["storyboard", "assets", "merged", "directorAsset"]),
       }),
     ),
     model: z.string(),

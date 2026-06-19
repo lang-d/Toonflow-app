@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Namespace, Socket } from "socket.io";
 import { onRuntimePortChanged } from "@/runtime/runtimeRegistry";
 
-type AgentKind = "productionAgent" | "scriptAgent";
+type AgentKind = "productionAgent" | "scriptAgent" | "storyAgent";
 
 export default function agentProxy(kind: AgentKind) {
   return (nsp: Namespace) => {
