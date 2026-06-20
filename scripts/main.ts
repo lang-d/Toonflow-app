@@ -25,7 +25,11 @@ import {
 } from "../src/services/storagePaths";
 import { initLogger, createLogger } from "../src/logger";
 
+const APP_NAME = "ToonFlow";
 const mainLog = createLogger("runtime-main");
+
+app.setName(APP_NAME);
+if (process.platform === "win32") app.setAppUserModelId("net.toonflow.www");
 
 // 加速 Electron 启动：跳过 GPU 信息收集，减少初始化耗时
 app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
@@ -46,6 +50,32 @@ function copyDir(src: string, dest: string): void {
     const d = path.join(dest, entry.name);
     entry.isDirectory() ? copyDir(s, d) : fs.existsSync(d) || fs.copyFileSync(s, d);
   }
+}
+
+function copyUserDataEntryIfMissing(srcRoot: string, destRoot: string, entryName: string) {
+  const src = path.join(srcRoot, entryName);
+  const dest = path.join(destRoot, entryName);
+  if (!fs.existsSync(src) || fs.existsSync(dest)) return false;
+  const stat = fs.statSync(src);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  if (stat.isDirectory()) copyDir(src, dest);
+  else if (stat.isFile()) fs.copyFileSync(src, dest);
+  return true;
+}
+
+function migrateLegacyElectronUserData() {
+  const currentRoot = app.getPath("userData");
+  const legacyRoot = path.join(app.getPath("appData"), "Electron");
+  if (path.resolve(currentRoot) === path.resolve(legacyRoot)) return [];
+  if (fs.existsSync(path.join(currentRoot, "runtime.json"))) return [];
+  const legacyConfig = readRuntimeStorageConfig(legacyRoot);
+  if (!legacyConfig) return [];
+
+  const copied: string[] = [];
+  for (const entry of ["runtime.json", "profile.sqlite", "user", "system", "logs"]) {
+    if (copyUserDataEntryIfMissing(legacyRoot, currentRoot, entry)) copied.push(entry);
+  }
+  return copied;
 }
 
 function isDirectoryEmpty(dir: string): boolean {
@@ -849,8 +879,14 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
+  const migratedUserDataEntries = migrateLegacyElectronUserData();
   initLogger({ role: "main", logDir: path.join(app.getPath("userData"), "logs"), hijackConsole: true });
-  mainLog.info("Electron main process ready", { event: "ready" });
+  mainLog.info("Electron main process ready", {
+    event: "ready",
+    appName: APP_NAME,
+    userData: app.getPath("userData"),
+    migratedUserDataEntries,
+  });
   // 立即显示加载窗口（data URL + backgroundColor，瞬间可见）
   showLoading();
 
