@@ -38,12 +38,17 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 build/*
 
+data/serve/app.js
+data/serve/runtime/*.js
+
 upload/*
 uploads/*
 
 db.sqlite
 db.sqlite-shm
 db.sqlite-wal
+*.sqlite-shm
+*.sqlite-wal
 
 web/*
 
