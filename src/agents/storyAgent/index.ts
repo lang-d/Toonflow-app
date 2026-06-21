@@ -6,6 +6,10 @@ import Memory from "@/utils/agent/memory";
 import ResTool from "@/socket/resTool";
 import useStoryTools from "@/agents/storyAgent/tools";
 import { useStorySkills } from "@/agents/storyAgent/skills";
+import {
+  consumeFullStream as consumeAgentFullStream,
+  createAgentModelStreamScope,
+} from "@/agents/shared/streaming";
 
 export interface AgentContext {
   socket: Socket;
@@ -109,61 +113,36 @@ export async function runDecisionAI(ctx: AgentContext) {
     `artStyle: ${project?.artStyle ?? ""}`,
   ].join("\n");
 
-  const { fullStream } = await u.Ai.Text("storyAgent:decisionAgent", ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
-    messages: [
-      { role: "system", content: `${prompt}\n\n${storySkills.prompt}` },
-      { role: "assistant", content: [projectInfo, buildMemPrompt(mem), artifactContext].filter(Boolean).join("\n\n") },
-      { role: "user", content: text },
-    ],
-    abortSignal,
-    tools: {
-      ...memory.getTools(),
-      ...storySkills.tools,
-      ...useStoryTools(projectId),
-    },
-    onFinish: async (completion) => {
-      await memory.add("assistant:decision", removeAllXmlTags(completion.text));
-    },
-  });
-
-  await consumeFullStream(fullStream, ctx.msg);
-}
-
-async function consumeFullStream(fullStream: AsyncIterable<any>, msg: ReturnType<ResTool["newMessage"]>): Promise<string> {
-  const text = msg.text();
-  let thinking: ReturnType<typeof msg.thinking> | null = null;
-  let thinkTime = 0;
-  let fullResponse = "";
+  const modelStreamScope = createAgentModelStreamScope(abortSignal);
   try {
-    for await (const chunk of fullStream) {
-      if (chunk.type === "reasoning-start") {
-        thinkTime = Date.now();
-        thinking = msg.thinking("Thinking...");
-      } else if (chunk.type === "reasoning-delta") {
-        thinking?.appendText(chunk.text);
-      } else if (chunk.type === "reasoning-end") {
-        const title = `Thinking complete (${((Date.now() - thinkTime) / 1000).toFixed(1)}s)`;
-        thinking?.updateTitle(title);
-        thinking?.complete();
-        thinking = null;
-      } else if (chunk.type === "text-delta") {
-        text.append(chunk.text);
-        fullResponse += chunk.text;
-      } else if (chunk.type === "error") {
-        throw chunk.error;
-      }
-    }
-    text.complete();
-    msg.complete();
-  } catch (err: any) {
-    thinking?.complete();
-    const errMsg = err?.message ?? String(err);
-    text.append(errMsg);
-    text.error();
-    msg.error();
-    throw err;
+    const { fullStream } = await u.Ai.Text("storyAgent:decisionAgent", ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
+      messages: [
+        { role: "system", content: `${prompt}\n\n${storySkills.prompt}` },
+        { role: "assistant", content: [projectInfo, buildMemPrompt(mem), artifactContext].filter(Boolean).join("\n\n") },
+        { role: "user", content: text },
+      ],
+      abortSignal: modelStreamScope.signal,
+      tools: {
+        ...memory.getTools(),
+        ...storySkills.tools,
+        ...useStoryTools(projectId),
+      },
+      onFinish: async (completion) => {
+        await memory.add("assistant:decision", removeAllXmlTags(completion.text));
+      },
+    });
+
+    await consumeAgentFullStream({
+      agentName: "storyAgent:decisionAgent",
+      fullStream,
+      initialMsg: ctx.msg,
+      userAbortSignal: abortSignal,
+      abortModelStream: modelStreamScope.abort,
+      projectId,
+    });
+  } finally {
+    modelStreamScope.dispose();
   }
-  return fullResponse;
 }
 
 function removeAllXmlTags(text: string): string {

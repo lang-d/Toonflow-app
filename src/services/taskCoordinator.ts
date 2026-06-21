@@ -54,6 +54,7 @@ export interface CreateUnifiedTaskInput {
   availableAt?: number;
   maxAttempts?: number;
   providerTaskId?: string;
+  providerSubmittedAt?: number;
   idempotencyKey?: string;
   model?: string;
   describe?: string;
@@ -137,6 +138,7 @@ export async function createUnifiedTask(input: CreateUnifiedTaskInput, database:
       maxAttempts: input.maxAttempts ?? 1,
       version: 1,
       providerTaskId: input.providerTaskId || null,
+      providerSubmittedAt: input.providerSubmittedAt ?? null,
       idempotencyKey: input.idempotencyKey || null,
       model: input.model || null,
       describe: input.describe || "",
@@ -202,6 +204,7 @@ export async function adoptLegacyTask(
     maxAttempts: input.maxAttempts ?? 1,
     version: 1,
     providerTaskId: input.providerTaskId || null,
+    providerSubmittedAt: input.providerSubmittedAt ?? null,
     idempotencyKey: input.idempotencyKey || null,
     createdAt: current.startTime || now,
     updateTime: now,
@@ -233,6 +236,7 @@ export interface UpdateUnifiedTaskInput {
   result?: Record<string, unknown>;
   reason?: string;
   providerTaskId?: string;
+  providerSubmittedAt?: number | null;
   availableAt?: number;
   clearLease?: boolean;
 }
@@ -262,6 +266,7 @@ export async function updateUnifiedTask(taskIdOrLegacyId: string | number, patch
     if (patch.progress !== undefined) update.progress = Math.max(0, Math.min(100, patch.progress));
     if (patch.reason !== undefined) update.reason = patch.reason.slice(0, 4096);
     if (patch.providerTaskId !== undefined) update.providerTaskId = patch.providerTaskId;
+    if (patch.providerSubmittedAt !== undefined) update.providerSubmittedAt = patch.providerSubmittedAt;
     if (patch.availableAt !== undefined) update.availableAt = patch.availableAt;
     if (terminal) update.finishTime = now;
     if (patch.clearLease || terminal) {

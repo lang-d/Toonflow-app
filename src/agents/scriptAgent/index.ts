@@ -7,6 +7,10 @@ import useTools from "@/agents/scriptAgent/tools";
 import ResTool from "@/socket/resTool";
 import * as fs from "fs";
 import path from "path";
+import {
+  consumeFullStream as consumeAgentFullStream,
+  createAgentModelStreamScope,
+} from "@/agents/shared/streaming";
 
 export interface AgentContext {
   socket: Socket;
@@ -62,30 +66,43 @@ export async function runDecisionAI(ctx: AgentContext) {
     `章节数量：${novelData.length}章`,
   ].join("\n");
 
-  const { fullStream } = await u.Ai.Text("scriptAgent:decisionAgent", ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
-    messages: [
-      { role: "system", content: prompt },
-      { role: "assistant", content: projectInfo + "\n" + mem },
-      { role: "user", content: text },
-    ],
-    abortSignal,
-    tools: {
-      ...memory.getTools(),
-      ...useTools({ resTool: ctx.resTool, msg: ctx.msg }),
-      ...createSubAgent(ctx),
-    },
-    onFinish: async (completion) => {
-      await memory.add("assistant:decision", removeAllXmlTags(completion.text));
-    },
-  });
+  const modelStreamScope = createAgentModelStreamScope(abortSignal);
+  try {
+    const { fullStream } = await u.Ai.Text("scriptAgent:decisionAgent", ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
+      messages: [
+        { role: "system", content: prompt },
+        { role: "assistant", content: projectInfo + "\n" + mem },
+        { role: "user", content: text },
+      ],
+      abortSignal: modelStreamScope.signal,
+      tools: {
+        ...memory.getTools(),
+        ...useTools({ resTool: ctx.resTool, msg: ctx.msg }),
+        ...createSubAgent(ctx),
+      },
+      onFinish: async (completion) => {
+        await memory.add("assistant:decision", removeAllXmlTags(completion.text));
+      },
+    });
 
-  let currentMsg = ctx.msg;
-  await consumeFullStream(fullStream, currentMsg, () => {
-    if (ctx.msg === currentMsg) return currentMsg;
-    currentMsg.complete();
-    currentMsg = ctx.msg;
-    return currentMsg;
-  });
+    let currentMsg = ctx.msg;
+    await consumeAgentFullStream({
+      agentName: "scriptAgent:decisionAgent",
+      fullStream,
+      initialMsg: currentMsg,
+      userAbortSignal: abortSignal,
+      abortModelStream: modelStreamScope.abort,
+      projectId: ctx.resTool.data.projectId,
+      syncMsg: () => {
+        if (ctx.msg === currentMsg) return currentMsg;
+        currentMsg.complete();
+        currentMsg = ctx.msg;
+        return currentMsg;
+      },
+    });
+  } finally {
+    modelStreamScope.dispose();
+  }
 }
 
 function createSubAgent(parentCtx: AgentContext) {
@@ -112,14 +129,27 @@ function createSubAgent(parentCtx: AgentContext) {
     parentCtx.msg.complete();
     const subMsg = resTool.newMessage("assistant", name);
 
-    const { fullStream } = await u.Ai.Text(key, parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
-      system,
-      messages: messages ?? [{ role: "user", content: prompt }],
-      abortSignal,
-      tools: { ...extraTools, ...useTools({ resTool, msg: subMsg }) },
-    });
+    const modelStreamScope = createAgentModelStreamScope(abortSignal);
+    let fullResponse: string;
+    try {
+      const { fullStream } = await u.Ai.Text(key, parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
+        system,
+        messages: messages ?? [{ role: "user", content: prompt }],
+        abortSignal: modelStreamScope.signal,
+        tools: { ...extraTools, ...useTools({ resTool, msg: subMsg }) },
+      });
 
-    const fullResponse = await consumeFullStream(fullStream, subMsg);
+      fullResponse = await consumeAgentFullStream({
+        agentName: key,
+        fullStream,
+        initialMsg: subMsg,
+        userAbortSignal: abortSignal,
+        abortModelStream: modelStreamScope.abort,
+        projectId: resTool.data.projectId,
+      });
+    } finally {
+      modelStreamScope.dispose();
+    }
 
     if (fullResponse.trim()) {
       await memory.add(memoryKey, removeAllXmlTags(fullResponse), {
@@ -231,57 +261,6 @@ function createSubAgent(parentCtx: AgentContext) {
     run_sub_agent_script,
     run_supervision_agent,
   };
-}
-
-async function consumeFullStream(
-  fullStream: AsyncIterable<any>,
-  initialMsg: ReturnType<ResTool["newMessage"]>,
-  syncMsg?: () => ReturnType<ResTool["newMessage"]>,
-): Promise<string> {
-  let msg = initialMsg;
-  let text = msg.text();
-  let thinking: ReturnType<typeof msg.thinking> | null = null;
-  let thinkTime = 0;
-  let fullResponse = "";
-
-  try {
-    for await (const chunk of fullStream) {
-      if (syncMsg) {
-        const newMsg = syncMsg();
-        if (newMsg !== msg) {
-          msg = newMsg;
-          text = msg.text();
-        }
-      }
-      if (chunk.type === "reasoning-start") {
-        thinkTime = Date.now();
-        thinking = msg.thinking("思考中...");
-      } else if (chunk.type === "reasoning-delta") {
-        thinking?.append(chunk.text);
-      } else if (chunk.type === "reasoning-end") {
-        thinkTime = Date.now() - thinkTime;
-        thinking?.updateTitle(`思考完毕（${(thinkTime / 1000).toFixed(1)} 秒）`);
-        thinking?.complete();
-        thinking = null;
-      } else if (chunk.type === "text-delta") {
-        text.append(chunk.text);
-        fullResponse += chunk.text;
-      } else if (chunk.type === "error") {
-        throw chunk.error;
-      }
-    }
-    text.complete();
-    msg.complete();
-  } catch (err: any) {
-    thinking?.complete();
-    const errMsg = err?.message ?? String(err);
-    text.append(errMsg);
-    text.error();
-    msg.error();
-    throw err;
-  }
-
-  return fullResponse;
 }
 
 function removeAllXmlTags(text: string): string {

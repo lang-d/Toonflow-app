@@ -71,23 +71,27 @@ interface ExecuteImageFlowPayload {
   deriveAssetId: number | null;
 }
 
-export async function executeImageFlowTask(payload: ExecuteImageFlowPayload) {
+export async function executeImageFlowTask(payload: ExecuteImageFlowPayload, task?: any) {
   const { input, taskId, taskCenterId, nodeId, targetType, targetId, deriveAssetId } = payload;
   const model = input.model as `${string}:${string}`;
   const quality = input.quality as "1K" | "2K" | "4K";
   const ratio = input.ratio as `${number}:${number}`;
   try {
     await updateUnifiedTask(taskCenterId, { status: "processing", phase: "references", progress: 10 });
-    const referenceList = await Promise.all(
-      (input.referenceMediaPaths || input.references || []).map(async (url) => ({ type: "image" as const, base64: await urlToBase64(url) })),
-    );
+    const referenceList = task?.providerTaskId
+      ? []
+      : await Promise.all(
+          (input.referenceMediaPaths || input.references || []).map(async (url) => ({ type: "image" as const, base64: await urlToBase64(url) })),
+        );
     await updateUnifiedTask(taskCenterId, { status: "processing", phase: "provider-request", progress: 35 });
-    const image = await u.Ai.Image(model).run({
+    const imageResult = await u.Ai.Image(model).runRecoverable({
       prompt: input.prompt,
       referenceList,
       size: quality,
       aspectRatio: ratio,
-    });
+    }, task);
+    if (imageResult.pending) return { __taskPending: true, taskId, nodeId, targetType, targetId, deriveAssetId };
+    const image = imageResult.image!;
     const savePath = `/${input.projectId}/imageFlow/${input.scriptId}/${u.uuid()}.jpg`;
     await image.save(savePath);
     await finishTask(

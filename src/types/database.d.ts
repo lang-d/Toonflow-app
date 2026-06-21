@@ -1,4 +1,4 @@
-// @db-hash c72af27803f04b4072559ff377245dad
+// @db-hash e3069193be55359d9f5804cb7ac89600
 //该文件由脚本自动生成，请勿手动修改
 
 export interface memories {
@@ -380,6 +380,7 @@ export interface o_tasks {
   'priority'?: number | null;
   'progress'?: number | null;
   'projectId'?: number | null;
+  'providerSubmittedAt'?: number | null;
   'providerTaskId'?: string | null;
   'reason'?: string | null;
   'relatedObjects'?: string | null;

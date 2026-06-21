@@ -121,6 +121,8 @@ declare const exports: {
   vendor: VendorConfig;
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any; //文本模型
   imageRequest: (c: ImageConfig, m: ImageModel) => Promise<string>; //图片模型，返回有头base64字符串
+  imageSubmit?: (c: ImageConfig, m: ImageModel) => Promise<{ providerTaskId: string; pollIntervalMs?: number }>;
+  imagePoll?: (providerTaskId: string, m: ImageModel) => Promise<PollResult & { progress?: number; nextPollMs?: number }>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>; //视频模型，返回有头base64字符串
   ttsRequest: (c: TTSConfig, m: TTSModel) => Promise<string>; //（暂未开放）语音模型，返回有头base64字符串
   checkForUpdates?: () => Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }>; //检查更新函数，返回是否有更新和最新版本号和更公告（支持Markdown格式）
@@ -241,6 +243,7 @@ export {};
  *    - imageRequest(config, model)：返回有头 base64 字符串（如 "data:image/png;base64,..."）。
  *      config.referenceList 为 Extract<ReferenceList, { type: "image" }>[] 类型，
  *      每个引用条目均为 base64 形式（sourceType 固定为 "base64"）。
+ *      对于供应商原生异步图片任务，建议额外导出 imageSubmit/imagePoll，让 Toonflow 可以持久化 providerTaskId 并在进程重启后恢复轮询。
  *    - videoRequest(config, model)：返回有头 base64 字符串（如 "data:video/mp4;base64,..."）。
  *      config.referenceList 为 ReferenceList[] 类型，可包含 image / video / audio 三种引用，
  *      每个引用条目均为 base64 形式（sourceType 固定为 "base64"）。
@@ -279,6 +282,11 @@ export {};
  *    if (result.error) throw new Error(result.error);
  *    return await urlToBase64(result.data!);
  *
+ *    图片模型可选实现可恢复异步接口：
+ *    - imageSubmit(config, model)：提交供应商任务，返回 { providerTaskId, pollIntervalMs? }。
+ *    - imagePoll(providerTaskId, model)：查询供应商任务，返回 { completed, data?, error?, progress?, nextPollMs? }。
+ *    若不导出这两个函数，Toonflow 会继续使用 imageRequest 同步等待结果。
+ *
  * 9. 错误处理
  *    在每个函数开头校验必需参数（如 API Key），缺失时使用 throw new Error("...") 抛出。
  *    API 请求失败时，从响应中提取有意义的错误信息抛出，不要吞掉异常。
@@ -316,6 +324,8 @@ export {};
  *       - exports.vendor（必须）
  *       - exports.textRequest（必须）
  *       - exports.imageRequest（必须）
+ *       - exports.imageSubmit（可选，图片异步恢复）
+ *       - exports.imagePoll（可选，图片异步恢复）
  *       - exports.videoRequest（必须）
  *       - exports.ttsRequest（必须）
  *       - exports.checkForUpdates（可选）

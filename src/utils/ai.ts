@@ -3,6 +3,7 @@ import { devToolsMiddleware } from "@ai-sdk/devtools";
 import axios from "axios";
 import crypto from "node:crypto";
 import u from "@/utils";
+import { updateUnifiedTask } from "@/services/taskCoordinator";
 
 type AiType =
   | "scriptAgent"
@@ -24,7 +25,8 @@ type AiType =
   | "productionAgent:storyboardPanelAgent"
   | "productionAgent:storyboardTableAgent";
 
-type FnName = "textRequest" | "imageRequest" | "videoRequest" | "ttsRequest";
+type FnName = "textRequest" | "imageRequest" | "imageSubmit" | "imagePoll" | "videoRequest" | "ttsRequest";
+const IMAGE_PROVIDER_TIMEOUT_MS = 10 * 60 * 1000;
 
 const AiTypeValues: AiType[] = [
   "scriptAgent",
@@ -145,6 +147,16 @@ async function getVendorTemplateFn(fnName: FnName, modelName: `${string}:${strin
   else return <T>(input: T) => fn(input, selectedModel);
 }
 
+async function getOptionalVendorTemplateFn(fnName: Exclude<FnName, "textRequest">, modelName: `${string}:${string}`): Promise<((input: any) => any) | null> {
+  try {
+    return await getVendorTemplateFn(fnName, modelName);
+  } catch (error) {
+    const message = u.error(error).message;
+    if (message.includes(fnName)) return null;
+    throw error;
+  }
+}
+
 async function withTaskRecord<T>(
   modelKey: AiType | `${string}:${string}`,
   taskClass: string,
@@ -242,6 +254,28 @@ interface ImageConfig {
   aspectRatio: `${number}:${number}`;
 }
 
+interface RecoverableImageTask {
+  id?: number;
+  taskId?: string;
+  providerTaskId?: string | null;
+  providerSubmittedAt?: number | null;
+}
+
+interface ImageSubmitResult {
+  providerTaskId?: string;
+  taskId?: string;
+  id?: string;
+  pollIntervalMs?: number;
+}
+
+interface ImagePollResult {
+  completed: boolean;
+  data?: string;
+  error?: string;
+  progress?: number;
+  nextPollMs?: number;
+}
+
 interface TaskRecord {
   taskClass: string; // 任务分类
   describe: string; // 任务描述
@@ -270,6 +304,64 @@ class AiImage {
     }
     await exec(modelName);
     return this;
+  }
+  async runRecoverable(input: ImageConfig, task?: RecoverableImageTask) {
+    const modelName = await resolveModelName(this.key);
+    const vendorId = modelName.split(/:(.+)/)[0];
+    await referenceList2imageBase642(vendorId, input);
+    const submit = await getOptionalVendorTemplateFn("imageSubmit", modelName);
+    const poll = await getOptionalVendorTemplateFn("imagePoll", modelName);
+
+    if (!submit || !poll || !task?.id) {
+      await this.run(input);
+      return { pending: false as const, image: this };
+    }
+
+    let providerTaskId = task.providerTaskId || "";
+    let pollIntervalMs = 3000;
+    let providerSubmittedAt = Number(task.providerSubmittedAt || 0);
+    if (!providerTaskId) {
+      const submitResult = (await submit(input)) as ImageSubmitResult;
+      providerTaskId = String(submitResult.providerTaskId || submitResult.taskId || submitResult.id || "");
+      pollIntervalMs = Number(submitResult.pollIntervalMs || pollIntervalMs);
+      if (!providerTaskId) throw new Error("imageSubmit did not return providerTaskId");
+      providerSubmittedAt = Date.now();
+      await updateUnifiedTask(task.id, {
+        status: "processing",
+        phase: "provider-processing",
+        progress: 45,
+        providerTaskId,
+        providerSubmittedAt,
+      });
+    } else if (!providerSubmittedAt) {
+      providerSubmittedAt = Date.now();
+      await updateUnifiedTask(task.id, { providerSubmittedAt });
+    }
+
+    const pollResult = (await poll(providerTaskId)) as ImagePollResult;
+    if (pollResult.error) throw new Error(pollResult.error);
+    if (pollResult.completed) {
+      if (!pollResult.data) throw new Error("imagePoll completed without data");
+      this.result = pollResult.data;
+      if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
+      return { pending: false as const, image: this };
+    }
+
+    const elapsedMs = Date.now() - providerSubmittedAt;
+    if (elapsedMs >= IMAGE_PROVIDER_TIMEOUT_MS) {
+      throw new Error(`图片供应商任务超时，${Math.round(elapsedMs / 1000)} 秒内未返回结果`);
+    }
+
+    const nextPollMs = Math.max(1000, Number(pollResult.nextPollMs || pollIntervalMs || 3000));
+    await updateUnifiedTask(task.id, {
+      status: "queued",
+      phase: "provider-processing",
+      progress: pollResult.progress == null ? 50 : Math.max(1, Math.min(99, Number(pollResult.progress))),
+      availableAt: Date.now() + nextPollMs,
+      providerTaskId,
+      clearLease: true,
+    });
+    return { pending: true as const };
   }
   async save(path: string) {
     await u.oss.writeFile(path, this.result);

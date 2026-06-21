@@ -52,7 +52,7 @@ ${config.label}设定：
 请严格按照系统规范生成${config.promptEnd}。`;
 }
 
-export async function executeAssetImageTask(payload: any) {
+export async function executeAssetImageTask(payload: any, task?: any) {
   const config = assetTypeConfig[payload.type as AssetType];
   if (!config) throw new Error(`不支持的资产类型: ${payload.type}`);
   const project = await u.db("o_project").where("id", payload.projectId).select("artStyle").first();
@@ -61,17 +61,19 @@ export async function executeAssetImageTask(payload: any) {
   if (!image) throw new Error("资产图片记录不存在");
   if (image.state === "生成失败") throw new Error(image.errorReason || "资产图片任务已失败");
 
-  const references = payload.referencePath
+  const references = !task?.providerTaskId && payload.referencePath
     ? [{ type: "image" as const, base64: await u.oss.getImageBase64(payload.referencePath) }]
     : [];
   const outputPath = `/${payload.projectId}/${config.dir}/${u.uuid()}.jpg`;
   try {
-    const aiImage = await u.Ai.Image(payload.model).run({
+    const imageResult = await u.Ai.Image(payload.model).runRecoverable({
       prompt: buildAssetPrompt(config, project.artStyle || "", payload.name, payload.prompt),
       referenceList: references,
       size: payload.resolution,
       aspectRatio: "16:9",
-    });
+    }, task);
+    if (imageResult.pending) return { __taskPending: true };
+    const aiImage = imageResult.image!;
     await aiImage.save(outputPath);
     await u.db.transaction(async (trx: any) => {
       await trx("o_image").where("id", payload.imageId).update({
@@ -138,7 +140,7 @@ export async function executeAssetPromptTask(payload: any) {
   }
 }
 
-export async function executeStoryboardImageTask(payload: any) {
+export async function executeStoryboardImageTask(payload: any, task?: any) {
   const storyboard = await u
     .db("o_storyboard")
     .where({ id: payload.storyboardId, projectId: payload.projectId, scriptId: payload.scriptId })
@@ -150,24 +152,28 @@ export async function executeStoryboardImageTask(payload: any) {
     .select("imageModel", "imageQuality", "videoRatio")
     .first();
   if (!project?.imageModel) throw new Error("项目未配置图片模型");
-  const imageRows = await u
-    .db("o_assets2Storyboard")
-    .join("o_assets", "o_assets.id", "o_assets2Storyboard.assetId")
-    .join("o_image", "o_image.id", "o_assets.imageId")
-    .where("o_assets2Storyboard.storyboardId", payload.storyboardId)
-    .orderBy("o_assets2Storyboard.rowid")
-    .select("o_image.filePath");
   const referenceList = [];
-  for (const row of imageRows) {
-    if (row.filePath) referenceList.push({ type: "image" as const, base64: await u.oss.getImageBase64(row.filePath) });
+  if (!task?.providerTaskId) {
+    const imageRows = await u
+      .db("o_assets2Storyboard")
+      .join("o_assets", "o_assets.id", "o_assets2Storyboard.assetId")
+      .join("o_image", "o_image.id", "o_assets.imageId")
+      .where("o_assets2Storyboard.storyboardId", payload.storyboardId)
+      .orderBy("o_assets2Storyboard.rowid")
+      .select("o_image.filePath");
+    for (const row of imageRows) {
+      if (row.filePath) referenceList.push({ type: "image" as const, base64: await u.oss.getImageBase64(row.filePath) });
+    }
   }
   try {
-    const image = await u.Ai.Image(project.imageModel as `${string}:${string}`).run({
+    const imageResult = await u.Ai.Image(project.imageModel as `${string}:${string}`).runRecoverable({
       prompt: storyboard.prompt || "",
       referenceList,
       size: (project.imageQuality || "2K") as "1K" | "2K" | "4K",
       aspectRatio: (project.videoRatio || "16:9") as `${number}:${number}`,
-    });
+    }, task);
+    if (imageResult.pending) return { __taskPending: true };
+    const image = imageResult.image!;
     const outputPath = `/${payload.projectId}/assets/${payload.scriptId}/${u.uuid()}.jpg`;
     await image.save(outputPath);
     await u.db("o_storyboard").where("id", payload.storyboardId).update({

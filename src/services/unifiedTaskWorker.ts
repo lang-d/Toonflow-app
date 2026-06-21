@@ -22,9 +22,10 @@ import { generateProjectSnapshot, importPortableProject } from "@/services/proje
 import { performStorageMigration } from "@/services/storageMigration";
 
 type TaskHandler = (payload: any, task: any) => Promise<Record<string, unknown> | void>;
+const TASK_PENDING_FLAG = "__taskPending";
 
 const handlers: Record<string, TaskHandler> = {
-  "image-flow": async (payload) => executeImageFlowTask(payload),
+  "image-flow": async (payload, task) => executeImageFlowTask(payload, task),
   "workbench-prompt": async (payload, task) => {
     const result = await generateWorkbenchVideoPromptResult(payload, { taskId: task.taskId, legacyTaskId: task.id });
     await u.db("o_videoTrack").where({ id: payload.trackId }).update({ prompt: result.text, state: "已完成", reason: "" });
@@ -35,9 +36,9 @@ const handlers: Record<string, TaskHandler> = {
       groupSummary: result.groupSummary,
     };
   },
-  "asset-image": async (payload) => executeAssetImageTask(payload),
+  "asset-image": async (payload, task) => executeAssetImageTask(payload, task),
   "asset-prompt": async (payload) => executeAssetPromptTask(payload),
-  "storyboard-image": async (payload) => executeStoryboardImageTask(payload),
+  "storyboard-image": async (payload, task) => executeStoryboardImageTask(payload, task),
   "audio-binding": async (payload) => executeAudioBindingTask(payload),
   "novel-event": async (payload) => executeNovelEventTask(payload),
   thumbnail: async (payload) => executeThumbnailTask(payload),
@@ -127,6 +128,7 @@ export async function startUnifiedTaskWorker(
       if (!handler) throw new Error(`未注册任务处理器: ${task.handler}`);
       const payload = task.payloadJson ? JSON.parse(task.payloadJson) : {};
       const result = await handler(payload, task);
+      if (result?.[TASK_PENDING_FLAG]) return;
       const latest = await (db as any)("o_tasks").where("id", task.id).first();
       if (!["completed", "failed", "cancelled"].includes(latest?.status)) {
         await updateUnifiedTask(task.id, {

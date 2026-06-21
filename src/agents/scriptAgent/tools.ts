@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import _ from "lodash";
 import ResTool from "@/socket/resTool";
+import { emitWithAckTimeout } from "@/agents/shared/socketAck";
 
 export const ScriptSchema = z.object({
   name: z.string().describe("剧本名称"),
@@ -68,7 +69,16 @@ export default (toolCpnfig: ToolConfig) => {
       execute: async ({ key }) => {
         console.log("[tools] get_planData", key);
         const thinking = msg.thinking(`正在获取${planDataKeyLabels[key]}工作区数据...`);
-        const planData: planData = await new Promise((resolve) => socket.emit("getPlanData", { key }, (res: any) => resolve(res)));
+        const planData = await emitWithAckTimeout<planData>(socket, "getPlanData", { key }, undefined, {
+          agentName: "scriptAgent",
+          toolName: "get_planData",
+          projectId: resTool.data.projectId,
+        }).catch((error: any) => {
+          thinking.appendText(u.error(error).message);
+          thinking.updateTitle?.("get_planData failed");
+          thinking.complete();
+          throw error;
+        });
         thinking.appendText(`获取到${planDataKeyLabels[key]}:\n` + planData[key]);
         thinking.updateTitle(`获取${planDataKeyLabels[key]}完成`);
         thinking.complete();

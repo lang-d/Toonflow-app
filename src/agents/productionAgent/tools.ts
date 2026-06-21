@@ -12,6 +12,7 @@ import {
   beginStoryboardGeneration,
   commitStoryboardGeneration,
 } from "@/services/storyboardGeneration";
+import { emitWithAckTimeout } from "@/agents/shared/socketAck";
 
 const deriveAssetSchema = z.object({
   id: z.number().describe("衍生资产ID,如果新增则为空"),
@@ -105,7 +106,9 @@ export const flowDataSchema = z.object({
 
 export type FlowData = z.infer<typeof flowDataSchema>;
 
-const keySchema = z.enum(Object.keys(flowDataSchema.shape) as [keyof FlowData, ...Array<keyof FlowData>]);
+const flowDataKeys = Object.keys(flowDataSchema.shape) as [keyof FlowData, ...Array<keyof FlowData>];
+const keySchema = z.enum(flowDataKeys);
+const flowDataKeyList = flowDataKeys.join(", ");
 const flowDataKeyLabels = Object.fromEntries(
   Object.entries(flowDataSchema.shape).map(([key, schema]) => [key, (schema as z.ZodTypeAny).description ?? key]),
 ) as Record<keyof FlowData, string>;
@@ -145,13 +148,34 @@ export default (toolCpnfig: ToolConfig) => {
           .toJSONSchema(),
       ),
       execute: async ({ key }) => {
-        const thinking = msg.thinking(`正在获取${flowDataKeyLabels[key]}工作区数据...`);
-        console.log("[tools] get_flowData", key);
-        const flowData: FlowData = await new Promise((resolve) => socket.emit("getFlowData", { key }, (res: any) => resolve(res)));
-        thinking.appendText(`获取到${flowDataKeyLabels[key]}:\n` + JSON.stringify(flowData[key], null, 2));
-        thinking.updateTitle(`获取${flowDataKeyLabels[key]}完成`);
+        const parsedKey = keySchema.safeParse(key);
+        if (!parsedKey.success) {
+          const message =
+            `Unsupported flowData key: ${String(key)}. Available keys: ${flowDataKeyList}. ` +
+            "director_planning_style is a skill; load it with activate_skill.";
+          console.warn("[tools] get_flowData invalid key", key);
+          return { error: message };
+        }
+        const flowKey = parsedKey.data;
+        const thinking = msg.thinking(`正在获取${flowDataKeyLabels[flowKey]}工作区数据...`);
+        console.log("[tools] get_flowData", flowKey);
+        try {
+        const flowData = await emitWithAckTimeout<FlowData>(socket, "getFlowData", { key: flowKey }, undefined, {
+          agentName: "productionAgent",
+          toolName: "get_flowData",
+          projectId: resTool.data.projectId,
+          scriptId: resTool.data.scriptId,
+        });
+        thinking.appendText(`获取到${flowDataKeyLabels[flowKey]}:\n` + JSON.stringify(flowData[flowKey], null, 2));
+        thinking.updateTitle(`获取${flowDataKeyLabels[flowKey]}完成`);
         thinking.complete();
-        return flowData[key];
+        return flowData[flowKey];
+        } catch (error: any) {
+          thinking.appendText(u.error(error).message);
+          thinking.updateTitle?.("get_flowData failed");
+          thinking.complete();
+          throw error;
+        }
       },
     }),
     begin_storyboard_table: tool({
@@ -317,7 +341,17 @@ export default (toolCpnfig: ToolConfig) => {
           await u.db("o_scriptAssets").insert({ scriptId, assetId: insertedId });
           thinking.appendText(`已新增衍生资产，ID: ${insertedId}\n`);
         }
-        const res = await new Promise((resolve) => socket.emit("addDeriveAsset", data, (res: any) => resolve(res)));
+        const res = await emitWithAckTimeout(socket, "addDeriveAsset", data, undefined, {
+          agentName: "productionAgent",
+          toolName: "add_deriveAsset",
+          projectId: resTool.data.projectId,
+          scriptId: resTool.data.scriptId,
+        }).catch((error: any) => {
+          thinking.appendText(u.error(error).message);
+          thinking.updateTitle?.("add_deriveAsset failed");
+          thinking.complete();
+          throw error;
+        });
         thinking.updateTitle("资产操作完成");
         thinking.complete();
         return res ?? "操作成功";
@@ -339,7 +373,17 @@ export default (toolCpnfig: ToolConfig) => {
         await u.db("o_assets").where("id", id).del();
         await u.db("o_scriptAssets").where({ scriptId, assetId: id }).del();
         thinking.appendText(`已删除衍生资产，ID: ${id}\n`);
-        const res = await new Promise((resolve) => socket.emit("delDeriveAsset", { assetsId, id }, (res: any) => resolve(res)));
+        const res = await emitWithAckTimeout(socket, "delDeriveAsset", { assetsId, id }, undefined, {
+          agentName: "productionAgent",
+          toolName: "del_deriveAsset",
+          projectId: resTool.data.projectId,
+          scriptId: resTool.data.scriptId,
+        }).catch((error: any) => {
+          thinking.appendText(u.error(error).message);
+          thinking.updateTitle?.("del_deriveAsset failed");
+          thinking.complete();
+          throw error;
+        });
         thinking.updateTitle("资产操作完成");
         thinking.complete();
         return res ?? "删除成功";

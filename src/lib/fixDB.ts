@@ -577,6 +577,7 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("o_tasks", "updateTime", "integer");
   await addColumn("o_tasks", "finishTime", "integer");
   await addColumn("o_tasks", "providerTaskId", "string");
+  await addColumn("o_tasks", "providerSubmittedAt", "integer");
   await addColumn("o_tasks", "idempotencyKey", "string");
 
   if (!(await knex.schema.hasTable("o_taskEvent"))) {
@@ -939,6 +940,10 @@ export default async (knex: Knex): Promise<void> => {
   const minimaxVer = getVendorVersion("minimax");
   if (Number(minimaxVer) < 2.1) {
     writeVendorCode("minimax", vendorData["minimax.ts"]);
+  }
+  const t8starVer = getVendorVersion("t8star");
+  if (vendorData["t8star.ts"] && Number(t8starVer) < 2.2) {
+    writeVendorCode("t8star", vendorData["t8star.ts"]);
   }
   if (vendorData["dreamina.ts"]) {
     writeVendorCode("dreamina", vendorData["dreamina.ts"]);

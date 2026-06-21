@@ -362,6 +362,7 @@ export default async (
         table.integer("maxAttempts").defaultTo(1);
         table.integer("version").defaultTo(1);
         table.string("providerTaskId");
+        table.integer("providerSubmittedAt");
         table.string("idempotencyKey");
         table.string("relatedObjects");
         table.string("model");

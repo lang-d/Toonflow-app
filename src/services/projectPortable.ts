@@ -530,6 +530,7 @@ export async function importPortableProject(sourceDirectory: string, database: a
       row.officialTaskId = null;
       row.historyRecordId = null;
       row.providerTaskId = null;
+      row.providerSubmittedAt = null;
       row.leaseOwner = null;
       row.leaseExpiresAt = null;
     }

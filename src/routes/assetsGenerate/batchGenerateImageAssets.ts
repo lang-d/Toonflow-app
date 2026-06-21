@@ -65,7 +65,7 @@ const requestSchema = {
   items: z.array(
     z.object({
       id: z.number(),
-      type: z.enum(["role", "scene", "tool", "storyboard"]),
+      type: z.string(),
       name: z.string(),
       prompt: z.string(),
       base64: z.string().optional().nullable(),
@@ -75,6 +75,14 @@ const requestSchema = {
 
 export default router.post("/", validateFields(requestSchema), async (req, res) => {
   const { projectId, model, resolution, items } = req.body;
+  for (const item of items) {
+    if (item.type === "storyboard") {
+      return res.status(400).send(error("storyboard image generation must use /production/storyboard/batchGenerateImage."));
+    }
+    if (!assetTypeConfig[item.type as AssetType]) {
+      return res.status(400).send(error(`Unsupported asset image type: ${item.type}. Supported types: role, scene, tool.`));
+    }
+  }
 
   // 1. 查询项目
   const project = await u.db("o_project").where("id", projectId).select("artStyle", "type", "intro").first();
@@ -94,7 +102,6 @@ export default router.post("/", validateFields(requestSchema), async (req, res) 
       await u.oss.writeFile(referencePath, item.base64);
     }
     const config = assetTypeConfig[item.type as AssetType];
-    if (!config) continue;
     const task = await createUnifiedTask({
       projectId,
       taskClass: config.taskClass,

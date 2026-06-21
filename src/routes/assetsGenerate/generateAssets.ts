@@ -67,7 +67,7 @@ const requestSchema = {
   model: z.string().optional(),
   resolution: z.string().optional(),
   id: z.number(),
-  type: z.enum(["role", "scene", "tool", "storyboard"]),
+  type: z.string(),
   name: z.string(),
   prompt: z.string(),
   base64: z.string().optional().nullable(),
@@ -85,6 +85,7 @@ export default router.post("/", validateFields(requestSchema), async (req, res) 
   if (!resolution) return res.status(400).send(error("项目未配置默认图片质量"));
 
   const cfg = assetTypeConfig[type as AssetType];
+  if (type === "storyboard") return res.status(400).send(error("storyboard image generation must use /production/storyboard/batchGenerateImage."));
   if (!cfg) return res.status(400).send(error("不支持的类型"));
 
   // 2. 创建图片占位记录

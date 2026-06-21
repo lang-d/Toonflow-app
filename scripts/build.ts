@@ -28,6 +28,25 @@ const external = [
   "tsx/cjs",
 ];
 
+const packagedModuleResolverBanner = `
+(() => {
+  try {
+    const path = require("node:path");
+    const Module = require("node:module");
+    const resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : "";
+    if (!resourcesPath) return;
+    const extraPaths = [
+      path.join(resourcesPath, "app.asar", "node_modules"),
+      path.join(resourcesPath, "app.asar.unpacked", "node_modules"),
+    ];
+    const existingPaths = process.env.NODE_PATH ? process.env.NODE_PATH.split(path.delimiter) : [];
+    process.env.NODE_PATH = [...new Set([...extraPaths, ...existingPaths].filter(Boolean))].join(path.delimiter);
+    Module._initPaths();
+  } catch {
+  }
+})();
+`;
+
 // 后端服务打包配置
 const appBuildConfig: esbuild.BuildOptions = {
   entryPoints: ["src/app.ts"],
@@ -44,6 +63,9 @@ const appBuildConfig: esbuild.BuildOptions = {
   },
   sourcemap: false,
   external,
+  banner: {
+    js: packagedModuleResolverBanner,
+  },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
@@ -89,6 +111,9 @@ const runtimeBuildConfig: esbuild.BuildOptions = {
   },
   sourcemap: false,
   external,
+  banner: {
+    js: packagedModuleResolverBanner,
+  },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },

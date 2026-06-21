@@ -30,7 +30,7 @@ description: >-
 
 ### 执行流程
 
-1. 加载风格技法参考，获取 `script` 和 `assets`，并并且激活 `director_planning_narrative` 以及 `director_planning_style`，所有规划内容以该文档为风格基准，冲突时以风格技法参考为准。
+1. 加载风格技法参考，获取 `script` 和 `assets`，并且激活 `director_planning_narrative` 以及 `director_planning_style`，所有规划内容以该文档为风格基准，冲突时以风格技法参考为准。
 2. 按下方规范制定导演规划（创作规划），全文遵守「导演具象化原则」
 3. 在六维度规划之后，输出**⑦衍生资产预划清单**（精简列表：资产名·需要的衍生状态·原因/出现段落）
 4. 严格按照XML格式写出导演规划<scriptPlan>内容</scriptPlan>，XML 标签及其全部内容必须一次性完整输出，禁止拆分为多次 XML 输出

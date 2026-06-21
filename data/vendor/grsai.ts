@@ -142,6 +142,8 @@ declare const exports: {
   vendor: VendorConfig;
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any; //文本模型
   imageRequest: (c: ImageConfig, m: ImageModel) => Promise<string>; //图片模型，返回有头base64字符串
+  imageSubmit?: (c: ImageConfig, m: ImageModel) => Promise<{ providerTaskId: string; pollIntervalMs?: number }>;
+  imagePoll?: (providerTaskId: string, m: ImageModel) => Promise<PollResult & { progress?: number; nextPollMs?: number }>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>; //视频模型，返回有头base64字符串
   ttsRequest: (c: TTSConfig, m: TTSModel) => Promise<string>; //（暂未开放）语音模型，返回有头base64字符串
   checkForUpdates?: () => Promise<{
@@ -231,10 +233,10 @@ const textRequest = (
   }).chat(model.modelName);
 };
 
-const imageRequest = async (
+const imageSubmit = async (
   config: ImageConfig,
   model: ImageModel,
-): Promise<string> => {
+): Promise<{ providerTaskId: string; pollIntervalMs: number }> => {
   if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
   const baseUrl = vendor.inputValues.baseUrl;
   const headers = getHeaders();
@@ -276,31 +278,46 @@ const imageRequest = async (
   const taskId = submitResp.data.data.id;
   logger(`图片任务提交成功，任务ID：${taskId}`);
 
-  // 轮询结果
-  const pollResult = await pollTask(
-    async () => {
-      const resp = await axios.post(
-        `${baseUrl}/v1/draw/result`,
-        { id: taskId },
-        { headers },
-      );
-      if (resp.data.code !== 0)
-        return { completed: true, error: resp.data.msg };
+  return { providerTaskId: taskId, pollIntervalMs: 3000 };
+};
 
-      const taskData = resp.data.data;
-      if (taskData.status === "failed")
-        return {
-          completed: true,
-          error: taskData.failure_reason || taskData.error,
-        };
-      if (taskData.status === "succeeded") {
-        const imgUrl = taskData.results?.[0]?.url || taskData.url;
-        return { completed: true, data: imgUrl };
-      }
-      logger(`图片任务生成中，进度：${taskData.progress}%`);
-      return { completed: false };
-    },
-    3000,
+const imagePoll = async (
+  providerTaskId: string,
+  model: ImageModel,
+): Promise<PollResult & { progress?: number; nextPollMs?: number }> => {
+  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
+  const baseUrl = vendor.inputValues.baseUrl;
+  const headers = getHeaders();
+  const resp = await axios.post(
+    `${baseUrl}/v1/draw/result`,
+    { id: providerTaskId },
+    { headers },
+  );
+  if (resp.data.code !== 0)
+    return { completed: true, error: resp.data.msg };
+
+  const taskData = resp.data.data;
+  if (taskData.status === "failed")
+    return {
+      completed: true,
+      error: taskData.failure_reason || taskData.error,
+    };
+  if (taskData.status === "succeeded") {
+    const imgUrl = taskData.results?.[0]?.url || taskData.url;
+    return { completed: true, data: imgUrl };
+  }
+  logger(`图片任务生成中，进度：${taskData.progress}%`);
+  return { completed: false, progress: Number(taskData.progress || 50), nextPollMs: 3000 };
+};
+
+const imageRequest = async (
+  config: ImageConfig,
+  model: ImageModel,
+): Promise<string> => {
+  const submit = await imageSubmit(config, model);
+  const pollResult = await pollTask(
+    () => imagePoll(submit.providerTaskId, model),
+    submit.pollIntervalMs,
     600000,
   );
 
@@ -415,6 +432,8 @@ const updateVendor = async (): Promise<string> => {
 exports.vendor = vendor;
 exports.textRequest = textRequest;
 exports.imageRequest = imageRequest;
+exports.imageSubmit = imageSubmit;
+exports.imagePoll = imagePoll;
 exports.videoRequest = videoRequest;
 exports.ttsRequest = ttsRequest;
 exports.checkForUpdates = checkForUpdates;

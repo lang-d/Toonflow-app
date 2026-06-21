@@ -131,7 +131,7 @@ description: >-
 
 1. 调用 `get_flowData` 获取导演规划数据（plan）
 2. 调用 `get_flowData` 获取剧本数据（script）和资产数据（assets）
-3. 加载 `director_planning_style` 风格技法参考
+3. 调用 `activate_skill` 加载 `director_planning_style` 风格技法参考；禁止调用 `get_flowData("style")` 或 `get_flowData("director_planning_style")`
 
 ### 审核维度
 
@@ -174,7 +174,7 @@ description: >-
 
 #### 风格一致性（→ R3）
 
-1. 加载 `director_planning_style` 风格技法参考
+1. 调用 `activate_skill` 加载 `director_planning_style` 风格技法参考
 2. 逐一比对创作规划中的节奏、构图偏好、视觉原则、环境音/沉默/BGM 后期方向是否与风格技法参考一致；视觉原则必须能落到场景资产或参考图，不得与参考图事实冲突
 3. 标注具体冲突项（如风格规定缓慢节奏但规划写紧凑剪辑）
 
@@ -272,7 +272,7 @@ description: >-
 
 1. 调用 `get_flowData` 获取正式结构化分镜数据（storyboard）
 2. 调用 `get_flowData` 获取剧本数据（script）和资产数据（assets）
-3. 加载 `director_planning_style` 风格技法参考
+3. 调用 `activate_skill` 加载 `director_planning_style` 风格技法参考；禁止调用 `get_flowData("style")` 或 `get_flowData("director_planning_style")`
 
 ### 审核维度
 
