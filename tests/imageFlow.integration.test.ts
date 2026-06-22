@@ -15,6 +15,7 @@ let imageFlow: typeof import("../src/services/imageFlow");
 let imageFlowMigration: typeof import("../src/lib/migrations/imageFlowContractV2");
 let storyboardEditor: typeof import("../src/services/storyboardEditor");
 let storyboardMigration: typeof import("../src/lib/migrations/storyboardEditorContractV1");
+let assetImageHistory: typeof import("../src/services/assetImageHistory");
 
 async function createTestSchema() {
   await rawDb.schema.createTable("o_imageFlow", (table: any) => {
@@ -34,7 +35,12 @@ async function createTestSchema() {
     table.increments("id");
     table.string("filePath");
     table.string("state");
+    table.string("type");
     table.integer("assetsId");
+    table.string("model");
+    table.string("resolution");
+    table.integer("createTime");
+    table.integer("updateTime");
   });
   await rawDb.schema.createTable("o_storyboard", (table: any) => {
     table.integer("id").primary();
@@ -42,6 +48,7 @@ async function createTestSchema() {
     table.integer("scriptId");
     table.integer("flowId");
     table.string("filePath");
+    table.integer("updateTime");
     table.string("prompt");
     table.string("videoDesc");
     table.string("scene");
@@ -105,8 +112,16 @@ async function createTestSchema() {
   });
   await rawDb.schema.createTable("o_tasks", (table: any) => {
     table.increments("id");
+    table.string("taskId");
+    table.string("businessType");
+    table.integer("businessId");
+    table.string("status");
     table.string("state");
     table.string("reason");
+    table.text("resultJson");
+    table.integer("finishTime");
+    table.string("model");
+    table.integer("updateTime");
   });
   await rawDb.schema.createTable("o_setting", (table: any) => {
     table.string("key").primary();
@@ -121,6 +136,7 @@ before(async () => {
   imageFlowMigration = await import("../src/lib/migrations/imageFlowContractV2");
   storyboardEditor = await import("../src/services/storyboardEditor");
   storyboardMigration = await import("../src/lib/migrations/storyboardEditorContractV1");
+  assetImageHistory = await import("../src/services/assetImageHistory");
   await createTestSchema();
 });
 
@@ -178,6 +194,55 @@ test("flow upsert updates its target in one transaction", async () => {
   assert.equal(flowData.edges.length, 1);
   const imageCount = await u.db("o_image").where("assetsId", 501).count({ count: "*" }).first();
   assert.equal(Number(imageCount.count), 1);
+});
+
+test("flow save without explicit final image does not revalidate stale selected image", async () => {
+  const [flowId] = await u.db("o_imageFlow").insert({
+    flowData: JSON.stringify({
+      projectId: 100,
+      scriptId: 2,
+      targetType: "storyboard",
+      targetId: 702,
+      selectedImageUrl: "stale/final.jpg",
+      nodes: [{ id: "old-node", type: "generated", data: { generatedImage: "/old/node.jpg" } }],
+      edges: [],
+    }),
+  });
+  await u.db("o_storyboard").insert({
+    id: 702,
+    projectId: 100,
+    scriptId: 2,
+    flowId,
+    filePath: "/storyboard/current.jpg",
+    referenceImages: "[]",
+  });
+
+  const updatedId = await imageFlow.saveImageFlow({
+    flowId,
+    projectId: 100,
+    scriptId: 2,
+    targetType: "storyboard",
+    targetId: 702,
+    nodes: [
+      {
+        id: "asset-result-node",
+        type: "generated",
+        data: {
+          generatedImage: "/asset/new-reference.jpg",
+          resultMedia: { path: "/asset/new-reference.jpg", url: "/asset/new-reference.jpg", type: "image" },
+          selectedResult: { url: "/asset/new-reference.jpg" },
+        },
+      },
+    ],
+    edges: [],
+  });
+
+  assert.equal(updatedId, flowId);
+  const stored = JSON.parse((await u.db("o_imageFlow").where("id", flowId).first()).flowData);
+  assert.equal(stored.selectedImageUrl, "stale/final.jpg");
+  assert.equal(stored.nodes[0].data.generatedImage, "asset/new-reference.jpg");
+  const storyboard = await u.db("o_storyboard").where("id", 702).first();
+  assert.equal(storyboard.filePath, "/storyboard/current.jpg");
 });
 
 test("multiple generated nodes keep independent task state", async () => {
@@ -333,7 +398,7 @@ test("image history is isolated by targetType and targetId", async () => {
     updateTime: Date.now(),
   };
   await u.db("o_editImageTask").insert([
-    { ...common, targetType: "deriveAsset", targetId: 501, deriveAssetId: 501, url: "/history/asset.jpg" },
+    { ...common, targetType: "deriveAsset", targetId: 1501, deriveAssetId: 1501, url: "/history/asset.jpg" },
     { ...common, targetType: "storyboard", targetId: 701, url: "/history/storyboard.jpg" },
   ]);
 
@@ -341,7 +406,7 @@ test("image history is isolated by targetType and targetId", async () => {
     projectId: 100,
     scriptId: 2,
     targetType: "deriveAsset",
-    targetId: 501,
+    targetId: 1501,
   });
   const storyboardHistory = await imageFlow.getImageHistory({
     projectId: 100,
@@ -352,8 +417,294 @@ test("image history is isolated by targetType and targetId", async () => {
 
   assert.equal(assetHistory.length, 1);
   assert.match(assetHistory[0].url, /asset\.jpg/);
+  assert.ok(assetHistory[0].media);
+  assert.equal(assetHistory[0].media.path, "history/asset.jpg");
+  assert.doesNotMatch(assetHistory[0].media.url, /size=20/);
+  assert.match(assetHistory[0].media.previewUrl || "", /size=20/);
   assert.equal(storyboardHistory.length, 1);
   assert.match(storyboardHistory[0].url, /storyboard\.jpg/);
+  assert.ok(storyboardHistory[0].media);
+  assert.equal(storyboardHistory[0].media.path, "history/storyboard.jpg");
+});
+
+test("image history merges target-specific storyboard and asset sources", async () => {
+  await u.db("o_storyboard").insert({
+    id: 870,
+    projectId: 100,
+    scriptId: 2,
+    prompt: "storyboard prompt",
+    filePath: "/100/storyboard/current.jpg",
+    state: "completed",
+    updateTime: 3000,
+    referenceImages: "[]",
+  });
+  await u.db("o_editImageTask").insert({
+    projectId: 100,
+    scriptId: 2,
+    targetType: "storyboard",
+    targetId: 870,
+    status: "completed",
+    state: "completed",
+    url: "/100/storyboard/flow.jpg",
+    prompt: "flow prompt",
+    nodeId: "story-node",
+    createTime: 1000,
+    updateTime: 1000,
+  });
+  await u.db("o_tasks").insert({
+    taskId: "story-direct",
+    businessType: "storyboard",
+    businessId: 870,
+    status: "completed",
+    resultJson: JSON.stringify({ media: { path: "/100/storyboard/direct.jpg" } }),
+    finishTime: 2000,
+    updateTime: 2000,
+  });
+
+  const storyboardHistory = await imageFlow.getImageHistory({
+    projectId: 100,
+    scriptId: 2,
+    targetType: "storyboard",
+    targetId: 870,
+  });
+  assert.deepEqual(
+    storyboardHistory.map((item: any) => item.media.path),
+    ["100/storyboard/current.jpg", "100/storyboard/direct.jpg", "100/storyboard/flow.jpg"],
+  );
+  assert.deepEqual(
+    storyboardHistory.map((item: any) => item.source),
+    ["storyboard", "storyboard", "image-flow"],
+  );
+
+  await u.db("o_assets").insert({ id: 1870, type: "tool", projectId: 100 });
+  await u.db("o_image").insert({
+    assetsId: 1870,
+    filePath: "/100/assets/older.jpg",
+    state: "completed",
+    model: "older-model",
+    resolution: "1K",
+    createTime: 1100,
+    updateTime: 1100,
+  });
+  const [latestImageId] = await u.db("o_image").insert({
+    assetsId: 1870,
+    filePath: "/100/assets/latest.jpg",
+    state: "completed",
+    model: "latest-model",
+    resolution: "2K",
+    createTime: 2100,
+    updateTime: 2100,
+  });
+  await u.db("o_assets").where("id", 1870).update({ imageId: latestImageId });
+  await u.db("o_tasks").insert({
+    taskId: "asset-latest",
+    businessType: "image",
+    businessId: latestImageId,
+    status: "completed",
+    updateTime: 2200,
+  });
+  await u.db("o_editImageTask").insert({
+    projectId: 100,
+    scriptId: 2,
+    targetType: "deriveAsset",
+    targetId: 1870,
+    deriveAssetId: 1870,
+    status: "completed",
+    state: "completed",
+    url: "/100/assets/flow.jpg",
+    prompt: "asset flow",
+    nodeId: "asset-node",
+    createTime: 1200,
+    updateTime: 1200,
+  });
+
+  const assetHistory = await imageFlow.getImageHistory({
+    projectId: 100,
+    scriptId: 2,
+    targetType: "deriveAsset",
+    targetId: 1870,
+  });
+  assert.deepEqual(
+    assetHistory.map((item: any) => item.media.path),
+    ["100/assets/latest.jpg", "100/assets/flow.jpg", "100/assets/older.jpg"],
+  );
+  assert.equal(assetHistory.find((item: any) => item.media.path === "100/assets/latest.jpg")?.taskId, "asset-latest");
+  assert.equal(assetHistory.find((item: any) => item.media.path === "100/assets/older.jpg")?.source, "asset");
+});
+
+test("saveImageFlow accepts current target history images without generated node ownership", async () => {
+  await u.db("o_storyboard").insert({
+    id: 871,
+    projectId: 100,
+    scriptId: 2,
+    filePath: "/100/storyboard/external.jpg",
+    referenceImages: "[]",
+  });
+  const flowId = await imageFlow.saveImageFlow({
+    projectId: 100,
+    scriptId: 2,
+    targetType: "storyboard",
+    targetId: 871,
+    nodes: [{ id: "generated-other", type: "generated", data: { generatedImage: "/100/storyboard/other-node.jpg" } }],
+    edges: [],
+    selectedMediaPath: "/100/storyboard/external.jpg",
+  });
+  const stored = JSON.parse((await u.db("o_imageFlow").where("id", flowId).first()).flowData);
+  assert.equal(stored.selectedImageUrl, "100/storyboard/external.jpg");
+  assert.equal(stored.nodes[0].data.isPrimary, undefined);
+
+  await u.db("o_assets").insert({ id: 1871, type: "tool", projectId: 100 });
+  await u.db("o_image").insert({
+    assetsId: 1871,
+    filePath: "/100/assets/external.jpg",
+    state: "completed",
+  });
+  const assetFlowId = await imageFlow.saveImageFlow({
+    projectId: 100,
+    scriptId: 2,
+    targetType: "deriveAsset",
+    targetId: 1871,
+    nodes: [{ id: "asset-generated-other", type: "generated", data: { generatedImage: "/100/assets/other-node.jpg" } }],
+    edges: [],
+    selectedMediaPath: "/100/assets/external.jpg",
+  });
+  const assetStored = JSON.parse((await u.db("o_imageFlow").where("id", assetFlowId).first()).flowData);
+  assert.equal(assetStored.selectedImageUrl, "100/assets/external.jpg");
+  assert.equal(assetStored.nodes[0].data.isPrimary, undefined);
+});
+
+test("saveImageFlow rejects images owned by another target", async () => {
+  await u.db("o_storyboard").insert([
+    { id: 872, projectId: 100, scriptId: 2, filePath: "/100/storyboard/own.jpg", referenceImages: "[]" },
+    { id: 873, projectId: 100, scriptId: 2, filePath: "/100/storyboard/other-target.jpg", referenceImages: "[]" },
+  ]);
+  await assert.rejects(
+    imageFlow.saveImageFlow({
+      projectId: 100,
+      scriptId: 2,
+      targetType: "storyboard",
+      targetId: 872,
+      nodes: [],
+      edges: [],
+      selectedMediaPath: "/100/storyboard/other-target.jpg",
+    }),
+    (cause: any) =>
+      cause instanceof imageFlow.ImageFlowValidationError &&
+      cause.issues.some((issue: any) => issue.path === "selectedImageUrl"),
+  );
+});
+
+test("asset image history returns media and the latest authoritative task status", async () => {
+  let activeImageId: number;
+  let completedImageId: number;
+  let otherImageId: number;
+  let currentTaskId: number;
+  try {
+    await u.db("o_assets").insert([
+      { id: 1860, type: "tool", projectId: 100 },
+      { id: 1861, type: "tool", projectId: 100 },
+    ]);
+    [activeImageId] = await u.db("o_image").insert({
+      assetsId: 1860,
+      type: "tool",
+      state: "生成中",
+      filePath: null,
+    });
+    [completedImageId] = await u.db("o_image").insert({
+      assetsId: 1860,
+      type: "tool",
+      state: "已完成",
+      filePath: "/100/props/latest.jpg",
+    });
+    [otherImageId] = await u.db("o_image").insert({
+      assetsId: 1861,
+      type: "tool",
+      state: "已完成",
+      filePath: "/100/props/other.jpg",
+    });
+    await u.db("o_assets").where("id", 1860).update({ imageId: completedImageId });
+    await u.db("o_assets").where("id", 1861).update({ imageId: otherImageId });
+
+    await u.db("o_tasks").insert({
+      taskId: "task-old",
+      businessType: "image",
+      businessId: activeImageId,
+      status: "queued",
+      updateTime: 100,
+    });
+    [currentTaskId] = await u.db("o_tasks").insert({
+      taskId: "task-current",
+      businessType: "image",
+      businessId: activeImageId,
+      status: "submitting",
+      updateTime: 200,
+    });
+    await u.db("o_tasks").insert({
+      taskId: "wrong-business-type",
+      businessType: "image-flow",
+      businessId: completedImageId,
+      status: "failed",
+      updateTime: 300,
+    });
+  } catch (error: any) {
+    assert.fail(error?.stack || error?.message || String(error));
+  }
+
+  const history = await assetImageHistory.getAssetImageHistory(1860);
+  assert.ok(history);
+  assert.equal(history.imageId, completedImageId);
+  assert.deepEqual(history.tempAssets.map((item: any) => item.id), [completedImageId, activeImageId]);
+
+  const completed = history.tempAssets[0];
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.selected, true);
+  assert.equal(completed.taskId, undefined);
+  assert.ok(completed.media);
+  assert.equal(completed.media.path, "100/props/latest.jpg");
+  assert.doesNotMatch(completed.media.url, /size=20/);
+  assert.match(completed.media.previewUrl || "", /size=20/);
+
+  const active = history.tempAssets[1];
+  assert.equal(active.status, "submitting");
+  assert.equal(active.taskId, "task-current");
+  assert.equal(active.legacyTaskId, currentTaskId);
+  assert.equal(active.selected, false);
+  assert.equal(active.media, null);
+
+  const otherHistory = await assetImageHistory.getAssetImageHistory(1861);
+  assert.ok(otherHistory);
+  assert.deepEqual(otherHistory.tempAssets.map((item: any) => item.id), [otherImageId]);
+  assert.equal(await assetImageHistory.getAssetImageHistory(999999), null);
+});
+
+test("asset image history preserves every unified task status", async () => {
+  const statuses = ["queued", "submitting", "processing", "completed", "failed", "cancelled"];
+  await u.db("o_assets").insert({ id: 1862, type: "tool", projectId: 100 });
+  const imageIds: number[] = [];
+
+  for (const [index, status] of statuses.entries()) {
+    const [imageId] = await u.db("o_image").insert({
+      assetsId: 1862,
+      type: "tool",
+      state: "生成中",
+      filePath: status === "completed" ? `/100/props/${status}.jpg` : null,
+    });
+    imageIds.push(imageId);
+    await u.db("o_tasks").insert({
+      taskId: `task-${status}`,
+      businessType: "image",
+      businessId: imageId,
+      status,
+      updateTime: 1000 + index,
+    });
+  }
+
+  const history = await assetImageHistory.getAssetImageHistory(1862);
+  assert.ok(history);
+  const statusByTaskId = new Map(history.tempAssets.map((item: any) => [item.taskId, item.status]));
+  for (const status of statuses) {
+    assert.equal(statusByTaskId.get(`task-${status}`), status);
+  }
 });
 
 test("storyboard editor persists duration, ordered assets and references", async () => {
@@ -417,6 +768,65 @@ test("storyboard editor persists duration, ordered assets and references", async
     .pluck("assetId");
   assert.deepEqual(assetIds, [811, 810]);
   assert.equal((await u.db("o_videoTrack").where("id", 8801).first()).duration, 9);
+});
+
+test("storyboard editor preserves omitted scene continuity and clears explicit null", async () => {
+  const tableRow = {
+    version: 1,
+    index: 0,
+    groupKey: "group-continuity",
+    groupName: "Continuity group",
+    groupIntent: "Keep the scene continuous",
+    beatId: "beat-continuity",
+    durationSec: 3,
+    location: "客厅",
+    timeOfDay: "夜晚",
+    sceneContinuityId: "living-room-night-01",
+    picture: "角色站在窗边",
+    shotSize: "中景",
+    cameraMove: "固定",
+    action: "角色望向窗外",
+    characters: [],
+    visibleEmotion: "神情平静",
+    dialogue: [],
+    soundEffects: [],
+    requiredAssets: [],
+  };
+  await u.db("o_storyboard").insert({
+    id: 803,
+    projectId: 100,
+    scriptId: 2,
+    index: 0,
+    duration: "3",
+    prompt: "prompt",
+    tableRowJson: JSON.stringify(tableRow),
+    factStatus: "ready",
+    factVersion: 1,
+    factRevision: 1,
+    referenceImages: "[]",
+  });
+
+  const baseInput = {
+    id: 803,
+    prompt: "updated prompt",
+    videoDesc: "",
+    duration: 3,
+    associateAssetsIds: [],
+    referenceImages: [],
+  };
+
+  await storyboardEditor.saveStoryboardEditor(baseInput);
+  let storyboard = await u.db("o_storyboard").where("id", 803).first();
+  assert.equal(JSON.parse(storyboard.tableRowJson).sceneContinuityId, "living-room-night-01");
+  assert.equal(storyboard.sceneContinuityId, "living-room-night-01");
+
+  await storyboardEditor.saveStoryboardEditor({
+    ...baseInput,
+    sceneContinuityId: null,
+  });
+  storyboard = await u.db("o_storyboard").where("id", 803).first();
+  assert.equal("sceneContinuityId" in JSON.parse(storyboard.tableRowJson), false);
+  assert.equal(storyboard.sceneContinuityId, null);
 });
 
 test("flow metadata, primary node and original reference URLs are consistent", async () => {

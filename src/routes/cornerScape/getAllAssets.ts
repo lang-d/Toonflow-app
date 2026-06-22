@@ -50,24 +50,14 @@ export default router.post(
       else repleAssets[item.assetsRoleId].push(item);
     });
     const result = await Promise.all(
-      data.map(async (parent: any) => {
-        const historyImages = await u.db("o_image").where("assetsId", parent.id).andWhere("state", "已完成").select("id", "filePath");
-        const historyImagesWithUrl = await Promise.all(
-          historyImages.map(async (img: any) => ({
-            id: img.id,
-            filePath: img.filePath && (await u.oss.getSmallImageUrl(img.filePath)),
-          })),
-        );
-        return {
-          ...parent,
-          source: parent.type === "directorAsset" ? "directorAsset" : "assets",
-          sourceId: parent.type === "directorAsset" ? parent.sourceId : parent.id,
-          assetType: parent.directorAssetType ?? parent.type,
-          filePath: parent.filePath && (await u.oss.getSmallImageUrl(parent.filePath!)),
-          historyImages: historyImagesWithUrl,
-          relepedAudio: repleAssets[parent.id] ?? [],
-        };
-      }),
+      data.map(async (parent: any) => ({
+        ...parent,
+        source: parent.type === "directorAsset" ? "directorAsset" : "assets",
+        sourceId: parent.type === "directorAsset" ? parent.sourceId : parent.id,
+        assetType: parent.directorAssetType ?? parent.type,
+        filePath: parent.filePath && (await u.oss.getSmallImageUrl(parent.filePath!)),
+        relepedAudio: repleAssets[parent.id] ?? [],
+      })),
     );
     res.status(200).send(success(result));
   },

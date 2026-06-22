@@ -2,6 +2,7 @@ import u from "@/utils";
 import { toTaskStatus, type TaskStatus } from "@/lib/taskStatus";
 
 export type ImageFlowTargetType = "deriveAsset" | "storyboard";
+type HistorySource = "image-flow" | "storyboard" | "asset";
 
 export interface ImageFlowTarget {
   projectId?: number;
@@ -46,6 +47,10 @@ function selectedInputPath(input: SaveImageFlowInput): string {
   return stripUrl(input.selectedMediaPath ?? input.selectedImageUrl);
 }
 
+function hasExplicitSelection(input: SaveImageFlowInput): boolean {
+  return input.selectedMediaPath !== undefined || input.selectedImageUrl !== undefined;
+}
+
 function parseStoredFlow(value: unknown): any {
   try {
     const parsed = JSON.parse(String(value || "{}"));
@@ -63,6 +68,88 @@ function pathsEqual(left: unknown, right: unknown): boolean {
   const a = stripUrl(left);
   const b = stripUrl(right);
   return Boolean(a && b && a === b);
+}
+
+function parseJsonObject(value: unknown): any {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractMediaPath(value: any): string {
+  if (!value) return "";
+  if (typeof value === "string") return stripUrl(value);
+  for (const key of ["media", "resultMedia", "selectedMedia", "image", "result", "data"]) {
+    const nested = extractMediaPath(value[key]);
+    if (nested) return nested;
+  }
+  for (const key of ["path", "filePath", "url", "src", "imageUrl", "previewUrl"]) {
+    const path = stripUrl(value[key]);
+    if (path) return path;
+  }
+  return "";
+}
+
+function historySortValue(item: any): number {
+  return Number(item.sortTime ?? item.createTime ?? item.updateTime ?? item.id ?? 0) || 0;
+}
+
+async function toHistoryItem(input: {
+  id: string | number;
+  source: HistorySource;
+  sourceId?: string | number;
+  path: string;
+  prompt?: string;
+  model?: string;
+  ratio?: string;
+  quality?: string;
+  createTime?: number;
+  updateTime?: number;
+  status?: TaskStatus;
+  taskId?: string;
+  legacyTaskId?: number;
+}) {
+  const media = await u.mediaRef.toMediaRef(input.path, {
+    id: input.id,
+    source: input.source === "asset" ? "assets" : input.source === "storyboard" ? "storyboard" : "generated",
+    sourceId: input.sourceId ?? input.id,
+  });
+  if (!media) return null;
+  return {
+    id: input.id,
+    historyId: input.id,
+    source: input.source,
+    media,
+    url: media.url || "",
+    previewUrl: media.previewUrl || "",
+    prompt: input.prompt || "",
+    model: input.model || "",
+    ratio: input.ratio || "",
+    quality: input.quality || "",
+    createTime: input.createTime ?? input.updateTime ?? null,
+    updateTime: input.updateTime ?? input.createTime ?? null,
+    status: input.status,
+    taskId: input.taskId,
+    legacyTaskId: input.legacyTaskId,
+    sortTime: input.updateTime ?? input.createTime ?? 0,
+  };
+}
+
+function dedupeAndSortHistory(items: any[]) {
+  const byPath = new Map<string, any>();
+  for (const item of items) {
+    const path = stripMediaRef(item.media) || stripUrl(item.url);
+    if (!path) continue;
+    const existing = byPath.get(path);
+    if (!existing || historySortValue(item) > historySortValue(existing)) byPath.set(path, item);
+  }
+  return [...byPath.values()]
+    .sort((a, b) => historySortValue(b) - historySortValue(a) || String(b.id).localeCompare(String(a.id)))
+    .map(({ sortTime, ...item }) => item);
 }
 
 function cleanFlowNodes(nodes: any[]): any[] {
@@ -320,11 +407,40 @@ async function validateTargetOwnership(trx: any, target: ImageFlowTarget) {
   }
 }
 
+async function isTargetHistoryImage(trx: any, target: ImageFlowTarget, selectedImageUrl: string): Promise<boolean> {
+  if (!selectedImageUrl || !target.targetType || target.targetId == null) return false;
+  const targetId = Number(target.targetId);
+  const flowTasks = await trx("o_editImageTask")
+    .whereNotNull("url")
+    .where((builder: any) => {
+      builder.where({ targetType: target.targetType, targetId });
+      if (target.targetType === "deriveAsset") builder.orWhere("deriveAssetId", targetId);
+    })
+    .select("url");
+  if (flowTasks.some((task: any) => taskStatus(task) === "completed" && pathsEqual(task.url, selectedImageUrl))) return true;
+
+  if (target.targetType === "deriveAsset") {
+    const images = await trx("o_image").where("assetsId", targetId).whereNotNull("filePath").select("filePath");
+    return images.some((image: any) => pathsEqual(image.filePath, selectedImageUrl));
+  }
+
+  const storyboard = await trx("o_storyboard").where("id", targetId).first("filePath");
+  if (pathsEqual(storyboard?.filePath, selectedImageUrl)) return true;
+  const tasks = await trx("o_tasks")
+    .where("businessType", "storyboard")
+    .where("businessId", targetId)
+    .select("resultJson");
+  return tasks.some(
+    (task: any) => taskStatus(task) === "completed" && pathsEqual(extractMediaPath(parseJsonObject(task.resultJson)), selectedImageUrl),
+  );
+}
+
 async function normalizePrimaryNode(
   trx: any,
   flowId: number | null,
   nodes: any[],
   selectedImageUrl: string,
+  target: ImageFlowTarget = {},
 ) {
   const generatedNodes = nodes.filter((node) => node.type === "generated");
   const marked = generatedNodes.filter((node) => node.data?.isPrimary === true);
@@ -335,6 +451,7 @@ async function normalizePrimaryNode(
   }
 
   let selectedNode: any = null;
+  let externalSelected = false;
   if (selectedImageUrl) {
     const directMatches = generatedNodes.filter(
       (node) =>
@@ -369,14 +486,23 @@ async function normalizePrimaryNode(
         }
       }
     }
-    if (!selectedNode && generatedNodes.length) {
+    if (!selectedNode && (generatedNodes.length || (target.targetType && target.targetId != null))) {
+      externalSelected = await isTargetHistoryImage(trx, target, selectedImageUrl);
+    }
+    if (!selectedNode && !externalSelected && generatedNodes.length) {
       throw new ImageFlowValidationError([
         { path: "selectedImageUrl", message: "最终图片无法唯一对应到生成节点" },
       ]);
     }
   }
 
-  const primary = selectedNode || marked[0] || (generatedNodes.length === 1 ? generatedNodes[0] : null);
+  if (!selectedNode && !externalSelected && selectedImageUrl && target.targetType && target.targetId != null) {
+    throw new ImageFlowValidationError([
+      { path: "selectedImageUrl", message: "最终图片不属于当前目标历史" },
+    ]);
+  }
+
+  const primary = externalSelected ? marked[0] || null : selectedNode || marked[0] || (generatedNodes.length === 1 ? generatedNodes[0] : null);
   if (primary) {
     for (const node of generatedNodes) {
       node.data ||= {};
@@ -479,11 +605,9 @@ export async function saveImageFlow(input: SaveImageFlowInput): Promise<number> 
       assertSameTarget(await findFlowTarget(trx, flowId), input);
       await validateTargetOwnership(trx, input);
       const merged = await mergeFlowForSave(trx, flowId, input.nodes, input.edges);
-      const selectedImageUrl =
-        input.selectedMediaPath === undefined && input.selectedImageUrl === undefined
-          ? stripUrl(existingFlow.selectedImageUrl)
-          : selectedInputPath(input);
-      await normalizePrimaryNode(trx, flowId, merged.nodes, selectedImageUrl);
+      const explicitSelection = hasExplicitSelection(input);
+      const selectedImageUrl = explicitSelection ? selectedInputPath(input) : stripUrl(existingFlow.selectedImageUrl);
+      await normalizePrimaryNode(trx, flowId, merged.nodes, explicitSelection ? selectedImageUrl : "", input);
       const flowData = JSON.stringify({
         ...existingFlow,
         projectId: input.projectId ?? existingFlow.projectId ?? null,
@@ -500,7 +624,7 @@ export async function saveImageFlow(input: SaveImageFlowInput): Promise<number> 
       await validateTargetOwnership(trx, input);
       const selectedImageUrl = selectedInputPath(input);
       const nodes = clone(input.nodes);
-      await normalizePrimaryNode(trx, null, nodes, selectedImageUrl);
+      await normalizePrimaryNode(trx, null, nodes, selectedImageUrl, input);
       const flowData = JSON.stringify({
         projectId: input.projectId ?? null,
         scriptId: input.scriptId ?? null,
@@ -584,7 +708,7 @@ export async function updateImageFlowNode(flowId: number | null | undefined, nod
   return u.db.transaction((trx: any) => updateImageFlowNodeWithDb(trx, flowId, nodeId, patch));
 }
 
-export async function getImageHistory(input: ImageFlowTarget & { deriveAssetId?: number }) {
+export async function getLegacyImageFlowHistory(input: ImageFlowTarget & { deriveAssetId?: number }) {
   const targetType = input.targetType || (input.deriveAssetId ? "deriveAsset" : undefined);
   const targetId = input.targetId ?? input.deriveAssetId ?? null;
   const query = u
@@ -605,15 +729,150 @@ export async function getImageHistory(input: ImageFlowTarget & { deriveAssetId?:
 
   const tasks = await query;
   return Promise.all(
-    tasks.map(async (task: any) => ({
-      id: task.id,
-      historyId: task.id,
-      url: task.url ? await u.oss.getSmallImageUrl(task.url) : "",
-      prompt: task.prompt || "",
-      model: task.model || "",
-      ratio: task.ratio || "",
-      quality: task.quality || "",
-      createTime: task.createTime,
-    })),
+    tasks.map(async (task: any) => {
+      const media = await u.mediaRef.toMediaRef(task.url, {
+        id: task.id,
+        source: "generated",
+        sourceId: task.id,
+      });
+      return {
+        id: task.id,
+        historyId: task.id,
+        media,
+        url: media?.url || "",
+        prompt: task.prompt || "",
+        model: task.model || "",
+        ratio: task.ratio || "",
+        quality: task.quality || "",
+        createTime: task.createTime,
+      };
+    }),
   );
+}
+
+export async function getImageHistory(input: ImageFlowTarget & { deriveAssetId?: number }) {
+  const targetType = input.targetType || (input.deriveAssetId ? "deriveAsset" : undefined);
+  const targetId = input.targetId ?? input.deriveAssetId ?? null;
+  const query = u
+    .db("o_editImageTask")
+    .where("projectId", input.projectId!)
+    .where("scriptId", input.scriptId!)
+    .whereNotNull("url")
+    .orderBy("createTime", "desc")
+    .select("*");
+
+  if (targetType && targetId != null) {
+    query.andWhere((builder) => {
+      builder.where({ targetType, targetId });
+      if (targetType === "deriveAsset") builder.orWhere("deriveAssetId", targetId);
+    });
+  }
+
+  const historyItems: any[] = [];
+  const flowTasks = (await query).filter((task: any) => taskStatus(task) === "completed");
+  for (const task of flowTasks) {
+    const item = await toHistoryItem({
+      id: `image-flow:${task.id}`,
+      source: "image-flow",
+      sourceId: task.id,
+      path: task.url || "",
+      prompt: task.prompt || undefined,
+      model: task.model || undefined,
+      ratio: task.ratio || undefined,
+      quality: task.quality || undefined,
+      createTime: task.createTime ?? undefined,
+      updateTime: task.updateTime ?? undefined,
+      status: "completed",
+      legacyTaskId: task.id,
+    });
+    if (item) historyItems.push(item);
+  }
+
+  if (targetType === "storyboard" && targetId != null) {
+    const storyboard = await u
+      .db("o_storyboard")
+      .where("id", targetId)
+      .modify((builder: any) => {
+        if (input.projectId != null) builder.where("projectId", input.projectId);
+        if (input.scriptId != null) builder.where("scriptId", input.scriptId);
+      })
+      .first("*");
+    const storyboardTasks = await u
+      .db("o_tasks")
+      .where("businessType", "storyboard")
+      .where("businessId", targetId)
+      .orderBy("updateTime", "desc")
+      .orderBy("id", "desc")
+      .select("*");
+    for (const task of storyboardTasks.filter((item: any) => taskStatus(item) === "completed")) {
+      const path = extractMediaPath(parseJsonObject(task.resultJson));
+      const item = path
+        ? await toHistoryItem({
+            id: `storyboard-task:${task.id}`,
+            source: "storyboard",
+            sourceId: targetId,
+            path,
+            prompt: storyboard?.prompt || undefined,
+            model: task.model || undefined,
+            createTime: task.finishTime || task.updateTime || undefined,
+            updateTime: task.updateTime ?? undefined,
+            status: taskStatus(task),
+            taskId: task.taskId || undefined,
+            legacyTaskId: task.id,
+          })
+        : null;
+      if (item) historyItems.push(item);
+    }
+    if (storyboard?.filePath) {
+      const item = await toHistoryItem({
+        id: `storyboard-current:${targetId}`,
+        source: "storyboard",
+        sourceId: targetId,
+        path: storyboard.filePath,
+        prompt: storyboard.prompt,
+        createTime: storyboard.updateTime || storyboard.id,
+        updateTime: storyboard.updateTime || storyboard.id,
+        status: toTaskStatus(storyboard.state) || "completed",
+      });
+      if (item) historyItems.push(item);
+    }
+  }
+
+  if (targetType === "deriveAsset" && targetId != null) {
+    const images: any[] = await u.db("o_image").where("assetsId", targetId).whereNotNull("filePath").orderBy("id", "desc").select("*");
+    const imageIds = images.map((item: any) => Number(item.id)).filter(Number.isFinite);
+    const imageTasks = imageIds.length
+      ? await u
+          .db("o_tasks")
+          .where("businessType", "image")
+          .whereIn("businessId", imageIds)
+          .orderBy("updateTime", "desc")
+          .orderBy("id", "desc")
+          .select("*")
+      : [];
+    const latestTaskByImageId = new Map<number, any>();
+    for (const task of imageTasks) {
+      const imageId = Number(task.businessId);
+      if (!latestTaskByImageId.has(imageId)) latestTaskByImageId.set(imageId, task);
+    }
+    for (const image of images) {
+      const task = latestTaskByImageId.get(Number(image.id));
+      const item = await toHistoryItem({
+        id: `asset-image:${image.id}`,
+        source: "asset",
+        sourceId: targetId,
+        path: image.filePath || "",
+        model: image.model || undefined,
+        quality: image.resolution || undefined,
+        createTime: image.createTime || image.id,
+        updateTime: task?.updateTime || image.updateTime || image.id,
+        status: task?.status || toTaskStatus(image.state) || "completed",
+        taskId: task?.taskId || undefined,
+        legacyTaskId: task?.id ?? undefined,
+      });
+      if (item) historyItems.push(item);
+    }
+  }
+
+  return dedupeAndSortHistory(historyItems);
 }

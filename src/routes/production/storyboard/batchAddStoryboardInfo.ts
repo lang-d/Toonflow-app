@@ -8,6 +8,7 @@ import { deriveStoryboardGroupMeta, syncVideoTracksForStoryboards } from "@/serv
 import {
   assetIdsFromStoryboardRow,
   buildStoryboardDraftRow,
+  sceneContinuityIdRequestSchema,
   storyboardRowToDbPatch,
   storyboardTableRowV2Schema,
 } from "@/services/storyboardTableContract";
@@ -37,7 +38,7 @@ export default router.post(
         scene: z.string().optional(),
         location: z.string().optional(),
         timeOfDay: z.string().optional(),
-        sceneContinuityId: z.string().optional(),
+        sceneContinuityId: sceneContinuityIdRequestSchema,
         picture: z.string().optional(),
         action: z.string().optional(),
         shotSize: z.string().optional(),

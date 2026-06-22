@@ -15,6 +15,7 @@ import { buildTrackBgmSuggestion } from "@/services/musicSuggestion";
 import {
   assetIdsFromStoryboardRow,
   buildStoryboardDraftRow,
+  sceneContinuityIdRequestSchema,
   storyboardRowToDbPatch,
   storyboardTableRowV2Schema,
 } from "@/services/storyboardTableContract";
@@ -61,7 +62,7 @@ export default router.post(
     visibleEmotion: z.string().optional(),
     location: z.string().optional(),
     timeOfDay: z.string().optional(),
-    sceneContinuityId: z.string().optional(),
+    sceneContinuityId: sceneContinuityIdRequestSchema,
     characters: z.array(z.any()).optional(),
     dialogueItems: z.array(z.any()).optional(),
     soundEffects: z.array(z.string()).optional(),

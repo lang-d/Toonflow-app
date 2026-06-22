@@ -4,6 +4,7 @@ import { z } from "zod";
 import { normalizePayload } from "../src/middleware/apiContract";
 import { validateFields } from "../src/middleware/middleware";
 import { addStatusCompatibility, toLegacyTaskState, toTaskStatus } from "../src/lib/taskStatus";
+import { sceneContinuityIdRequestSchema } from "../src/services/storyboardTableContract";
 
 test("API envelope keeps HTTP status and code aligned", async () => {
   assert.deepEqual(await normalizePayload({ code: 200, data: { id: 1 }, message: "ok" }, 200), {
@@ -101,6 +102,14 @@ test("validation errors use data.issues", () => {
   assert.equal(sent.code, 400);
   assert.equal(sent.message, "参数错误");
   assert.equal(sent.data.issues[0].path, "projectId");
+});
+
+test("sceneContinuityId request schema accepts string, null and omission only", () => {
+  assert.equal(sceneContinuityIdRequestSchema.parse("scene-night-01"), "scene-night-01");
+  assert.equal(sceneContinuityIdRequestSchema.parse(null), null);
+  assert.equal(sceneContinuityIdRequestSchema.parse(undefined), undefined);
+  assert.equal(sceneContinuityIdRequestSchema.safeParse(123).success, false);
+  assert.equal(sceneContinuityIdRequestSchema.safeParse({ id: "scene-night-01" }).success, false);
 });
 
 test("task status mapping preserves the legacy state for one compatibility release", () => {

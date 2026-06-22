@@ -39,7 +39,7 @@ export interface StoryboardEditorInput {
   visibleEmotion?: string;
   location?: string;
   timeOfDay?: string;
-  sceneContinuityId?: string;
+  sceneContinuityId?: string | null;
   groupKey?: string;
   groupName?: string;
   groupIntent?: string;

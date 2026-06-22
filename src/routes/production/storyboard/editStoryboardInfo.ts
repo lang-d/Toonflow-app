@@ -6,6 +6,7 @@ import {
   saveStoryboardEditor,
   StoryboardContractError,
 } from "@/services/storyboardEditor";
+import { sceneContinuityIdRequestSchema } from "@/services/storyboardTableContract";
 
 const router = express.Router();
 const referenceSchema = z
@@ -40,7 +41,7 @@ export default router.post(
     visibleEmotion: z.string().optional(),
     location: z.string().optional(),
     timeOfDay: z.string().optional(),
-    sceneContinuityId: z.string().optional(),
+    sceneContinuityId: sceneContinuityIdRequestSchema,
     groupKey: z.string().optional(),
     groupName: z.string().optional(),
     groupIntent: z.string().optional(),

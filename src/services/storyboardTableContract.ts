@@ -3,6 +3,8 @@ import { z } from "zod";
 const requiredText = z.string().trim().min(1);
 const optionalText = z.string().trim().min(1).optional();
 
+export const sceneContinuityIdRequestSchema = z.string().nullable().optional();
+
 export const storyboardCharacterSchema = z.object({
   assetId: z.number().int().positive().optional(),
   name: requiredText,
