@@ -65,24 +65,6 @@ export default router.post(
     if (invalidTrackId != null) {
       return res.status(400).send(error("Video track does not exist or does not belong to the current script", { trackId: invalidTrackId }));
     }
-    const blockedTrack = tracks.find((track: any) => track.reviewState === "blocked");
-    if (blockedTrack) {
-      return res.status(400).send(error("Video generation is blocked by open production review issues", { trackId: blockedTrack.id }));
-    }
-    const blockingTargets = new Set<string>();
-    for (const track of tracks) {
-      blockingTargets.add(String(track.id));
-      if (track.groupKey) blockingTargets.add(String(track.groupKey));
-    }
-    const blockingReview = await u
-      .db("o_productionReviewSuggestion")
-      .where({ projectId, scriptId, status: "open", severity: "blocking" })
-      .whereIn("targetType", ["storyboardGroup", "videoPrompt", "videoResult"])
-      .whereIn("targetId", [...blockingTargets])
-      .first();
-    if (blockingReview) {
-      return res.status(400).send(error("Video generation is blocked by open production review issues", { blockingReview }));
-    }
     try {
       await assertTrackStoryboardsReady({ projectId, scriptId, trackIds });
     } catch (cause) {

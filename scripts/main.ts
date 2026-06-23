@@ -36,7 +36,7 @@ app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
 const SYSTEM_ENTRIES = new Set(["assets", "models", "serve", "web", "skills", "modelPrompt"]);
-const ALWAYS_REFRESH_SYSTEM_ENTRIES = new Set(["serve", "web"]);
+const ALWAYS_REFRESH_SYSTEM_ENTRIES = new Set(["serve", "web", "skills"]);
 const USER_ENTRIES = new Set(["vendor"]);
 const VITE_DEV_ORIGIN = "http://127.0.0.1:50188";
 const VITE_READY_TIMEOUT_MS = 30_000;
