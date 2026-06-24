@@ -5,11 +5,15 @@ import path from "node:path";
 import test from "node:test";
 import knexFactory from "knex";
 import {
+  buildVideoArgs,
+  getDreaminaVideoResolutions,
   getDreaminaProviderModelKey,
   isDreaminaCapacityLimit,
+  normalizeQueueConfig,
   normalizeTaskOutputStatus,
   parseDreaminaQueueInfo,
   parseDreaminaRemoteEvidence,
+  parseDreaminaTaskOutput,
 } from "../src/utils/dreaminaCli";
 import { migrateVideoQueueV2, recoverVideoQueueAfterRestart } from "../src/lib/migrations/videoQueueV2";
 import { migrateVideoQueueV3 } from "../src/lib/migrations/videoQueueV3";
@@ -69,6 +73,86 @@ test("Dreamina transient CLI errors do not become provider task failures", () =>
     ),
     "failed",
   );
+});
+
+test("Dreamina task parsing ignores another submitId's successful video URL", () => {
+  const currentSubmitId = "submit-a";
+  const output = [
+    JSON.stringify({ submit_id: currentSubmitId, gen_status: "querying" }),
+    JSON.stringify({
+      submit_id: "submit-b",
+      gen_status: "success",
+      video_url: "https://example.com/wrong-video.mp4",
+    }),
+  ].join("\n");
+  const parsed = parseDreaminaTaskOutput(output, currentSubmitId);
+  assert.equal(parsed.status, "generating");
+  assert.equal(parsed.videoUrl, undefined);
+  assert.equal(parsed.evidence.confirmed, false);
+});
+
+test("Dreamina list_task confirms only the current queued task without yielding a video URL", () => {
+  const submitId = "submit-a";
+  const parsed = parseDreaminaTaskOutput(
+    JSON.stringify({
+      submit_id: submitId,
+      history_record_id: "history-a",
+      task: { task_id: "task-a" },
+      queue_info: { queue_status: 1, queue_idx: 7, queue_length: 100 },
+    }),
+    submitId,
+  );
+  assert.equal(parsed.status, "generating");
+  assert.equal(parsed.evidence.confirmed, true);
+  assert.equal(parsed.evidence.historyRecordId, "history-a");
+  assert.deepEqual(parsed.queueInfo, { status: 1, index: 7, length: 100 });
+  assert.equal(parsed.videoUrl, undefined);
+});
+
+test("Dreamina accepts a video URL only when structured output binds it to the current submitId", () => {
+  const submitId = "submit-a";
+  const parsed = parseDreaminaTaskOutput(
+    JSON.stringify({
+      submit_id: submitId,
+      gen_status: "success",
+      video_url: "https://example.com/right-video.mp4",
+    }),
+    submitId,
+  );
+  assert.equal(parsed.status, "success");
+  assert.equal(parsed.videoUrl, "https://example.com/right-video.mp4");
+});
+
+test("Dreamina video args and Seedance capabilities match CLI channel behavior", () => {
+  const referencePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "toonflow-dreamina-args-")), "reference.png");
+  fs.writeFileSync(referencePath, Buffer.from("reference"));
+  const input = {
+    prompt: "test",
+    duration: 5,
+    resolution: "4K",
+    aspectRatio: "4:3",
+    referenceList: [{ type: "image", filePath: referencePath }],
+    mode: "singleImage",
+  } as any;
+  const imageArgs = buildVideoArgs(input, {
+    name: "mini",
+    modelName: "image2video:seedance2.0mini",
+    type: "video",
+  } as any).args;
+  const multimodalArgs = buildVideoArgs(input, {
+    name: "vip",
+    modelName: "multimodal2video:seedance2.0_vip",
+    type: "video",
+  } as any).args;
+  assert.equal(imageArgs.some((arg) => arg.startsWith("--ratio=")), false);
+  assert.equal(multimodalArgs.includes("--ratio=4:3"), true);
+  assert.equal(multimodalArgs.includes("--video_resolution=4K"), true);
+  assert.deepEqual(getDreaminaVideoResolutions("--video_resolution 720p,1080p", "seedance2.0mini"), ["720p"]);
+  assert.deepEqual(
+    getDreaminaVideoResolutions("--video_resolution 720p,1080p", "seedance2.0_vip"),
+    ["720p", "1080p", "4K"],
+  );
+  assert.equal(normalizeQueueConfig({ maxWorkHours: 9 }).maxWorkHours, 9);
 });
 
 test("video queue migration externalizes queued Base64 and is idempotent", async () => {

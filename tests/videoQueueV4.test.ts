@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
+import { upgradeDreaminaModelsV5 } from "../src/lib/migrations/videoQueueV5";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "toonflow-video-queue-v4-"));
 process.env.TOONFLOW_DATA_DIR = dataDir;
@@ -164,6 +165,57 @@ test("queue config stores maxWorkHours and returns the compatibility alias", () 
   });
   assert.equal(compatible.queueConfig.maxWorkHours, 9);
   assert.equal(compatible.queueConfig.maxWaitHours, 9);
+});
+
+test("Dreamina poll timing uses initial, processing, and queued intervals independently", () => {
+  const queueConfig = {
+    maxConcurrent: 1,
+    pollInitialDelaySec: 10,
+    pollMinIntervalSec: 20,
+    pollMaxIntervalSec: 60,
+    maxWorkHours: 6,
+    maxWaitHours: 6,
+  };
+  assert.equal(queue.nextProviderPollDelayMs(queueConfig, undefined, false), 10_000);
+  assert.equal(queue.nextProviderPollDelayMs(queueConfig, 2, true), 20_000);
+  assert.equal(queue.nextProviderPollDelayMs(queueConfig, 1, true), 60_000);
+});
+
+test("Dreamina v5 model upgrade preserves custom polling and adds VIP 4K", () => {
+  const models = [
+    {
+      type: "video",
+      modelName: "multimodal2video:seedance2.0_vip",
+      queueConfig: {
+        pollInitialDelaySec: 60,
+        pollMinIntervalSec: 120,
+        pollMaxIntervalSec: 600,
+        maxWorkHours: 9,
+      },
+      durationResolutionMap: [{ duration: [5], resolution: ["720p", "1080p"] }],
+    },
+    {
+      type: "video",
+      modelName: "multimodal2video:seedance2.0mini",
+      queueConfig: {
+        pollInitialDelaySec: 45,
+        pollMinIntervalSec: 30,
+        pollMaxIntervalSec: 90,
+        maxWorkHours: 8,
+      },
+      durationResolutionMap: [{ duration: [5], resolution: ["720p"] }],
+    },
+  ];
+  assert.equal(upgradeDreaminaModelsV5(models), 1);
+  assert.deepEqual(models[0].queueConfig, {
+    pollInitialDelaySec: 20,
+    pollMinIntervalSec: 20,
+    pollMaxIntervalSec: 60,
+    maxWorkHours: 9,
+  });
+  assert.deepEqual(models[0].durationResolutionMap[0].resolution, ["720p", "1080p", "4K"]);
+  assert.equal(models[1].queueConfig.pollInitialDelaySec, 45);
+  assert.equal(models[1].queueConfig.maxWorkHours, 8);
 });
 
 test("v4 migration restores only timed-out official tasks and is idempotent", async () => {

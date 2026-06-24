@@ -21,7 +21,7 @@ interface VideoInput {
   references: QueuedWorkbenchReference[];
   mode: unknown;
   duration: number;
-  aspectRatio: "16:9" | "9:16";
+  aspectRatio: `${number}:${number}`;
   resolution: string;
   audio?: boolean;
 }
@@ -80,9 +80,6 @@ interface QueueRow {
 }
 
 const RAW_OUTPUT_LIMIT = 32 * 1024;
-const CONFIRM_INTERVAL_MS = 60_000;
-const PROCESSING_INTERVAL_MS = 60_000;
-const QUEUED_PROVIDER_INTERVAL_MS = 120_000;
 const CAPACITY_RETRY_MS = 90_000;
 const SCHEDULER_LEASE_KEY = "runtime:video-queue-scheduler-lease";
 const SCHEDULER_LEASE_TTL_MS = 90_000;
@@ -174,10 +171,14 @@ function queueTimingDetails(row: QueueRow, now = Date.now(), maxWorkHours?: numb
   };
 }
 
-function nextProviderPollDelayMs(queueStatus?: number) {
-  if (queueStatus === 1) return QUEUED_PROVIDER_INTERVAL_MS;
-  if (queueStatus === 2) return PROCESSING_INTERVAL_MS;
-  return PROCESSING_INTERVAL_MS;
+export function nextProviderPollDelayMs(
+  config: ReturnType<typeof normalizeQueueConfig>,
+  queueStatus?: number,
+  confirmed = true,
+) {
+  if (!confirmed) return config.pollInitialDelaySec * 1000;
+  if (queueStatus === 1) return config.pollMaxIntervalSec * 1000;
+  return config.pollMinIntervalSec * 1000;
 }
 
 function capacityRetryDelayMs() {
@@ -605,6 +606,7 @@ async function resolveRequestReferences(row: QueueRow, request: StoredRequest) {
 
 async function submitDreamina(row: QueueRow, request: StoredRequest) {
   const modelConfig = await getModelConfig(row.model);
+  const queueConfig = normalizeQueueConfig(modelConfig.queueConfig, "dreamina");
   const referenceList = await resolveRequestReferences(row, request);
   queueLog("submit.started", {
     ...taskLogDetails(row),
@@ -685,7 +687,7 @@ async function submitDreamina(row: QueueRow, request: StoredRequest) {
     lastProviderCode: submit.providerCode || null,
     rawOutput: truncateDiagnostic(submit.rawOutput),
     nextSubmitTime: null,
-    nextPollTime: now + CONFIRM_INTERVAL_MS,
+    nextPollTime: now + queueConfig.pollInitialDelaySec * 1000,
     pollCount: 0,
     updateTime: now,
   });
@@ -710,7 +712,7 @@ async function submitDreamina(row: QueueRow, request: StoredRequest) {
     confirmed,
     providerSubmittedAt: row.providerSubmittedAt || now,
     localQueueWaitSec: Math.max(0, Math.round(((row.providerSubmittedAt || now) - row.startTime) / 1000)),
-    nextPollTime: now + CONFIRM_INTERVAL_MS,
+    nextPollTime: now + queueConfig.pollInitialDelaySec * 1000,
   });
 }
 
@@ -735,9 +737,9 @@ async function submitTask(row: QueueRow) {
   }
 }
 
-async function schedulePollRetry(row: QueueRow, message: string) {
+async function schedulePollRetry(row: QueueRow, message: string, delayMs: number) {
   const pollCount = Number(row.pollCount || 0) + 1;
-  const nextPollTime = Date.now() + CONFIRM_INTERVAL_MS;
+  const nextPollTime = Date.now() + delayMs;
   await u.db("o_videoGenerationTask").where("id", row.id).update({
     rawOutput: truncateDiagnostic(`${row.rawOutput || ""}\n${message}`),
     pollCount,
@@ -796,7 +798,11 @@ async function pollDreamina(row: QueueRow) {
       );
       return;
     }
-    await schedulePollRetry(row, `即梦任务查询暂时失败，将继续重试：${u.error(error).message}`);
+    await schedulePollRetry(
+      row,
+      `即梦任务查询暂时失败，将继续重试：${u.error(error).message}`,
+      nextProviderPollDelayMs(config, row.providerQueueStatus ?? undefined, row.status === "processing"),
+    );
     return;
   }
   if (row.providerAccountId && poll.providerAccountId && row.providerAccountId !== poll.providerAccountId) {
@@ -829,7 +835,7 @@ async function pollDreamina(row: QueueRow) {
   const confirmed = poll.evidence.confirmed || Boolean(row.officialTaskId || row.historyRecordId || row.remoteConfirmedAt);
   const status: QueueStatus = confirmed ? "processing" : "confirming";
   const phase = confirmed ? "processing" : "confirming";
-  const nextPollTime = now + (confirmed ? nextProviderPollDelayMs(poll.queueInfo.status) : CONFIRM_INTERVAL_MS);
+  const nextPollTime = now + nextProviderPollDelayMs(config, poll.queueInfo.status, confirmed);
   await u.db("o_videoGenerationTask").where("id", row.id).update({
     providerSubmittedAt: providerSubmittedAt || row.confirmStartedAt || now,
     officialTaskId: poll.evidence.officialTaskId || row.officialTaskId || null,

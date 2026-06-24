@@ -49,7 +49,7 @@ const handlers: Record<string, TaskHandler> = {
 
 const DEFAULT_LIMITS: Record<UnifiedTaskType, number> = {
   prompt: 4,
-  image: 2,
+  image: 5,
   asset: 2,
   storyboard: 2,
   video: 1,

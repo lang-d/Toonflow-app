@@ -12,6 +12,7 @@ import {
 } from "@/lib/migrations/videoQueueV2";
 import { migrateVideoQueueV3 } from "@/lib/migrations/videoQueueV3";
 import { migrateVideoQueueV4 } from "@/lib/migrations/videoQueueV4";
+import { migrateVideoQueueV5 } from "@/lib/migrations/videoQueueV5";
 import { migrateStoryboardEditorContractV1 } from "@/lib/migrations/storyboardEditorContractV1";
 import {
   migrateUnifiedTaskV1,
@@ -920,6 +921,7 @@ export default async (knex: Knex): Promise<void> => {
   await recoverInterruptedQueuedTasksFromBackup(knex);
   await migrateVideoQueueV3(knex);
   await migrateVideoQueueV4(knex);
+  await migrateVideoQueueV5(knex);
   await recoverVideoQueueAfterRestart(knex);
   await migrateUnifiedTaskV1(knex);
   await migrateProjectSnapshotDecoupling(knex);

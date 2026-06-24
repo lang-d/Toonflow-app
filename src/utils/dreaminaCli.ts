@@ -50,7 +50,7 @@ interface ImageConfig {
 interface VideoConfig {
   duration: number;
   resolution: string;
-  aspectRatio: "16:9" | "9:16";
+  aspectRatio: `${number}:${number}`;
   prompt: string;
   referenceList?: ReferenceItem[];
   audio?: boolean;
@@ -700,21 +700,197 @@ export interface DreaminaRemoteEvidence {
   providerAccountId?: string;
 }
 
+type JsonRecord = Record<string, unknown>;
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function extractJsonValues(output: string) {
+  const values: unknown[] = [];
+  const seen = new Set<string>();
+  const add = (value: string) => {
+    const candidate = value.trim();
+    if (!candidate || seen.has(candidate)) return;
+    seen.add(candidate);
+    try {
+      values.push(JSON.parse(candidate));
+    } catch {}
+  };
+  add(output);
+  let start = -1;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < output.length; index += 1) {
+    const char = output[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === '"') {
+      quoted = true;
+      continue;
+    }
+    if (char === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        add(output.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+  return values;
+}
+
+function collectMatchingSubmitRecords(output: string, submitId: string) {
+  const matches: JsonRecord[] = [];
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!isJsonRecord(value)) return;
+    const valueSubmitId = value.submit_id ?? value.submitId;
+    if (String(valueSubmitId || "") === submitId) matches.push(value);
+    Object.values(value).forEach(visit);
+  };
+  extractJsonValues(output).forEach(visit);
+  return matches;
+}
+
+function findNestedValue(records: JsonRecord[], names: Set<string>) {
+  let result: unknown;
+  const visit = (value: unknown) => {
+    if (result !== undefined) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!isJsonRecord(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      if (names.has(key.toLowerCase()) && child !== undefined && child !== null && child !== "") {
+        result = child;
+        return;
+      }
+      visit(child);
+    }
+  };
+  records.forEach(visit);
+  return result;
+}
+
+function parseStructuredQueueInfo(records: JsonRecord[]): DreaminaQueueInfo {
+  const numberValue = (names: string[]) => {
+    const value = findNestedValue(records, new Set(names));
+    const number = Number(value);
+    return Number.isFinite(number) ? number : undefined;
+  };
+  return {
+    status: numberValue(["queue_status"]),
+    index: numberValue(["queue_idx"]),
+    length: numberValue(["queue_length"]),
+  };
+}
+
+function extractStructuredVideoUrl(records: JsonRecord[]) {
+  let result: string | undefined;
+  const visit = (value: unknown, pathParts: string[] = []) => {
+    if (result) return;
+    if (Array.isArray(value)) {
+      value.forEach((child) => visit(child, pathParts));
+      return;
+    }
+    if (!isJsonRecord(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      const pathText = [...pathParts, key].join(".").toLowerCase();
+      if (
+        typeof child === "string" &&
+        /^https?:\/\//i.test(child) &&
+        (/^video_?url$/i.test(key) || /^download_?url$/i.test(key) || (key.toLowerCase() === "url" && pathText.includes("video")))
+      ) {
+        result = child;
+        return;
+      }
+      visit(child, [...pathParts, key]);
+    }
+  };
+  records.forEach((record) => visit(record));
+  return result;
+}
+
+export interface DreaminaTaskOutput {
+  status: "unknown" | "generating" | "success" | "failed";
+  evidence: DreaminaRemoteEvidence;
+  queueInfo: DreaminaQueueInfo;
+  providerCode?: string;
+  videoUrl?: string;
+}
+
+export function parseDreaminaTaskOutput(output: string, submitId: string): DreaminaTaskOutput {
+  const records = collectMatchingSubmitRecords(output, submitId);
+  const queueInfo = parseStructuredQueueInfo(records);
+  const historyRecordId = findNestedValue(records, new Set(["history_record_id", "historyrecordid"]));
+  const officialTaskId = findNestedValue(records, new Set(["task_id", "taskid"]));
+  const providerAccountId = findNestedValue(records, new Set(["user_id", "uid"]));
+  const statusValues = records.flatMap((record) => {
+    const values: string[] = [];
+    const visit = (value: unknown) => {
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      if (!isJsonRecord(value)) return;
+      for (const [key, child] of Object.entries(value)) {
+        if (["gen_status", "task_status", "status"].includes(key.toLowerCase()) && typeof child === "string") {
+          values.push(child.toLowerCase());
+        }
+        visit(child);
+      }
+    };
+    visit(record);
+    return values;
+  });
+  const failureReason = findNestedValue(records, new Set(["fail_reason", "error_reason"]));
+  let status: DreaminaTaskOutput["status"] = "unknown";
+  if (failureReason || statusValues.some((value) => /failed|fail|error|cancelled|canceled/.test(value))) status = "failed";
+  else if (statusValues.some((value) => /success|succeeded|done|completed/.test(value)) || queueInfo.status === 3) status = "success";
+  else if (
+    statusValues.some((value) => /querying|running|processing|pending|queue|queued|waiting|submitted/.test(value)) ||
+    queueInfo.status === 1 ||
+    queueInfo.status === 2
+  ) {
+    status = "generating";
+  }
+  return {
+    status,
+    evidence: {
+      confirmed: Boolean(historyRecordId || officialTaskId || queueInfo.status !== undefined),
+      historyRecordId: historyRecordId === undefined ? undefined : String(historyRecordId),
+      officialTaskId: officialTaskId === undefined ? undefined : String(officialTaskId),
+      providerAccountId: providerAccountId === undefined ? undefined : String(providerAccountId),
+    },
+    queueInfo,
+    providerCode: parseDreaminaProviderCode(records.map((record) => JSON.stringify(record)).join("\n")),
+    videoUrl: extractStructuredVideoUrl(records),
+  };
+}
+
 export function parseDreaminaRemoteEvidence(output: string, submitId: string): DreaminaRemoteEvidence {
+  const structured = parseDreaminaTaskOutput(output, submitId).evidence;
+  if (structured.confirmed) return structured;
   const relevant = output.includes(submitId) ? output : "";
-  const providerAccountId =
-    relevant.match(/\buser_id[=:]\s*([A-Za-z0-9_-]+)/i)?.[1] ||
-    relevant.match(/\buid[=:]\s*([A-Za-z0-9_-]+)/i)?.[1];
-  const historyRecordId = relevant.match(/"history_record_id"\s*:\s*"?([A-Za-z0-9_-]+)"?/i)?.[1];
-  const officialTaskId = relevant.match(/"task_id"\s*:\s*"?([A-Za-z0-9_-]+)"?/i)?.[1];
   const acceptedByLog =
     /\[MCP\.Generate\][^\r\n]*ret=0/i.test(relevant) &&
     /\[SubmitTask\][^\r\n]*submit generation task finished/i.test(relevant);
   return {
-    confirmed: Boolean((historyRecordId && officialTaskId) || acceptedByLog),
-    historyRecordId,
-    officialTaskId,
-    providerAccountId,
+    ...structured,
+    confirmed: acceptedByLog,
   };
 }
 
@@ -766,7 +942,7 @@ function extractFailureReason(output: string) {
   return normalizeError(line.slice(0, 1000));
 }
 
-function buildVideoArgs(config: VideoConfig, model: ToonflowModel) {
+export function buildVideoArgs(config: VideoConfig, model: ToonflowModel) {
   const { command, modelVersion } = parseModelName(model.modelName);
   const refs = writeReferenceFileItems(config.referenceList || [], "media");
   const args = [...flag("prompt", config.prompt)];
@@ -800,12 +976,13 @@ async function videoSubmit(config: VideoConfig, model: ToonflowModel): Promise<D
   const { command, args } = buildVideoArgs(config, model);
   if (!COMMANDS.includes(command as any) || !command.endsWith("video")) throw new Error(`不支持的即梦视频命令: ${command}`);
   const submit = await runRawWithLogs([command, ...args, "--poll=0"], 180000);
-  const rawSubmit = `${outputText(submit.result)}\n${submit.logs}`.trim();
-  const providerCode = parseDreaminaProviderCode(rawSubmit);
+  const submitOutput = outputText(submit.result);
+  const rawSubmit = `${submitOutput}\n----- cli logs (diagnostic only) -----\n${submit.logs}`.trim();
+  const providerCode = parseDreaminaProviderCode(submitOutput);
   const providerAccountId =
-    rawSubmit.match(/\buser_id[=:]\s*([A-Za-z0-9_-]+)/i)?.[1] ||
-    rawSubmit.match(/\buid[=:]\s*([A-Za-z0-9_-]+)/i)?.[1];
-  if (isDreaminaCapacityLimit(rawSubmit)) {
+    submitOutput.match(/\buser_id[=:]\s*([A-Za-z0-9_-]+)/i)?.[1] ||
+    submitOutput.match(/\buid[=:]\s*([A-Za-z0-9_-]+)/i)?.[1];
+  if (isDreaminaCapacityLimit(submitOutput)) {
     return {
       state: "capacity_wait",
       rawOutput: rawSubmit,
@@ -813,12 +990,12 @@ async function videoSubmit(config: VideoConfig, model: ToonflowModel): Promise<D
       providerCode: providerCode || "1310",
     };
   }
-  const submitId = extractSubmitId(rawSubmit);
+  const submitId = extractSubmitId(submitOutput);
   if (!submitId) {
     const message = submit.code === 0 ? "即梦 CLI 未返回 submit_id，无法进入异步轮询。" : cliFailureMessage(submit, `即梦 CLI 退出码 ${submit.code}`);
     throw new Error(`${message}\n${rawSubmit}`.trim());
   }
-  const evidence = parseDreaminaRemoteEvidence(rawSubmit, submitId);
+  const evidence = parseDreaminaRemoteEvidence(submitOutput, submitId);
   return {
     state: "submitted",
     submitId,
@@ -833,26 +1010,43 @@ async function videoSubmit(config: VideoConfig, model: ToonflowModel): Promise<D
 
 async function queryVideoTask(submitId: string): Promise<DreaminaPollResult> {
   const query = await runRawWithLogs(["query_result", `--submit_id=${submitId}`], 90000);
-  let rawOutput = `${outputText(query.result)}\n${query.logs}`.trim();
-  let evidence = parseDreaminaRemoteEvidence(rawOutput, submitId);
-  let status = normalizeTaskOutputStatus(rawOutput);
+  const queryOutput = outputText(query.result);
+  const queryTask = parseDreaminaTaskOutput(queryOutput, submitId);
+  let rawOutput = `${queryOutput}\n----- query_result cli logs (diagnostic only) -----\n${query.logs}`.trim();
+  let listOutput = "";
+  let listTask: DreaminaTaskOutput | undefined;
 
-  if (status === "unknown" || !evidence.confirmed) {
+  if (queryTask.status !== "success" && queryTask.status !== "failed") {
     const list = await runRawWithLogs(["list_task", `--submit_id=${submitId}`], 60000);
-    rawOutput = `${rawOutput}\n${outputText(list.result)}\n${list.logs}`.trim();
-    evidence = parseDreaminaRemoteEvidence(rawOutput, submitId);
-    status = normalizeTaskOutputStatus(rawOutput);
-    if (status === "unknown" && evidence.confirmed) status = "generating";
+    listOutput = outputText(list.result);
+    listTask = parseDreaminaTaskOutput(listOutput, submitId);
+    rawOutput =
+      `${rawOutput}\n----- list_task stdout/stderr -----\n${listOutput}\n----- list_task cli logs (diagnostic only) -----\n${list.logs}`.trim();
   }
-  const queueInfo = parseDreaminaQueueInfo(rawOutput);
-  const providerCode = parseDreaminaProviderCode(rawOutput);
-  if (queueInfo.status === 3 && extractUrl(rawOutput, "video")) status = "success";
+  const evidence: DreaminaRemoteEvidence = {
+    confirmed: queryTask.evidence.confirmed || Boolean(listTask?.evidence.confirmed),
+    officialTaskId: queryTask.evidence.officialTaskId || listTask?.evidence.officialTaskId,
+    historyRecordId: queryTask.evidence.historyRecordId || listTask?.evidence.historyRecordId,
+    providerAccountId: queryTask.evidence.providerAccountId || listTask?.evidence.providerAccountId,
+  };
+  const queueInfo =
+    listTask?.queueInfo.status !== undefined || listTask?.queueInfo.index !== undefined
+      ? listTask.queueInfo
+      : queryTask.queueInfo;
+  const providerCode = queryTask.providerCode || listTask?.providerCode;
+  const status =
+    queryTask.status === "failed" || listTask?.status === "failed"
+      ? "failed"
+      : queryTask.status === "success" || listTask?.status === "success"
+        ? "success"
+        : "generating";
+  const semanticOutput = `${queryOutput}\n${listOutput}`.trim();
 
   if (status === "failed") {
     return {
       state: "failed",
       rawOutput,
-      errorReason: extractFailureReason(rawOutput),
+      errorReason: extractFailureReason(semanticOutput),
       providerAccountId: evidence.providerAccountId,
       providerCode,
       evidence,
@@ -873,7 +1067,8 @@ async function queryVideoTask(submitId: string): Promise<DreaminaPollResult> {
 
   const downloadDir = tempDir("downloads", `${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const download = await queryResult(submitId, downloadDir, 120);
-  rawOutput = `${rawOutput}\n${outputText(download)}`.trim();
+  const downloadOutput = outputText(download);
+  rawOutput = `${rawOutput}\n----- query_result download stdout/stderr -----\n${downloadOutput}`.trim();
   const file = findNewestFile(downloadDir, "video");
   if (file) {
     return {
@@ -887,7 +1082,7 @@ async function queryVideoTask(submitId: string): Promise<DreaminaPollResult> {
       queueInfo,
     };
   }
-  const url = extractUrl(rawOutput, "video");
+  const url = parseDreaminaTaskOutput(downloadOutput, submitId).videoUrl || queryTask.videoUrl;
   if (url) {
     return {
       state: "success",
@@ -933,21 +1128,21 @@ function getQueueLimit(command: string, modelName: string) {
 function defaultVideoQueueConfig(maxConcurrent = 1): NormalizedQueueConfig {
   return {
     maxConcurrent,
-    pollInitialDelaySec: 60,
-    pollMinIntervalSec: 120,
-    pollMaxIntervalSec: 600,
+    pollInitialDelaySec: 20,
+    pollMinIntervalSec: 20,
+    pollMaxIntervalSec: 60,
     maxWorkHours: 6,
     maxWaitHours: 6,
   };
 }
 
-function normalizeQueueConfig(config?: QueueConfig, fallbackMaxConcurrent = 1): NormalizedQueueConfig {
+export function normalizeQueueConfig(config?: QueueConfig, fallbackMaxConcurrent = 1): NormalizedQueueConfig {
   const maxWorkHours = Math.max(1, Math.min(72, Number(config?.maxWorkHours ?? config?.maxWaitHours ?? 6)));
   return {
     maxConcurrent: Math.max(1, Math.min(20, Number(config?.maxConcurrent || fallbackMaxConcurrent))),
-    pollInitialDelaySec: Math.max(0, Math.min(3600, Number(config?.pollInitialDelaySec ?? 60))),
-    pollMinIntervalSec: Math.max(15, Math.min(3600, Number(config?.pollMinIntervalSec ?? 120))),
-    pollMaxIntervalSec: Math.max(30, Math.min(7200, Number(config?.pollMaxIntervalSec ?? 600))),
+    pollInitialDelaySec: Math.max(0, Math.min(3600, Number(config?.pollInitialDelaySec ?? 20))),
+    pollMinIntervalSec: Math.max(15, Math.min(3600, Number(config?.pollMinIntervalSec ?? 20))),
+    pollMaxIntervalSec: Math.max(30, Math.min(7200, Number(config?.pollMaxIntervalSec ?? 60))),
     maxWorkHours,
     maxWaitHours: maxWorkHours,
   };
@@ -1171,6 +1366,18 @@ function extractResolutions(help: string, video: boolean) {
   return values.size ? [...values] : video ? ["720p"] : ["1K", "2K"];
 }
 
+export function getDreaminaVideoResolutions(help: string, modelName: string) {
+  const normalized = normalizeDreaminaModelVersion(modelName.includes(":") ? modelName : `video:${modelName}`);
+  if (normalized === "seedance2.0mini") return ["720p"];
+  const resolutions = new Set(extractResolutions(help, true));
+  if (normalized === "seedance2.0_vip") {
+    resolutions.add("720p");
+    resolutions.add("1080p");
+    resolutions.add("4K");
+  }
+  return [...resolutions];
+}
+
 async function discoverModels() {
   ensureInstalled();
   const models: ToonflowModel[] = [];
@@ -1212,7 +1419,7 @@ async function discoverModels() {
           mode,
           associationSkills: describeMeta(command, modelMeta, true),
           audio: command === "multimodal2video" ? "optional" : false,
-          durationResolutionMap: [{ duration: extractDurations(help), resolution: extractResolutions(help, true) }],
+          durationResolutionMap: [{ duration: extractDurations(help), resolution: getDreaminaVideoResolutions(help, modelValue) }],
           queueConfig: defaultVideoQueueConfig(modelMeta.concurrency || 1),
         });
       }
