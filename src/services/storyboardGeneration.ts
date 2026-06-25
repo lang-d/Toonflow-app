@@ -10,7 +10,7 @@ import {
   storyboardTableRowV2Schema,
   validateStoryboardTableRows,
 } from "@/services/storyboardTableContract";
-import { syncVideoTracksForStoryboards } from "@/services/storyboardGroupPlanner";
+import { fallbackGroupKey, syncVideoTracksForStoryboards } from "@/services/storyboardGroupPlanner";
 import { getProjectDefaultVideoPolicy, VideoDurationPolicy } from "@/services/videoModelPolicy";
 
 export const STORYBOARD_BATCH_SIZE = 10;
@@ -50,6 +50,11 @@ export type CommitStoryboardGenerationResult =
 
 const activeStoryboardCommits = new Map<string, Promise<void>>();
 
+type StoredStoryboardGroupPlan = StoryboardGroupPlanV2 & {
+  originalGroupKey?: string;
+  groupKeyAliases?: string[];
+};
+
 function storyboardCommitScopeKey(projectId: unknown, scriptId: unknown) {
   return `${Number(projectId)}:${Number(scriptId)}`;
 }
@@ -64,6 +69,65 @@ function rowHash(value: string) {
 
 function generationIssue(field: string, message: string): StoryboardTableIssue {
   return { index: -1, field, message };
+}
+
+function safeText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function uniqueTexts(values: unknown[]) {
+  return [...new Set(values.map(safeText).filter(Boolean))];
+}
+
+function normalizeStoryboardGroupPlans(groups: StoredStoryboardGroupPlan[]): StoredStoryboardGroupPlan[] {
+  return groups.map((group, index) => {
+    const parsed = storyboardGroupPlanV2Schema.parse(group);
+    const groupKey = fallbackGroupKey(index);
+    const originalGroupKey = safeText(group.originalGroupKey) || parsed.groupKey;
+    const groupName = parsed.groupName || (originalGroupKey !== groupKey ? originalGroupKey : groupKey);
+    return {
+      ...parsed,
+      groupKey,
+      groupName,
+      originalGroupKey,
+      groupKeyAliases: uniqueTexts([groupKey, parsed.groupKey, originalGroupKey, groupName, ...(group.groupKeyAliases || [])]),
+    };
+  });
+}
+
+function parseStoredStoryboardGroupPlans(value: unknown) {
+  const raw = typeof value === "string" && value.trim() ? JSON.parse(value) : [];
+  const groups = Array.isArray(raw) ? raw : [];
+  return normalizeStoryboardGroupPlans(groups as StoredStoryboardGroupPlan[]);
+}
+
+function groupPlanJson(groups: StoredStoryboardGroupPlan[]) {
+  return JSON.stringify(groups);
+}
+
+function buildGroupAliasMap(groups: StoredStoryboardGroupPlan[]) {
+  const map = new Map<string, StoredStoryboardGroupPlan>();
+  groups.forEach((group) => {
+    uniqueTexts([group.groupKey, group.groupName, group.originalGroupKey, ...(group.groupKeyAliases || [])]).forEach((alias) => {
+      if (!map.has(alias)) map.set(alias, group);
+    });
+  });
+  return map;
+}
+
+function normalizeRowsWithStoredGroupPlan(rows: StoryboardTableRowV2[], groups: StoredStoryboardGroupPlan[]) {
+  const groupMap = buildGroupAliasMap(groups);
+  return rows.map((row) => {
+    const group = groupMap.get(row.groupKey);
+    return group
+      ? {
+          ...row,
+          groupKey: group.groupKey,
+          groupName: group.groupName,
+          groupIntent: group.groupIntent,
+        }
+      : row;
+  });
 }
 
 function serializeGenerationError(error: unknown): StoryboardGenerationFailure {
@@ -231,7 +295,7 @@ export async function beginStoryboardGeneration(input: BeginStoryboardGeneration
   if (!Number.isInteger(expectedRowCount) || expectedRowCount <= 0) {
     throw new Error("expectedRowCount must be a positive integer");
   }
-  const groups = input.groups.map((group) => storyboardGroupPlanV2Schema.parse(group));
+  const groups = normalizeStoryboardGroupPlans(input.groups);
   const indexes = groups.flatMap((group) => group.storyboardIndexes);
   const uniqueIndexes = new Set(indexes);
   if (indexes.length !== expectedRowCount || uniqueIndexes.size !== expectedRowCount) {
@@ -269,7 +333,7 @@ export async function beginStoryboardGeneration(input: BeginStoryboardGeneration
       projectId: input.projectId,
       scriptId: input.scriptId,
       expectedRowCount,
-      groupPlanJson: JSON.stringify(groups),
+      groupPlanJson: groupPlanJson(groups),
       state: "writing",
       revision: null,
       errorJson: null,
@@ -290,7 +354,12 @@ export async function appendStoryboardRows(input: AppendStoryboardRowsInput, kne
     throw new Error(`storyboard generation is ${generation.state}`);
   }
 
-  const rows = input.rows.map((row) => storyboardTableRowV2Schema.parse(row));
+  const groups = parseStoredStoryboardGroupPlans(generation.groupPlanJson);
+  const normalizedGroupPlanJson = groupPlanJson(groups);
+  const rows = normalizeRowsWithStoredGroupPlan(
+    input.rows.map((row) => storyboardTableRowV2Schema.parse(row)),
+    groups,
+  );
   const issues = validateStoryboardTableRows(rows);
   const serialized = rows.map((row) => JSON.stringify(row));
   serialized.forEach((value, index) => {
@@ -324,6 +393,7 @@ export async function appendStoryboardRows(input: AppendStoryboardRowsInput, kne
     await knex("o_storyboardGeneration").where({ generationId: input.generationId }).update({
       state: "invalid",
       errorJson: validationIssuesJson(issues),
+      groupPlanJson: normalizedGroupPlanJson,
       updatedAt: Date.now(),
     });
     return {
@@ -346,7 +416,17 @@ export async function appendStoryboardRows(input: AppendStoryboardRowsInput, kne
   serialized.forEach((value, index) => {
     const rowIndex = rows[index].index;
     const existing = existingMap.get(rowIndex);
-    if (existing && existing.rowHash !== rowHash(value)) {
+    let existingHash = existing?.rowHash;
+    if (existing?.rowJson) {
+      try {
+        const existingRow = storyboardTableRowV2Schema.parse(JSON.parse(existing.rowJson));
+        const [normalizedExistingRow] = normalizeRowsWithStoredGroupPlan([existingRow], groups);
+        existingHash = rowHash(JSON.stringify(normalizedExistingRow));
+      } catch {
+        existingHash = existing.rowHash;
+      }
+    }
+    if (existing && existingHash !== rowHash(value)) {
       conflicts.push({ index, field: "index", message: `row ${rowIndex} was already written with different content` });
     }
   });
@@ -378,6 +458,7 @@ export async function appendStoryboardRows(input: AppendStoryboardRowsInput, kne
     await trx("o_storyboardGeneration").where({ generationId: input.generationId }).update({
       state: "writing",
       errorJson: null,
+      groupPlanJson: normalizedGroupPlanJson,
       updatedAt: Date.now(),
     });
   });
@@ -467,20 +548,6 @@ function validateGroups(
     }
   }
   return issues;
-}
-
-function normalizeRowsWithGroupPlan(rows: StoryboardTableRowV2[], groups: StoryboardGroupPlanV2[]) {
-  const groupMap = new Map(groups.map((group) => [group.groupKey, group]));
-  return rows.map((row) => {
-    const group = groupMap.get(row.groupKey);
-    return group
-      ? {
-          ...row,
-          groupName: group.groupName,
-          groupIntent: group.groupIntent,
-        }
-      : row;
-  });
 }
 
 export async function commitStoryboardGeneration(
@@ -591,9 +658,15 @@ export async function commitStoryboardGeneration(
         }
       }
 
-      const groups = JSON.parse(generation.groupPlanJson || "[]").map((group: unknown) =>
-        storyboardGroupPlanV2Schema.parse(group),
-      );
+      const groups = parseStoredStoryboardGroupPlans(generation.groupPlanJson);
+      rows = normalizeRowsWithStoredGroupPlan(rows, groups);
+      const normalizedGroupPlanJson = groupPlanJson(groups);
+      if (normalizedGroupPlanJson !== generation.groupPlanJson) {
+        await knex("o_storyboardGeneration").where({ generationId }).update({
+          groupPlanJson: normalizedGroupPlanJson,
+          updatedAt: Date.now(),
+        });
+      }
       const durationPolicy = await getProjectDefaultVideoPolicy(Number(generation.projectId), { knex });
       const issues = [
         ...parseIssues,
@@ -618,7 +691,6 @@ export async function commitStoryboardGeneration(
         });
         return { status: "invalid" as const, issues };
       }
-      rows = normalizeRowsWithGroupPlan(rows, groups);
 
       const revisionRow = await knex("o_storyboard")
         .where({ projectId: generation.projectId, scriptId: generation.scriptId })

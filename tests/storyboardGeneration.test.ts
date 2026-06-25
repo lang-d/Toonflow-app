@@ -352,6 +352,57 @@ test("commit accepts brief row group intent and normalizes formal rows from the 
   assert.ok(saved.every((item: any) => JSON.parse(item.tableRowJson).groupIntent === groupIntent("G01")));
 });
 
+test("chinese storyboard group keys are normalized to stable ASCII keys", async () => {
+  const started = await service.beginStoryboardGeneration({
+    projectId: 1,
+    scriptId: 70,
+    expectedRowCount: 4,
+    groups: [
+      { groupKey: "围剿", groupName: "围剿", groupIntent: "Close the box together", storyboardIndexes: [0, 1] },
+      { groupKey: "反击", groupName: "反击", groupIntent: "The receipt fights back", storyboardIndexes: [2, 3] },
+    ],
+  });
+  const append = await service.appendStoryboardRows({
+    generationId: started.generationId,
+    startIndex: 0,
+    rows: [
+      { ...row(0, "围剿"), groupName: "围剿", groupIntent: "row intent A" },
+      { ...row(1, "围剿"), groupName: "围剿", groupIntent: "row intent A" },
+      { ...row(2, "反击"), groupName: "反击", groupIntent: "row intent B" },
+      { ...row(3, "反击"), groupName: "反击", groupIntent: "row intent B" },
+    ],
+  });
+  assert.equal(append.accepted, 4);
+
+  const draftRows = await db("o_storyboardGenerationRow").where({ generationId: started.generationId }).orderBy("rowIndex", "asc");
+  assert.deepEqual(
+    draftRows.map((item: any) => JSON.parse(item.rowJson).groupKey),
+    ["G01", "G01", "G02", "G02"],
+  );
+
+  const result = await service.commitStoryboardGeneration(started.generationId);
+  assert.equal(result.status, "committed");
+  const saved = await db("o_storyboard").where({ projectId: 1, scriptId: 70 }).orderBy("index", "asc");
+  assert.deepEqual(
+    saved.map((item: any) => item.groupKey),
+    ["G01", "G01", "G02", "G02"],
+  );
+  assert.deepEqual(
+    saved.map((item: any) => item.groupName),
+    ["围剿", "围剿", "反击", "反击"],
+  );
+  assert.ok(saved.every((item: any) => JSON.parse(item.tableRowJson).groupKey === item.groupKey));
+
+  const tracks = await db("o_videoTrack").where({ projectId: 1, scriptId: 70, archived: 0 }).orderBy("groupKey", "asc");
+  assert.deepEqual(
+    tracks.map((item: any) => ({ groupKey: item.groupKey, groupName: item.groupName })),
+    [
+      { groupKey: "G01", groupName: "围剿" },
+      { groupKey: "G02", groupName: "反击" },
+    ],
+  );
+});
+
 test("conflicting retry and incomplete commit never replace formal rows", async () => {
   const before = await countRows("o_storyboard", { projectId: 1, scriptId: 10 });
   const started = await service.beginStoryboardGeneration({

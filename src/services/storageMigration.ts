@@ -22,6 +22,7 @@ import { updateUnifiedTask } from "@/services/taskCoordinator";
 const Database = require("better-sqlite3") as any;
 
 const ACTIVE_PROVIDER_STATUSES = ["submitting", "processing", "confirming"];
+const ACTIVE_MIGRATION_STATUSES = ["pending", "queued", "submitting", "processing", "confirming"];
 
 export function storageMigrationLockPath() {
   return path.join(appDataRoot(), "temp", "storage-migration.lock");
@@ -126,6 +127,48 @@ export async function activeMigrationBlockers(database: any = db) {
   return { unified, video, count: unified.length + video.length };
 }
 
+export async function activeStorageMigrationTasks(database: any = db) {
+  return database("o_tasks")
+    .where("businessType", "storage-migration")
+    .whereIn("status", ACTIVE_MIGRATION_STATUSES)
+    .select("taskId", "status", "phase", "progress");
+}
+
+export async function cleanupOrphanStorageMigrationLock(database: any = db) {
+  const lock = storageMigrationLockPath();
+  if (!fss.existsSync(lock)) return false;
+  const activeTasks = await activeStorageMigrationTasks(database);
+  if (activeTasks.length) return false;
+  await fs.rm(lock, { force: true }).catch(() => {});
+  return true;
+}
+
+export function isDiskRootPath(targetPath: string) {
+  const target = path.resolve(targetPath);
+  return target === path.parse(target).root;
+}
+
+export function workspaceParentDirectoryToCreate(targetPath: string) {
+  const target = path.resolve(targetPath);
+  const parent = path.dirname(target);
+  return isDiskRootPath(parent) ? null : parent;
+}
+
+export function normalizeWorkspaceTargetFsError(error: any) {
+  if (error?.code === "EPERM" || error?.code === "EACCES") {
+    return new Error("当前目录没有写入权限，请选择有权限的普通文件夹");
+  }
+  return error;
+}
+
+async function withWorkspaceTargetFsError<T>(operation: () => Promise<T>) {
+  try {
+    return await operation();
+  } catch (error: any) {
+    throw normalizeWorkspaceTargetFsError(error);
+  }
+}
+
 export async function validateWorkspaceTarget(targetPath: string) {
   const target = path.resolve(targetPath);
   const current = path.resolve(workspaceRoot());
@@ -136,7 +179,7 @@ export async function validateWorkspaceTarget(targetPath: string) {
   const isInside = (child: string, parent: string) =>
     child === parent || child.startsWith(`${parent}${path.sep}`);
   if (!path.isAbsolute(targetPath)) throw new Error("Workspace path must be absolute");
-  if (target === path.parse(target).root) throw new Error("A disk root cannot be used as the workspace");
+  if (isDiskRootPath(target)) throw new Error("不能把磁盘根目录作为作品库，请选择一个子文件夹");
   if (forbiddenRoots.some((root) => isInside(lower, root.toLowerCase()))) {
     throw new Error("The workspace cannot be inside application data or the installation directory");
   }
@@ -144,22 +187,55 @@ export async function validateWorkspaceTarget(targetPath: string) {
     throw new Error("The target cannot be the current workspace or its parent/child directory");
   }
   const parent = path.dirname(target);
-  await fs.mkdir(parent, { recursive: true });
+  const parentToCreate = workspaceParentDirectoryToCreate(target);
+  if (parentToCreate) await withWorkspaceTargetFsError(() => fs.mkdir(parentToCreate, { recursive: true }));
   if (fss.existsSync(target)) {
-    const stat = await fs.lstat(target);
+    const stat = await withWorkspaceTargetFsError(() => fs.lstat(target));
     if (stat.isSymbolicLink()) throw new Error("Symbolic links cannot be used as a workspace");
     if (!stat.isDirectory()) throw new Error("The target must be a directory");
-    if ((await fs.readdir(target)).length) throw new Error("The target directory must be empty");
+    if ((await withWorkspaceTargetFsError(() => fs.readdir(target))).length) {
+      throw new Error("The target directory must be empty");
+    }
+  } else if (!fss.existsSync(parent)) {
+    throw new Error("The parent directory does not exist");
   }
   const probeRoot = fss.existsSync(target) ? target : parent;
   const probe = path.join(probeRoot, `.toonflow-write-${process.pid}-${Date.now()}`);
-  await fs.writeFile(probe, "ok", "utf8");
-  await fs.rm(probe, { force: true });
+  await withWorkspaceTargetFsError(() => fs.writeFile(probe, "ok", "utf8"));
+  await withWorkspaceTargetFsError(() => fs.rm(probe, { force: true }));
   const sourceSize = await directorySize(storageMode() === "workspace" ? workspaceRoot() : legacyDataRoot());
-  const statfs = await fs.statfs(probeRoot);
+  const statfs = await withWorkspaceTargetFsError(() => fs.statfs(probeRoot));
   const freeBytes = Number(statfs.bavail) * Number(statfs.bsize);
   if (freeBytes < sourceSize.bytes * 1.1) throw new Error("Insufficient free disk space");
   return { targetPath: target, freeBytes, requiredBytes: Math.ceil(sourceSize.bytes * 1.1) };
+}
+
+export async function createWorkspace(input: { targetPath: string }) {
+  const validation = await validateWorkspaceTarget(input.targetPath);
+  const target = validation.targetPath;
+  await withWorkspaceTargetFsError(() => fs.mkdir(target, { recursive: true }));
+  await withWorkspaceTargetFsError(() =>
+    fs.writeFile(
+      path.join(target, "workspace.json"),
+      JSON.stringify({ version: 1, createdAt: Date.now(), projectCount: 0 }, null, 2),
+      "utf8",
+    ),
+  );
+  writeRuntimeStorageConfig({
+    version: 1,
+    mode: "workspace",
+    workspacePath: target,
+    selectionRequired: false,
+    updatedAt: Date.now(),
+  });
+  return { workspacePath: target, restartRequired: true };
+}
+
+export function assertCanStartStorageMigration(input: { sourcePath?: string }) {
+  const runtime = readRuntimeStorageConfig();
+  if (runtime?.selectionRequired && !input.sourcePath) {
+    throw new Error("首次创建空作品库请调用 createWorkspace；迁移旧数据必须明确传入 sourcePath");
+  }
 }
 
 function stripDatabase(databasePath: string, keepProfile: boolean) {
@@ -341,6 +417,7 @@ function randomSuffix() {
 }
 
 export async function getStorageStatus() {
+  await cleanupOrphanStorageMigrationLock();
   const root = storageMode() === "workspace" ? workspaceRoot() : legacyDataRoot();
   const size = await directorySize(root);
   const projects = Number((await db("o_project").count<{ count: number }[]>({ count: "*" }).first())?.count || 0);

@@ -2,7 +2,11 @@ import express from "express";
 import { z } from "zod";
 import { validateFields } from "@/middleware/middleware";
 import { success, error } from "@/lib/responseFormat";
-import { activeMigrationBlockers, validateWorkspaceTarget } from "@/services/storageMigration";
+import {
+  activeMigrationBlockers,
+  assertCanStartStorageMigration,
+  validateWorkspaceTarget,
+} from "@/services/storageMigration";
 import { createUnifiedTask } from "@/services/taskCoordinator";
 
 const router = express.Router();
@@ -15,6 +19,7 @@ export default router.post(
   }),
   async (req, res) => {
     try {
+      assertCanStartStorageMigration({ sourcePath: req.body.sourcePath });
       const target = await validateWorkspaceTarget(req.body.targetPath);
       const blockers = await activeMigrationBlockers();
       if (blockers.count) {

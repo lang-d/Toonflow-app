@@ -1,25 +1,20 @@
-# Toonflow 作品库与工程迁移前端对接文档
+# ToonFlow 作品库创建与旧数据迁移前端对接
 
-## 1. 基本口径
+## 背景
 
-- 应用数据、用户配置和作品库由后端分开管理。
-- 前端不得自行拼接数据库路径、项目媒体磁盘路径或修改 `runtime.json`。
-- 目录选择必须调用 Electron 安全协议。
-- 作品库迁移和项目导入均为统一后台任务，使用现有 `task:status` 与 `/api/task/status/snapshot`。
-- 迁移完成后必须提示用户重启，不要在当前进程内继续写新作品库。
+作品库选择现在拆成两个明确动作：
 
-## 2. 目录选择
+- 创建空作品库：新安装或用户只想选择一个空目录作为作品库。
+- 迁移旧数据：用户明确选择把旧 ToonFlow 数据迁移到新的作品库。
 
-选择作品库：
+前端不要再把“创建空作品库”提交到 `startMigration`。创建空作品库不进入任务中心、不展示“备份数据”、不进入维护页；成功后只提示重启。
+
+## 目录选择
+
+选择作品库目录：
 
 ```text
 toonflow://selectDirectory?purpose=workspace
-```
-
-选择待导入项目目录：
-
-```text
-toonflow://selectDirectory?purpose=projectImport
 ```
 
 响应：
@@ -32,17 +27,9 @@ toonflow://selectDirectory?purpose=projectImport
 }
 ```
 
-用户取消时 `ok=false`，不显示错误提示。
+用户取消时 `ok=false`，前端不展示错误。
 
-打开后端返回的作品库或项目目录：
-
-```text
-toonflow://openDirectory?path=<encodeURIComponent(absolutePath)>
-```
-
-只允许打开 Toonflow 当前作品库或应用数据目录内的文件夹。
-
-## 3. 作品库状态
+## 状态接口
 
 ```text
 POST /api/setting/storage/status
@@ -67,18 +54,93 @@ POST /api/setting/storage/status
 }
 ```
 
-- `selectionRequired=true`：全新安装，应展示首次作品库选择。
-- `mode=legacy`：当前仍在旧混合数据目录运行，可提示迁移。
-- `maintenance=true`：禁用所有生成、保存和删除操作。
-- `restartRequired=true`：迁移已完成，展示重启按钮。
+字段说明：
 
-## 4. 扫描旧数据
+- `selectionRequired=true`：首次安装，需要展示作品库选择向导。
+- `maintenance=true`：旧数据迁移正在进行，前端应禁止生成、保存、删除和编辑。
+- `restartRequired=true`：作品库创建或迁移完成后，需要提示用户重启。
+
+## 校验目标目录
+
+创建空作品库和迁移旧数据都先调用：
+
+```text
+POST /api/setting/storage/validateTarget
+```
+
+请求：
+
+```ts
+{ targetPath: string }
+```
+
+成功响应：
+
+```ts
+{
+  targetPath: string;
+  freeBytes: number;
+  requiredBytes: number;
+}
+```
+
+目标目录必须是新目录或空目录。后端会校验写权限、剩余空间、符号链接和路径逃逸。错误时直接展示后端 `message`。
+
+## 创建空作品库
+
+适用场景：
+
+- 新安装没有健康旧数据。
+- 用户点击“创建作品库”或“创建空作品库”。
+- 用户选择 `D:\素材` 这类空目录作为新作品库。
+
+流程：
+
+```text
+toonflow://selectDirectory?purpose=workspace
+POST /api/setting/storage/validateTarget
+POST /api/setting/storage/createWorkspace
+```
+
+请求：
+
+```ts
+POST /api/setting/storage/createWorkspace
+
+{
+  targetPath: string;
+}
+```
+
+成功响应：
+
+```ts
+{
+  workspacePath: string;
+  restartRequired: true;
+}
+```
+
+前端行为：
+
+- 不创建任务中心任务。
+- 不轮询迁移任务。
+- 不显示“备份数据”。
+- 不进入“作品库正在迁移或维护”页面。
+- 成功后提示“作品库已创建，需要重启 ToonFlow 后生效”。
+- 用户确认后调用：
+
+```text
+toonflow://appRestart
+```
+
+## 扫描旧数据
 
 ```text
 POST /api/setting/storage/scanLegacy
 ```
 
-响应 `data` 为候选数组：
+响应 `data`：
 
 ```ts
 Array<{
@@ -94,51 +156,38 @@ Array<{
 }>
 ```
 
-只允许选择 `healthy=true` 的候选进行迁移。旧目录在迁移成功后仍会保留。
+只有 `healthy=true` 的候选项才能用于迁移。旧目录在迁移成功后仍会保留。
 
-## 5. 校验目标目录
+## 迁移旧数据
+
+适用场景：
+
+- `scanLegacy` 找到健康旧数据。
+- 用户明确点击“迁移旧数据”。
+
+流程：
 
 ```text
+POST /api/setting/storage/scanLegacy
+toonflow://selectDirectory?purpose=workspace
 POST /api/setting/storage/validateTarget
-```
-
-请求：
-
-```ts
-{ targetPath: string }
-```
-
-成功：
-
-```ts
-{
-  targetPath: string;
-  freeBytes: number;
-  requiredBytes: number;
-}
-```
-
-目标必须是全新目录或空目录。后端会校验写权限、空间、符号链接和路径逃逸。
-
-## 6. 开始迁移
-
-```text
 POST /api/setting/storage/startMigration
 ```
 
 请求：
 
 ```ts
+POST /api/setting/storage/startMigration
+
 {
   targetPath: string;
-  sourcePath?: string;
+  sourcePath: string;
 }
 ```
 
-- 从扫描结果迁移时传 `sourcePath`。
-- 迁移当前作品库时可省略 `sourcePath`。
+`sourcePath` 必须来自 `scanLegacy` 的健康候选项。首次安装状态下如果不传 `sourcePath`，后端会拒绝启动迁移并提示改用 `createWorkspace`。
 
-成功：
+成功响应：
 
 ```ts
 {
@@ -148,129 +197,37 @@ POST /api/setting/storage/startMigration
 }
 ```
 
-活动供应商任务存在时返回 HTTP `409`。本地 `queued` 任务不属于供应商活动任务，可由用户先取消。
+前端行为：
 
-任务阶段：
+- 显示任务中心进度。
+- 展示维护页。
+- 禁止生成、保存、删除和编辑。
+- 迁移完成后提示重启。
 
-```text
-backup
-split-database
-copy-media
-project-snapshots
-activate
-restart-required
-```
-
-迁移期间 API 对普通写请求返回：
-
-```ts
-{
-  code: 503;
-  data: { maintenance: true };
-  message: "Workspace migration is in progress";
-}
-```
-
-任务完成后调用：
+迁移阶段建议展示：
 
 ```text
-toonflow://appRestart
+backup            备份数据
+split-database    拆分数据库
+copy-media        复制素材
+project-snapshots 整理项目
+activate          启用作品库
+restart-required  等待重启
 ```
 
-## 7. 准备复制单个工程
+## 首次安装推荐交互
 
-```text
-POST /api/project/preparePortableCopy
-```
+1. 调用 `/api/setting/storage/status`。
+2. `selectionRequired=true` 时展示作品库选择向导。
+3. 同时调用 `/api/setting/storage/scanLegacy`。
+4. 没有健康旧数据时，只展示“创建作品库”。
+5. 有健康旧数据时，展示两个动作：“创建空作品库”和“迁移旧数据”。
+6. “创建空作品库”调用 `createWorkspace`。
+7. “迁移旧数据”调用 `startMigration`，且必须传 `sourcePath`。
 
-请求：
+## 错误处理
 
-```ts
-{ projectId: number }
-```
-
-响应：
-
-```ts
-{
-  taskId: string;
-  status: "queued" | "processing";
-  directory: string;
-}
-```
-
-等待任务 `completed` 后再开放“打开目录/复制工程”。项目目录包含：
-
-```text
-manifest.json
-project.toonflow
-media/
-```
-
-不要在快照任务完成前提示用户复制。
-
-## 8. 导入单个工程
-
-1. 调用 `toonflow://selectDirectory?purpose=projectImport`。
-2. 将返回目录提交：
-
-```text
-POST /api/project/importPortableProject
-```
-
-```ts
-{ sourceDirectory: string }
-```
-
-响应：
-
-```ts
-{
-  taskId: string;
-  status: "queued";
-}
-```
-
-完成事件的 `result`：
-
-```ts
-{
-  projectId: number;
-  importedAsCopy: boolean;
-  directory: string;
-  warnings: string[];
-}
-```
-
-项目 ID 冲突时后端自动导入为副本。导入文件中的活动任务会被标记为中断，不会重新提交供应商。
-
-## 9. 首次启动交互
-
-推荐顺序：
-
-1. 获取 `/setting/storage/status`。
-2. `selectionRequired=true` 时展示作品库向导。
-3. 同时调用 `/setting/storage/scanLegacy`。
-4. 有健康旧数据时提供“迁移旧数据”；否则提供“创建空作品库”。
-5. 选择目标目录并调用 `validateTarget`。
-6. 调用 `startMigration`，使用统一任务中心展示进度。
-7. 完成后重启。
-
-设置页应长期提供：
-
-- 当前作品库路径及空间占用。
-- 打开作品库。
-- 迁移作品库。
-- 导入工程。
-- 项目内“准备复制工程”。
-
-## 10. 联调验收
-
-- 首次选择 D/E 盘后，重启仍使用同一路径。
-- 旧版目录能显示项目数、媒体数、大小和健康状态。
-- 有 `submitting/processing/confirming` 任务时迁移按钮被阻止。
-- 迁移进度由任务事件驱动，不新增定时高频轮询。
-- 迁移失败后当前作品库仍可继续使用。
-- 准备复制完成前不可打开复制目录。
-- 导入副本后图片、音频、视频和画布可正常访问。
-- 前端不读取或展示 `profile.sqlite`、`workspace.sqlite`、`project.toonflow` 内容。
+- `validateTarget` 报错时直接展示后端 `message`。
+- `createWorkspace` 成功后只提示重启，不展示任务进度。
+- `startMigration` 返回 `409` 时，提示用户等待当前活动任务完成。
+- `maintenance=true` 只应对应旧数据迁移，不应出现在创建空作品库流程中。

@@ -24,6 +24,7 @@ import {
   type RuntimeStorageConfig,
 } from "../src/services/storagePaths";
 import { initLogger, createLogger } from "../src/logger";
+import { sanitizeRuntimeEnv } from "./runtimeEnv";
 
 const APP_NAME = "ToonFlow";
 const mainLog = createLogger("runtime-main");
@@ -640,19 +641,20 @@ function connectRuntimeChannel(role: "worker" | "agent") {
 
 function spawnRuntime(role: RuntimeRole, restartCount = 0): Promise<{ pid: number; port?: number }> {
   const { file, execArgv, env } = runtimeEntry(role);
-  const childEnv: Record<string, string | undefined> = {
+  const rawChildEnv: Record<string, string | undefined> = {
     ...process.env,
     PORT: String(RUNTIME_API_PORT),
     TOONFLOW_UTILITY: "1",
-      TOONFLOW_RUNTIME_ROLE: role,
-      TOONFLOW_APP_DATA_DIR: process.env.TOONFLOW_APP_DATA_DIR,
-      TOONFLOW_WORKSPACE_DIR: process.env.TOONFLOW_WORKSPACE_DIR,
-      TOONFLOW_STORAGE_MODE: process.env.TOONFLOW_STORAGE_MODE,
-      TOONFLOW_LEGACY_DATA_DIR: process.env.TOONFLOW_LEGACY_DATA_DIR,
-      TOONFLOW_DATA_DIR: process.env.TOONFLOW_DATA_DIR,
+    TOONFLOW_RUNTIME_ROLE: role,
+    TOONFLOW_APP_DATA_DIR: process.env.TOONFLOW_APP_DATA_DIR,
+    TOONFLOW_WORKSPACE_DIR: process.env.TOONFLOW_WORKSPACE_DIR,
+    TOONFLOW_STORAGE_MODE: process.env.TOONFLOW_STORAGE_MODE,
+    TOONFLOW_LEGACY_DATA_DIR: process.env.TOONFLOW_LEGACY_DATA_DIR,
+    TOONFLOW_DATA_DIR: process.env.TOONFLOW_DATA_DIR,
     NODE_ENV: app.isPackaged ? "prod" : "dev",
     ...env,
   };
+  const childEnv = sanitizeRuntimeEnv(rawChildEnv);
   delete childEnv.TOONFLOW_API_PORT;
   const child = utilityProcess.fork(file, [], {
     cwd: process.cwd(),

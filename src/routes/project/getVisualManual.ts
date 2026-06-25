@@ -1,12 +1,10 @@
 import express from "express";
-import u from "@/utils";
 import { success } from "@/lib/responseFormat";
-import fs from "fs";
-import path from "path";
+import { listProjectManuals, type ManualDataField } from "@/services/projectManuals";
+
 const router = express.Router();
 
-// 字段映射表
-const DATA_MAP: { label: string; value: string; subDir?: string }[] = [
+const DATA_MAP: ManualDataField[] = [
   { label: "README", value: "README" },
   { label: "前缀", value: "prefix" },
   { label: "角色", value: "art_character", subDir: "art_prompt" },
@@ -21,72 +19,9 @@ const DATA_MAP: { label: string; value: string; subDir?: string }[] = [
   { label: "技法-分镜表设计", value: "director_storyboard_table_style", subDir: "driector_skills" },
 ];
 
-// 读取 md 文件内容，文件不存在时返回空字符串
-function readMd(filePath: string): string {
+export default router.post("/", async (_req, res) => {
   try {
-    return fs.readFileSync(filePath, "utf-8");
-  } catch {
-    return "";
-  }
-}
-
-// 获取 images 文件夹下所有图片文件路径列表
-async function readAllImages(imagesDir: string) {
-  try {
-    const ossPath = u.getPath(path.join("skills", "art_skills", imagesDir, "images"));
-    const files = fs.readdirSync(ossPath);
-    const images = files.filter((f) => /\.(png|jpe?g|gif|webp|svg)$/i.test(f)).map((f) => path.join("art_skills", imagesDir, "images", f));
-    if (images.length) {
-      return Promise.all(images.map(async (i) => await u.oss.getFileUrl(i, "skills")));
-    } else {
-      return [];
-    }
-  } catch {
-    return [];
-  }
-}
-
-// 获取视觉手册
-export default router.post("/", async (req, res) => {
-  try {
-    const artPromptsDir = u.getPath(["skills", "art_skills"]);
-
-    // 读取所有风格文件夹
-    const styleDirs = fs
-      .readdirSync(artPromptsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory())
-      .map((d) => d.name);
-
-    const result = await Promise.all(
-      styleDirs.map(async (styleName) => {
-        const styleDir = path.join(artPromptsDir, styleName);
-        const images = await readAllImages(styleName);
-        const readmePath = path.join(styleDir, "README.md");
-        const readmeContent = fs.readFileSync(readmePath, "utf-8");
-        const firstLine = readmeContent.split("\n")[0].replace(/--/g, "");
-        const data = DATA_MAP.map(({ label, value, subDir }) => {
-          let mdPath: string;
-          if (subDir) {
-            mdPath = path.join(styleDir, subDir, `${value}.md`);
-          } else {
-            mdPath = path.join(styleDir, `${value}.md`);
-          }
-          return {
-            label,
-            value,
-            data: readMd(mdPath),
-          };
-        });
-
-        return {
-          name: firstLine,
-          image: images,
-          stylePath: styleName,
-          data,
-        };
-      }),
-    );
-    res.status(200).send(success(result));
+    res.status(200).send(success(await listProjectManuals("visual", DATA_MAP)));
   } catch (err) {
     res.status(500).send({ error: String(err) });
   }

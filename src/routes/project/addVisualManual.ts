@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
+import { manualExistsInAnyRoot } from "@/services/projectManuals";
 const router = express.Router();
 
 // 新增视觉手册
@@ -37,7 +38,7 @@ export default router.post(
         return;
       }
       const mainPath = u.getPath(["skills", "art_skills", stylePath]);
-      if (fs.existsSync(mainPath)) {
+      if (manualExistsInAnyRoot("visual", stylePath)) {
         return res.status(400).send(error("请勿填写重复名称的视觉手册"));
       }
       // 字段映射表（与 getVisualManual 保持一致）

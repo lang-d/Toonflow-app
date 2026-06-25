@@ -28,6 +28,7 @@ import {
   storageMode,
 } from "@/services/storagePaths";
 import { isStorageMaintenanceActive } from "@/services/storageMigration";
+import { builtinDataCandidates } from "@/services/builtinData";
 import { initLogger, createLogger } from "@/logger";
 
 const app = express();
@@ -215,17 +216,18 @@ async function startServeOnce(options: { startQueue?: boolean; portRetryMs?: num
   );
   // skills 静态资源
   const skillsDir = u.getPath("skills");
+  const skillsDirs = [skillsDir, ...builtinDataCandidates("skills")].filter((dir, index, arr) => arr.indexOf(dir) === index);
   if (!fs.existsSync(skillsDir)) {
     fs.mkdirSync(skillsDir, { recursive: true });
   }
-  apiLog.info("Skills directory ready", { event: "static.skills", path: skillsDir });
+  apiLog.info("Skills directory ready", { event: "static.skills", paths: skillsDirs });
   // 只允许图片文件访问
   app.use(
     "/skills",
     (req, res, next) => {
       /\.(jpe?g|png|gif|webp|svg|ico|bmp)$/i.test(req.path) ? next() : res.status(403).end();
     },
-    express.static(skillsDir, { acceptRanges: false }),
+    ...skillsDirs.map((dir) => express.static(dir, { acceptRanges: false })),
   );
 
   // assets 静态资源

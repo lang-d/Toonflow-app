@@ -94,6 +94,58 @@ test("workspace paths, portable snapshot and copy import use project media direc
     assert.equal(importedProject.name, "Portable project");
 
     const migration = await import("../src/services/storageMigration");
+    const driveRoot = path.parse(root).root;
+    assert.equal(migration.workspaceParentDirectoryToCreate(path.join(driveRoot, "素材")), null);
+    assert.equal(
+      migration.normalizeWorkspaceTargetFsError({ code: "EPERM" }).message,
+      "当前目录没有写入权限，请选择有权限的普通文件夹",
+    );
+    await assert.rejects(
+      () => migration.validateWorkspaceTarget(driveRoot),
+      /不能把磁盘根目录作为作品库，请选择一个子文件夹/,
+    );
+    const emptyTarget = path.join(root, "empty-workspace-target");
+    await fs.mkdir(emptyTarget);
+    const validatedEmptyTarget = await migration.validateWorkspaceTarget(emptyTarget);
+    assert.equal(validatedEmptyTarget.targetPath, path.resolve(emptyTarget));
+    const nonEmptyTarget = path.join(root, "nonempty-workspace-target");
+    await fs.mkdir(nonEmptyTarget);
+    await fs.writeFile(path.join(nonEmptyTarget, "file.txt"), "content", "utf8");
+    await assert.rejects(
+      () => migration.validateWorkspaceTarget(nonEmptyTarget),
+      /The target directory must be empty/,
+    );
+    const createdWorkspace = path.join(root, "created-empty-workspace");
+    const created = await migration.createWorkspace({ targetPath: createdWorkspace });
+    assert.equal(created.workspacePath, path.resolve(createdWorkspace));
+    assert.equal(created.restartRequired, true);
+    assert.equal(
+      JSON.parse(await fs.readFile(path.join(createdWorkspace, "workspace.json"), "utf8")).version,
+      1,
+    );
+    const runtimeAfterCreate = paths.readRuntimeStorageConfig(appData);
+    assert.equal(runtimeAfterCreate?.workspacePath, path.resolve(createdWorkspace));
+    assert.equal(runtimeAfterCreate?.selectionRequired, false);
+    assert.equal(await fs.stat(migration.storageMigrationLockPath()).then(() => true, () => false), false);
+
+    paths.writeRuntimeStorageConfig({
+      version: 1,
+      mode: "workspace",
+      workspacePath: workspace,
+      selectionRequired: true,
+      updatedAt: Date.now(),
+    }, appData);
+    assert.throws(
+      () => migration.assertCanStartStorageMigration({}),
+      /createWorkspace/,
+    );
+    const lockPath = migration.storageMigrationLockPath();
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, JSON.stringify({ taskId: "orphan", startedAt: Date.now() }), "utf8");
+    const statusAfterOrphanLock = await migration.getStorageStatus();
+    assert.equal(statusAfterOrphanLock.maintenance, false);
+    assert.equal(await fs.stat(lockPath).then(() => true, () => false), false);
+
     const migratedWorkspace = path.join(root, "migrated-workspace");
     const migrated = await migration.performStorageMigration(
       { sourcePath: workspace, targetPath: migratedWorkspace },

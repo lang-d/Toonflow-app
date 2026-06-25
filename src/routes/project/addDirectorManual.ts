@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
+import { manualExistsInAnyRoot } from "@/services/projectManuals";
 const router = express.Router();
 
 // 新增导演手册
@@ -37,8 +38,8 @@ export default router.post(
       }
 
       const mainPath = u.getPath(["skills", "story_skills", directorManual]);
-      if (fs.existsSync(mainPath)) {
-        return res.status(400).send(error("请勿填写重复名称的视觉手册"));
+      if (manualExistsInAnyRoot("director", directorManual)) {
+        return res.status(400).send(error("请勿填写重复名称的导演手册"));
       }
       // 字段映射表（与 getVisualManual 保持一致）
       const DATA_MAP: { value: string; subDir?: string }[] = [
