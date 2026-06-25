@@ -6,6 +6,7 @@ import { validateFields } from "@/middleware/middleware";
 import { resolveStoryboardReferences } from "@/services/storyboardEditor";
 import { renderStoryboardTableFromRows } from "@/services/storyboardTableText";
 import { buildStoryboardVideoFact } from "@/services/storyboardFacts";
+import { getDeriveAssetPromptSnapshot } from "@/services/imageFlow";
 
 const router = express.Router();
 
@@ -94,18 +95,27 @@ export default router.post(
           derive: await Promise.all(
             childAssetsData
               .filter((child) => Number(child.assetsId) === Number(item.id))
-              .map(async (child) => ({
-                id: child.id,
-                assetsId: item.id,
-                name: child.name ?? "",
-                type: child.type,
-                prompt: child.prompt,
-                desc: child.describe ?? "",
-                src: child.filePath ? await u.oss.getSmallImageUrl(child.filePath) : "",
-                state: child.state ?? "未生成",
-                errorReason: child.errorReason ?? "",
-                flowId: child.flowId,
-              })),
+              .map(async (child) => {
+                const promptSnapshot = await getDeriveAssetPromptSnapshot(u.db, {
+                  projectId,
+                  targetId: child.id,
+                  flowId: child.flowId,
+                  fallbackPrompt: child.prompt,
+                });
+                return {
+                  id: child.id,
+                  assetsId: item.id,
+                  name: child.name ?? "",
+                  type: child.type,
+                  prompt: promptSnapshot.prompt,
+                  nodeId: promptSnapshot.nodeId,
+                  desc: child.describe ?? "",
+                  src: child.filePath ? await u.oss.getSmallImageUrl(child.filePath) : "",
+                  state: child.state ?? "未生成",
+                  errorReason: child.errorReason ?? "",
+                  flowId: child.flowId,
+                };
+              }),
           ),
         })),
       );

@@ -29,6 +29,21 @@ function statusOf(value: any): TaskStatus | undefined {
   return value?.status || toTaskStatus(value?.state);
 }
 
+async function taskFailurePatch(knex: Knex, reason: string) {
+  const now = Date.now();
+  const update: Record<string, unknown> = {
+    state: "生成失败",
+    reason,
+  };
+  if (await knex.schema.hasColumn("o_tasks", "status")) update.status = "failed";
+  if (await knex.schema.hasColumn("o_tasks", "phase")) update.phase = "failed";
+  if (await knex.schema.hasColumn("o_tasks", "finishTime")) update.finishTime = now;
+  if (await knex.schema.hasColumn("o_tasks", "updateTime")) update.updateTime = now;
+  if (await knex.schema.hasColumn("o_tasks", "leaseOwner")) update.leaseOwner = null;
+  if (await knex.schema.hasColumn("o_tasks", "leaseExpiresAt")) update.leaseExpiresAt = null;
+  return update;
+}
+
 function hasImage(data: any): boolean {
   return Boolean(data?.generatedImage || data?.selectedResult?.url);
 }
@@ -246,6 +261,7 @@ export async function migrateImageFlowContractV2(knex: Knex, options: MigrationO
   const backupPath = hasChanges && options.createBackup !== false ? await createSqliteBackup(knex) : "";
 
   await knex.transaction(async (trx) => {
+    const orphanTaskPatch = await taskFailurePatch(trx, ORPHAN_REASON);
     for (const [flowId, flowData] of changedFlows) {
       await trx("o_imageFlow").where("id", flowId).update({ flowData });
     }
@@ -257,7 +273,7 @@ export async function migrateImageFlowContractV2(knex: Knex, options: MigrationO
         updateTime: Date.now(),
       });
       if (task.taskCenterId != null) {
-        await trx("o_tasks").where("id", task.taskCenterId).update({ state: "生成失败", reason: ORPHAN_REASON });
+        await trx("o_tasks").where("id", task.taskCenterId).update(orphanTaskPatch);
       }
     }
     await trx("o_setting").insert({
@@ -282,6 +298,7 @@ export async function failInterruptedImageFlowTasks(knex: Knex) {
   const reason = "软件重启导致任务中断";
 
   await knex.transaction(async (trx) => {
+    const interruptedTaskPatch = await taskFailurePatch(trx, reason);
     for (const task of tasks) {
       await trx("o_editImageTask").where("id", task.id).update({
         status: "failed",
@@ -290,7 +307,7 @@ export async function failInterruptedImageFlowTasks(knex: Knex) {
         updateTime: Date.now(),
       });
       if (task.taskCenterId != null) {
-        await trx("o_tasks").where("id", task.taskCenterId).update({ state: "生成失败", reason });
+        await trx("o_tasks").where("id", task.taskCenterId).update(interruptedTaskPatch);
       }
       if (!task.flowId || !task.nodeId) continue;
       const row = await trx("o_imageFlow").where("id", task.flowId).first();
@@ -310,4 +327,3 @@ export async function failInterruptedImageFlowTasks(knex: Knex) {
   });
   return tasks.length;
 }
-

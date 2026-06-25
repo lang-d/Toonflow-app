@@ -581,6 +581,19 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("o_tasks", "providerSubmittedAt", "integer");
   await addColumn("o_tasks", "idempotencyKey", "string");
 
+  await knex("o_tasks")
+    .where("businessType", "image-flow")
+    .where("state", "生成失败")
+    .whereIn("status", ["pending", "queued", "submitting", "processing"])
+    .update({
+      status: "failed",
+      phase: "failed",
+      finishTime: Date.now(),
+      updateTime: Date.now(),
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
+
   if (!(await knex.schema.hasTable("o_taskEvent"))) {
     await knex.schema.createTable("o_taskEvent", (table) => {
       table.increments("id").primary();

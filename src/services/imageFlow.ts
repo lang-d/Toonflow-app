@@ -3,6 +3,7 @@ import { toTaskStatus, type TaskStatus } from "@/lib/taskStatus";
 
 export type ImageFlowTargetType = "deriveAsset" | "storyboard";
 type HistorySource = "image-flow" | "storyboard" | "asset";
+export const DERIVE_ASSET_DEFAULT_RATIO = "16:9";
 
 export interface ImageFlowTarget {
   projectId?: number;
@@ -17,6 +18,25 @@ export interface SaveImageFlowInput extends ImageFlowTarget {
   edges: any[];
   selectedImageUrl?: string;
   selectedMediaPath?: string;
+}
+
+export interface EnsureDeriveAssetImageFlowInput {
+  projectId: number;
+  scriptId: number;
+  targetId: number;
+  model?: string;
+  quality?: string;
+  ratio?: string;
+}
+
+export interface EnsuredDeriveAssetImageFlow {
+  flowId: number;
+  nodeId: string;
+  prompt: string;
+  model: string;
+  quality: string;
+  ratio: string;
+  referenceMediaPaths: string[];
 }
 
 export class ImageFlowValidationError extends Error {
@@ -62,6 +82,45 @@ function parseStoredFlow(value: unknown): any {
   } catch {
     return { nodes: [], edges: [] };
   }
+}
+
+function normalizePrompt(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeRatio(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function selectPrimaryGeneratedNode(nodes: any[]): any | null {
+  const generatedNodes = nodes.filter((node) => node?.type === "generated");
+  if (!generatedNodes.length) return null;
+  const primary = generatedNodes.find((node) => node?.data?.isPrimary === true) || generatedNodes.at(-1);
+  for (const node of generatedNodes) {
+    node.data = { ...(node.data || {}), isPrimary: node.id === primary.id };
+  }
+  return primary;
+}
+
+function collectPrimaryReferences(flow: any, primary: any): string[] {
+  const paths = new Set<string>();
+  const append = (value: unknown) => {
+    const path = stripMediaRef(value) || stripUrl(value);
+    if (path) paths.add(path);
+  };
+  for (const item of primary?.data?.references || []) append(item?.media || item?.image || item?.previewImage);
+  const nodeMap = new Map((flow.nodes || []).map((node: any) => [node.id, node]));
+  for (const edge of flow.edges || []) {
+    if (edge?.target !== primary?.id) continue;
+    const source: any = nodeMap.get(edge.source);
+    if (source?.type === "upload") append(source.data?.media || source.data?.image || source.data?.previewImage);
+    if (source?.type === "directorStage") {
+      for (const item of source.data?.references || source.data?.assets || []) {
+        append(item?.media || item?.image || item?.previewImage || item?.filePath);
+      }
+    }
+  }
+  return [...paths];
 }
 
 function pathsEqual(left: unknown, right: unknown): boolean {
@@ -407,6 +466,220 @@ async function validateTargetOwnership(trx: any, target: ImageFlowTarget) {
   }
 }
 
+async function validateDeriveAssetScope(
+  db: any,
+  input: Pick<EnsureDeriveAssetImageFlowInput, "projectId" | "scriptId" | "targetId">,
+) {
+  const script = await db("o_script").where({ id: input.scriptId, projectId: input.projectId }).first("id");
+  if (!script) {
+    throw new ImageFlowValidationError([{ path: "scriptId", message: "当前剧集不属于该项目" }]);
+  }
+  const asset = await db("o_assets")
+    .where({ "o_assets.id": input.targetId, "o_assets.projectId": input.projectId })
+    .leftJoin("o_assets as parent", "parent.id", "o_assets.assetsId")
+    .leftJoin("o_image as assetImage", "assetImage.id", "o_assets.imageId")
+    .leftJoin("o_image as parentImage", "parentImage.id", "parent.imageId")
+    .first(
+      "o_assets.id",
+      "o_assets.assetsId",
+      "o_assets.type",
+      "o_assets.prompt",
+      "o_assets.flowId",
+      "assetImage.filePath as assetImagePath",
+      "parent.id as parentId",
+      "parent.projectId as parentProjectId",
+      "parentImage.filePath as parentImagePath",
+    );
+  if (!asset || asset.assetsId == null) {
+    throw new ImageFlowValidationError([{ path: "targetId", message: "目标衍生资产不存在" }]);
+  }
+  if (!asset.parentId || Number(asset.parentProjectId) !== Number(input.projectId)) {
+    throw new ImageFlowValidationError([{ path: "targetId", message: "父资产不属于当前项目" }]);
+  }
+  return asset;
+}
+
+function createDefaultGeneratedNode(input: EnsureDeriveAssetImageFlowInput, asset: any) {
+  return {
+    id: `derive-generated:${u.uuid()}`,
+    type: "generated",
+    position: { x: 700, y: 100 },
+    data: {
+      generatedImage: asset.assetImagePath || "",
+      references: [],
+      prompt: normalizePrompt(asset.prompt),
+      model: input.model || "",
+      ratio: normalizeRatio(input.ratio) || DERIVE_ASSET_DEFAULT_RATIO,
+      quality: input.quality || "",
+      status: asset.assetImagePath ? "completed" : "pending",
+      state: asset.assetImagePath ? "success" : "idle",
+      reason: "",
+      isPrimary: true,
+    },
+  };
+}
+
+export async function ensureDeriveAssetImageFlow(
+  input: EnsureDeriveAssetImageFlowInput,
+): Promise<EnsuredDeriveAssetImageFlow> {
+  return u.db.transaction(async (trx: any) => {
+    const asset = await validateDeriveAssetScope(trx, input);
+    let flowId = asset.flowId ? Number(asset.flowId) : null;
+    const shouldInitializeParentReference = !flowId;
+    let flow: any;
+    if (flowId) {
+      const row = await trx("o_imageFlow").where("id", flowId).first("flowData");
+      if (!row?.flowData) {
+        throw new ImageFlowValidationError([{ path: "flowId", message: "衍生资产绑定的图片画布不存在" }]);
+      }
+      flow = parseStoredFlow(row.flowData);
+      const requested = { projectId: input.projectId, targetType: "deriveAsset" as const, targetId: input.targetId };
+      assertSameTarget(
+        { projectId: flow.projectId, targetType: flow.targetType, targetId: flow.targetId },
+        requested,
+      );
+      assertSameTarget(await findFlowTarget(trx, flowId), requested);
+      if (flow.projectId != null && Number(flow.projectId) !== Number(input.projectId)) {
+        throw new ImageFlowValidationError([{ path: "projectId", message: "图片画布不属于当前项目" }]);
+      }
+    } else {
+      flow = {
+        projectId: input.projectId,
+        scriptId: input.scriptId,
+        targetType: "deriveAsset",
+        targetId: input.targetId,
+        selectedImageUrl: asset.assetImagePath || "",
+        nodes: [],
+        edges: [],
+      };
+    }
+
+    let primary = selectPrimaryGeneratedNode(flow.nodes);
+    if (!primary) {
+      primary = createDefaultGeneratedNode(input, asset);
+      flow.nodes.push(primary);
+    }
+    const parentImagePath = stripMediaRef(asset.parentImagePath);
+    const hasParentUpload = (flow.nodes || []).some((node: any) => {
+      if (node?.type !== "upload") return false;
+      if (Number(node.data?.sourceId) === Number(asset.parentId)) return true;
+      const nodePath = stripMediaRef(node.data?.media || node.data?.image || node.data?.previewImage);
+      return Boolean(parentImagePath && nodePath && nodePath === parentImagePath);
+    });
+    if (shouldInitializeParentReference && asset.parentImagePath && !hasParentUpload) {
+      const upload = {
+        id: `derive-upload:${u.uuid()}`,
+        type: "upload",
+        position: { x: 100, y: 100 },
+        data: {
+          image: asset.parentImagePath,
+          previewImage: asset.parentImagePath,
+          source: "asset",
+          sourceId: asset.parentId,
+        },
+      };
+      flow.nodes.push(upload);
+      flow.edges.push({
+        id: `derive-edge:${u.uuid()}`,
+        source: upload.id,
+        target: primary.id,
+        type: "removeLine",
+        animated: true,
+        style: { stroke: "#00000" },
+      });
+    }
+
+    primary.data = {
+      ...(primary.data || {}),
+      prompt: normalizePrompt(primary.data?.prompt) || normalizePrompt(asset.prompt),
+      model: primary.data?.model || input.model || "",
+      quality: primary.data?.quality || input.quality || "",
+      ratio: normalizeRatio(primary.data?.ratio) || normalizeRatio(input.ratio) || DERIVE_ASSET_DEFAULT_RATIO,
+      isPrimary: true,
+    };
+    if (!primary.data.prompt) throw new Error("请先填写生图提示语");
+    if (!primary.data.model) throw new Error("请先配置图片模型");
+    if (!primary.data.quality) throw new Error("请先配置图片清晰度");
+    if (!primary.data.ratio) throw new Error("请先配置图片比例");
+
+    flow.projectId = input.projectId;
+    flow.targetType = "deriveAsset";
+    flow.targetId = input.targetId;
+    flow.nodes = cleanFlowNodes(flow.nodes);
+    flow.edges = clone(flow.edges || []);
+    if (flowId) {
+      await trx("o_imageFlow").where("id", flowId).update({ flowData: JSON.stringify(flow) });
+    } else {
+      const [insertedId] = await trx("o_imageFlow").insert({ flowData: JSON.stringify(flow) });
+      flowId = Number(insertedId);
+      await trx("o_assets").where({ id: input.targetId, projectId: input.projectId }).update({ flowId });
+    }
+
+    return {
+      flowId,
+      nodeId: primary.id,
+      prompt: primary.data.prompt,
+      model: primary.data.model,
+      quality: primary.data.quality,
+      ratio: primary.data.ratio,
+      referenceMediaPaths: collectPrimaryReferences(flow, primary),
+    };
+  });
+}
+
+export async function updateDeriveAssetPrompt(
+  db: any,
+  input: { projectId: number; targetId: number; prompt: string; mode: "preserve" | "replace" },
+) {
+  const asset = await db("o_assets").where({ id: input.targetId, projectId: input.projectId }).first("id", "assetsId", "flowId");
+  if (!asset || asset.assetsId == null) throw new Error("目标衍生资产不存在");
+  if (!asset.flowId) {
+    await db("o_assets").where({ id: input.targetId, projectId: input.projectId }).update({ prompt: input.prompt });
+    return { flowId: null, nodeId: null };
+  }
+  const row = await db("o_imageFlow").where("id", asset.flowId).first("flowData");
+  if (!row?.flowData) throw new ImageFlowValidationError([{ path: "flowId", message: "衍生资产绑定的图片画布不存在" }]);
+  const flow = parseStoredFlow(row.flowData);
+  if (flow.projectId != null && Number(flow.projectId) !== Number(input.projectId)) {
+    throw new ImageFlowValidationError([{ path: "projectId", message: "图片画布不属于当前项目" }]);
+  }
+  const requested = { projectId: input.projectId, targetType: "deriveAsset" as const, targetId: input.targetId };
+  assertSameTarget(
+    { projectId: flow.projectId, targetType: flow.targetType, targetId: flow.targetId },
+    requested,
+  );
+  assertSameTarget(await findFlowTarget(db, Number(asset.flowId)), requested);
+  await db("o_assets").where({ id: input.targetId, projectId: input.projectId }).update({ prompt: input.prompt });
+  const primary = selectPrimaryGeneratedNode(flow.nodes);
+  if (!primary) return { flowId: Number(asset.flowId), nodeId: null };
+  if (input.mode === "replace" || !normalizePrompt(primary.data?.prompt)) primary.data.prompt = input.prompt;
+  await db("o_imageFlow").where("id", asset.flowId).update({ flowData: JSON.stringify(flow) });
+  return { flowId: Number(asset.flowId), nodeId: primary.id };
+}
+
+export async function getDeriveAssetPromptSnapshot(
+  db: any,
+  input: { projectId: number; targetId: number; flowId?: number | null; fallbackPrompt?: string | null },
+) {
+  const fallback = normalizePrompt(input.fallbackPrompt);
+  if (!input.flowId) return { prompt: fallback, nodeId: null };
+  const row = await db("o_imageFlow").where("id", input.flowId).first("flowData");
+  if (!row?.flowData) return { prompt: fallback, nodeId: null };
+  const flow = parseStoredFlow(row.flowData);
+  if (
+    (flow.projectId != null && Number(flow.projectId) !== Number(input.projectId)) ||
+    (flow.targetType && flow.targetType !== "deriveAsset") ||
+    (flow.targetId != null && Number(flow.targetId) !== Number(input.targetId))
+  ) {
+    return { prompt: fallback, nodeId: null };
+  }
+  const primary = selectPrimaryGeneratedNode(flow.nodes);
+  return {
+    prompt: normalizePrompt(primary?.data?.prompt) || fallback,
+    nodeId: primary?.id || null,
+  };
+}
+
 async function isTargetHistoryImage(trx: any, target: ImageFlowTarget, selectedImageUrl: string): Promise<boolean> {
   if (!selectedImageUrl || !target.targetType || target.targetId == null) return false;
   const targetId = Number(target.targetId);
@@ -443,6 +716,12 @@ async function normalizePrimaryNode(
   target: ImageFlowTarget = {},
 ) {
   const generatedNodes = nodes.filter((node) => node.type === "generated");
+  if (target.targetType === "deriveAsset") {
+    for (const node of generatedNodes) {
+      node.data ||= {};
+      node.data.ratio = normalizeRatio(node.data.ratio) || DERIVE_ASSET_DEFAULT_RATIO;
+    }
+  }
   const marked = generatedNodes.filter((node) => node.data?.isPrimary === true);
   if (marked.length > 1) {
     throw new ImageFlowValidationError([
@@ -611,7 +890,10 @@ export async function saveImageFlow(input: SaveImageFlowInput): Promise<number> 
       const flowData = JSON.stringify({
         ...existingFlow,
         projectId: input.projectId ?? existingFlow.projectId ?? null,
-        scriptId: input.scriptId ?? existingFlow.scriptId ?? null,
+        scriptId:
+          (input.targetType ?? existingFlow.targetType) === "deriveAsset"
+            ? existingFlow.scriptId ?? input.scriptId ?? null
+            : input.scriptId ?? existingFlow.scriptId ?? null,
         targetType: input.targetType ?? existingFlow.targetType ?? null,
         targetId: input.targetId ?? existingFlow.targetId ?? null,
         selectedImageUrl,

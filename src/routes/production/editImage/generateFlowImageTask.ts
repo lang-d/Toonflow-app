@@ -19,7 +19,7 @@ export default router.post(
     referenceMediaPaths: z.array(z.string()).optional(),
     model: z.string().min(1),
     quality: z.string().min(1),
-    ratio: z.string().min(1),
+    ratio: z.string().optional().default(""),
     prompt: z.string(),
   }),
   async (req, res) => {

@@ -116,10 +116,13 @@ async function createTestSchema() {
     table.string("businessType");
     table.integer("businessId");
     table.string("status");
+    table.string("phase");
     table.string("state");
     table.string("reason");
     table.text("resultJson");
     table.integer("finishTime");
+    table.string("leaseOwner");
+    table.integer("leaseExpiresAt");
     table.string("model");
     table.integer("updateTime");
   });
@@ -318,10 +321,23 @@ test("an omitted active node and its connected upload are preserved", async () =
     id: 201,
     flowId,
     nodeId: "active-node",
+    taskCenterId: 1201,
     status: "processing",
     state: "生成中",
     references: "[]",
     createTime: Date.now(),
+  });
+  await u.db("o_tasks").insert({
+    id: 1201,
+    taskId: "image-flow-interrupted",
+    businessType: "image-flow",
+    businessId: 201,
+    status: "processing",
+    phase: "provider-processing",
+    state: "生成中",
+    leaseOwner: "old-worker",
+    leaseExpiresAt: Date.now() + 60_000,
+    updateTime: Date.now(),
   });
   await imageFlow.updateImageFlowNode(flowId, "active-node", {
     taskId: 201,
@@ -1087,6 +1103,14 @@ test("interrupted image tasks fail together with their flow nodes", async () => 
   const task = await u.db("o_editImageTask").where("id", 201).first();
   assert.equal(task.status, "failed");
   assert.equal(task.reason, "软件重启导致任务中断");
+  const unifiedTask = await u.db("o_tasks").where("id", 1201).first();
+  assert.equal(unifiedTask.status, "failed");
+  assert.equal(unifiedTask.phase, "failed");
+  assert.equal(unifiedTask.state, "生成失败");
+  assert.equal(unifiedTask.reason, "软件重启导致任务中断");
+  assert.equal(unifiedTask.leaseOwner, null);
+  assert.equal(unifiedTask.leaseExpiresAt, null);
+  assert.ok(Number(unifiedTask.finishTime) > 0);
 
   const stored = await u.db("o_imageFlow").where("id", task.flowId).first();
   const node = JSON.parse(stored.flowData).nodes.find((item: any) => item.id === task.nodeId);

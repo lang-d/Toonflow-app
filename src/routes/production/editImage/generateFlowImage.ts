@@ -18,7 +18,7 @@ export default router.post(
     references: z.array(z.string()).default([]),
     model: z.string().min(1),
     quality: z.string().min(1),
-    ratio: z.string().min(1),
+    ratio: z.string().optional().default(""),
     prompt: z.string(),
   }),
   async (req, res) => {

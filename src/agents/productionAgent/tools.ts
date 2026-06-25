@@ -12,6 +12,7 @@ import {
   beginStoryboardGeneration,
   commitStoryboardGeneration,
 } from "@/services/storyboardGeneration";
+import { updateDeriveAssetPrompt } from "@/services/imageFlow";
 import { emitWithAckTimeout } from "@/agents/shared/socketAck";
 
 const deriveAssetSchema = z.object({
@@ -32,6 +33,58 @@ export const assetItemSchema = z.object({
   desc: z.string().describe("资产描述"),
   derive: z.array(deriveAssetSchema).describe("衍生资产列表"),
 });
+
+interface GenerateDeriveAssetAck {
+  success?: boolean;
+  message?: unknown;
+}
+
+interface GenerateDeriveAssetResult {
+  total?: number;
+  tasks?: Array<{ assetId?: number; id?: number }>;
+  successCount?: number;
+  failedCount?: number;
+  errors?: Array<{ assetId?: number; error?: string; message?: string }>;
+}
+
+function stringifyAckMessage(value: unknown) {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.message;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeGenerateDeriveAssetResult(value: unknown): GenerateDeriveAssetResult {
+  const result = value && typeof value === "object" ? (value as GenerateDeriveAssetResult) : {};
+  const tasks = Array.isArray(result.tasks) ? result.tasks : [];
+  const errors = Array.isArray(result.errors) ? result.errors : [];
+  return {
+    ...result,
+    tasks,
+    errors,
+    successCount: Number.isFinite(Number(result.successCount)) ? Number(result.successCount) : tasks.length,
+    failedCount: Number.isFinite(Number(result.failedCount)) ? Number(result.failedCount) : errors.length,
+    total: Number.isFinite(Number(result.total)) ? Number(result.total) : tasks.length + errors.length,
+  };
+}
+
+function summarizeGenerateDeriveAssetResult(result: GenerateDeriveAssetResult) {
+  const successCount = Number(result.successCount || 0);
+  const failedCount = Number(result.failedCount || 0);
+  const lines = [`已创建 ${successCount} 个衍生资产生图任务，${failedCount} 个创建失败。`];
+  if (result.errors?.length) {
+    lines.push(
+      ...result.errors.map((item) => {
+        const asset = item.assetId == null ? "未知资产" : `资产 ${item.assetId}`;
+        return `${asset}: ${item.error || item.message || "创建失败"}`;
+      }),
+    );
+  }
+  return lines.join("\n");
+}
 const storyboardSchema = z.object({
   id: z.number().describe("分镜ID，必须为真实id"),
   duration: z.number().describe("持续时长(秒)"),
@@ -91,6 +144,15 @@ const updateStoryboardPanelV2InputSchema = z.object({
       associateAssetsIds: z.array(z.number()).optional().default([]),
     }),
   ),
+});
+export const addDeriveAssetInputSchema = z.object({
+  assetsId: z.number().describe("关联的父资产 ID"),
+  id: z.union([z.number(), z.literal("null"), z.literal(""), z.null()]).optional().describe("衍生资产 ID，新增填 null"),
+  name: z.string().describe("衍生资产名称"),
+  desc: z.string().describe("中文视觉差异说明，不是生图提示词"),
+  prompt: z.string().min(1).describe("可直接用于生图的中文提示词"),
+  promptMode: z.enum(["preserve", "replace"]).optional().default("preserve").describe("保留或覆盖共享画布主节点提示词"),
+  type: z.enum(["role", "tool", "scene", "clip"]).optional().describe("衍生资产类型，由父资产类型校验"),
 });
 const posterItemSchema = z.object({
   id: z.number().describe("海报ID"),
@@ -301,47 +363,65 @@ export default (toolCpnfig: ToolConfig) => {
     }),
     add_deriveAsset: tool({
       description: "新增或更新衍生资产",
-      inputSchema: jsonSchema<{ assetsId: number; id: number | null; name: string; desc: string }>(
-        z
-          .object({
-            assetsId: z.number().describe("关联的资产ID"),
-            id: z.number().nullable().describe("衍生资产ID,如果新增则为空"),
-            name: z.string().describe("衍生资产名称"),
-            desc: z.string().describe("衍生资产描述"),
-          })
-          .toJSONSchema(),
-      ),
+      inputSchema: jsonSchema<z.infer<typeof addDeriveAssetInputSchema>>(addDeriveAssetInputSchema.toJSONSchema()),
       execute: async (raw) => {
+        const parsed = addDeriveAssetInputSchema.parse(raw);
         // 容错：LLM 偶尔传 "null" 字符串或空串，统一规范为 null
-        const idRaw = raw.id as unknown;
-        const normalizedId = idRaw === "null" || idRaw === "" || idRaw === undefined ? null : (idRaw as number | null);
-        const deriveAsset = { ...raw, id: normalizedId };
+        const idRaw = parsed.id as unknown;
+        const normalizedId = idRaw === "null" || idRaw === "" || idRaw === undefined || idRaw === null ? null : Number(idRaw);
+        if (normalizedId !== null && !Number.isFinite(normalizedId)) throw new Error("invalid derive asset id");
+        const deriveAsset = { ...parsed, id: normalizedId };
 
         const thinking = msg.thinking("正在操作资产...");
-        const { projectId, scriptId } = resTool.data;
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
         const startTime = Date.now();
-        const parentAssets = await u.db("o_assets").where("id", deriveAsset.assetsId).select("id", "type").first();
+        const script = await u.db("o_script").where({ id: scriptId, projectId }).first("id");
+        if (!script) throw new Error("当前剧集不属于该项目");
+        const parentAssets = await u.db("o_assets").where({ id: deriveAsset.assetsId, projectId }).select("id", "type").first();
         if (!parentAssets) return "关联的资产不存在";
+        if (deriveAsset.type && deriveAsset.type !== parentAssets.type) {
+          throw new Error(`derive asset type ${deriveAsset.type} does not match parent asset type ${parentAssets.type}`);
+        }
 
-        const data = {
-          id: deriveAsset.id ?? undefined,
+        const baseData = {
           assetsId: deriveAsset.assetsId,
           projectId,
           name: deriveAsset.name,
           type: parentAssets.type,
           describe: deriveAsset.desc,
-          startTime,
+        };
+        const notifyData: any = {
+          ...baseData,
+          prompt: deriveAsset.prompt,
+          promptMode: deriveAsset.promptMode,
+          id: deriveAsset.id ?? undefined,
         };
         if (deriveAsset.id) {
-          await u.db("o_assets").where("id", deriveAsset.id).update(data);
+          const existing = await u.db("o_assets")
+            .where({ id: deriveAsset.id, projectId, assetsId: deriveAsset.assetsId })
+            .first("id");
+          if (!existing) throw new Error("目标衍生资产不属于当前项目或父资产");
+          await u.db.transaction(async (trx: any) => {
+            await trx("o_assets").where({ id: deriveAsset.id, projectId }).update(baseData);
+            const promptTarget = await updateDeriveAssetPrompt(trx, {
+              projectId,
+              targetId: deriveAsset.id!,
+              prompt: deriveAsset.prompt,
+              mode: deriveAsset.promptMode,
+            });
+            notifyData.flowId = promptTarget.flowId;
+            notifyData.nodeId = promptTarget.nodeId;
+          });
           thinking.appendText(`已更新衍生资产，ID: ${deriveAsset.id}\n`);
         } else {
+          const data = { ...baseData, prompt: deriveAsset.prompt, scriptId, startTime };
           const [insertedId] = await u.db("o_assets").insert(data);
-          data.id = insertedId;
+          notifyData.id = insertedId;
           await u.db("o_scriptAssets").insert({ scriptId, assetId: insertedId });
           thinking.appendText(`已新增衍生资产，ID: ${insertedId}\n`);
         }
-        const res = await emitWithAckTimeout(socket, "addDeriveAsset", data, undefined, {
+        const res = await emitWithAckTimeout(socket, "addDeriveAsset", notifyData, undefined, {
           agentName: "productionAgent",
           toolName: "add_deriveAsset",
           projectId: resTool.data.projectId,
@@ -400,19 +480,32 @@ export default (toolCpnfig: ToolConfig) => {
       ),
       execute: async ({ ids }) => {
         const thinking = msg.thinking("正在生成衍生资产...");
-        new Promise((resolve) => socket.emit("generateDeriveAsset", { ids }, (res: any) => resolve(res)))
-          .then((res) => {
-            thinking.appendText(`已生成衍生资产，ID: ${JSON.stringify(res, null, 2)}\n`);
-            thinking.updateTitle("衍生资产开始完成");
-            thinking.complete();
-          })
-          .catch((e) => {
-            thinking.appendText("衍生资产生成失败:\n" + u.error(e).message);
-            thinking.updateTitle("衍生资产生成失败");
-            thinking.complete();
+        try {
+          const ack = await emitWithAckTimeout<GenerateDeriveAssetAck>(socket, "generateDeriveAsset", { ids }, undefined, {
+            agentName: "productionAgent",
+            toolName: "generate_deriveAsset",
+            projectId: resTool.data.projectId,
+            scriptId: resTool.data.scriptId,
           });
-
-        return "开始生成衍生资产";
+          if (ack?.success === false) {
+            throw new Error(stringifyAckMessage(ack.message) || "衍生资产生成任务提交失败");
+          }
+          const result = normalizeGenerateDeriveAssetResult(ack?.message);
+          const summary = summarizeGenerateDeriveAssetResult(result);
+          thinking.appendText(summary + "\n");
+          if ((result.successCount || 0) === 0 && (result.failedCount || 0) > 0) {
+            throw new Error(summary);
+          }
+          thinking.updateTitle((result.failedCount || 0) > 0 ? "衍生资产生成部分启动" : "衍生资产生成已启动");
+          thinking.complete();
+          return summary;
+        } catch (e) {
+          const message = u.error(e).message;
+          thinking.appendText("衍生资产生成失败:\n" + message);
+          thinking.updateTitle("衍生资产生成失败");
+          thinking.complete();
+          throw e;
+        }
       },
     }),
     generate_storyboard: tool({
