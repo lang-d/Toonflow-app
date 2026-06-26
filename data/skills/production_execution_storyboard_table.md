@@ -53,6 +53,8 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 
 - `commit_storyboard_table` 返回 `committed` 时，才视为分镜表完成。
 - `commit_storyboard_table` 返回 `invalid` 或 `failed` 时，必须立刻停止本阶段执行，并向用户报告简短失败原因。
+- `commit_storyboard_table` 返回 `terminal: true`、`GENERATION_SUPERSEDED` 或 `COMMIT_IN_PROGRESS` 时，本轮必须停止；不得自动重新 `begin_storyboard_table`。
+- 所有机器状态字段均使用小写：`writing / invalid / failed / committing / superseded / committed / expired`；`GENERATION_SUPERSEDED`、`COMMIT_IN_PROGRESS` 只作为 `error.code`，不是状态。
 - 不得在同一轮里反复调用 `commit_storyboard_table`。
 - 不得在同一轮里新建 generation 试图绕过失败。
 - 遇到 `COMMIT_IN_PROGRESS` 时，只能回复：`提交仍被后端任务占用，请稍后重试或重新开始分镜表生成。`

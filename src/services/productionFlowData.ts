@@ -1,0 +1,250 @@
+import u from "@/utils";
+import { toTaskStatus } from "@/lib/taskStatus";
+import { resolveStoryboardReferences } from "@/services/storyboardEditor";
+import { renderStoryboardTableFromRows } from "@/services/storyboardTableText";
+import { buildStoryboardVideoFact } from "@/services/storyboardFacts";
+import { getDeriveAssetPromptSnapshot } from "@/services/imageFlow";
+import { getTextAssetContent } from "@/services/textAsset";
+
+function parseStoredWorkData(value: unknown) {
+  if (!value) return {};
+  try {
+    return typeof value === "string" ? JSON.parse(value) : value;
+  } catch {
+    return {};
+  }
+}
+
+export async function readPersistedScriptPlan(projectId: number, scriptId: number) {
+  const asset = await u
+    .db("o_textAsset")
+    .where({ projectId, scriptId, targetType: "scriptPlan", state: "complete" })
+    .orderBy("version", "desc")
+    .orderBy("id", "desc")
+    .first();
+  if (!asset) return "";
+  return (await getTextAssetContent({ id: Number(asset.id), projectId, limit: Number.MAX_SAFE_INTEGER })).content;
+}
+
+export async function buildProductionFlowData(projectId: number, episodesId: number) {
+  const [storedWorkData, scriptData, scriptAssets] = await Promise.all([
+    u
+      .db("o_agentWorkData")
+      .where("projectId", String(projectId))
+      .andWhere("episodesId", String(episodesId))
+      .select("data")
+      .first(),
+    u.db("o_script").where({ projectId, id: episodesId }).first(),
+    u.db("o_scriptAssets").where("scriptId", episodesId),
+  ]);
+  const assetIds = scriptAssets.map((item: any) => Number(item.assetId)).filter(Number.isFinite);
+  const boundAudioRows = assetIds.length
+    ? await u.db("o_assetsRole2Audio").whereIn("assetsRoleId", assetIds).select("assetsAudioId")
+    : [];
+  const flowAssetIds = [
+    ...new Set([...assetIds, ...boundAudioRows.map((item: any) => Number(item.assetsAudioId)).filter(Number.isFinite)]),
+  ];
+  const assetsData = flowAssetIds.length
+    ? await u
+        .db("o_assets")
+        .leftJoin("o_image", "o_assets.imageId", "o_image.id")
+        .select("o_assets.*", "o_image.filePath", "o_image.state", "o_image.errorReason")
+        .whereIn("o_assets.id", flowAssetIds)
+        .whereNull("o_assets.assetsId")
+        .where("o_assets.projectId", projectId)
+    : [];
+  const childAssetsData = flowAssetIds.length
+    ? await u
+        .db("o_assets")
+        .leftJoin("o_image", "o_assets.imageId", "o_image.id")
+        .select("o_assets.*", "o_image.filePath", "o_image.state", "o_image.errorReason")
+        .where("o_assets.projectId", projectId)
+        .whereIn("o_assets.assetsId", flowAssetIds)
+        .whereNotNull("o_assets.assetsId")
+    : [];
+  const directorAssetsRows = await u
+    .db("o_directorAsset")
+    .join("o_assets", "o_assets.id", "o_directorAsset.assetId")
+    .join("o_image", "o_image.id", "o_directorAsset.imageId")
+    .where("o_directorAsset.projectId", projectId)
+    .andWhere((query: any) => {
+      query.where("o_directorAsset.scriptId", episodesId).orWhereNull("o_directorAsset.scriptId");
+    })
+    .select(
+      "o_directorAsset.id",
+      "o_directorAsset.assetId",
+      "o_directorAsset.imageId",
+      "o_directorAsset.assetType",
+      "o_directorAsset.name",
+      "o_directorAsset.promptFragment",
+      "o_image.filePath",
+    );
+  const directorAssets = directorAssetsRows.map((item: any) => ({
+    id: item.id,
+    assetId: item.assetId,
+    imageId: item.imageId,
+    name: item.name,
+    type: "directorAsset",
+    assetType: item.assetType,
+    prompt: item.promptFragment || "",
+    source: "directorAsset",
+    sourceId: item.id,
+    filePath: item.filePath || "",
+  }));
+  const assets = await Promise.all(
+    assetsData.map(async (item: any) => ({
+      id: item.id,
+      name: item.name ?? "",
+      type: item.type ?? "",
+      prompt: item.prompt ?? "",
+      desc: item.describe ?? "",
+      src: item.filePath ? await u.oss.getSmallImageUrl(item.filePath) : "",
+      flowId: item.flowId,
+      derive: await Promise.all(
+        childAssetsData
+          .filter((child: any) => Number(child.assetsId) === Number(item.id))
+          .map(async (child: any) => {
+            const promptSnapshot = await getDeriveAssetPromptSnapshot(u.db, {
+              projectId,
+              targetId: child.id,
+              flowId: child.flowId,
+              fallbackPrompt: child.prompt,
+            });
+            return {
+              id: child.id,
+              assetsId: item.id,
+              name: child.name ?? "",
+              type: child.type,
+              prompt: promptSnapshot.prompt,
+              nodeId: promptSnapshot.nodeId,
+              desc: child.describe ?? "",
+              src: child.filePath ? await u.oss.getSmallImageUrl(child.filePath) : "",
+              state: child.state ?? "未生成",
+              errorReason: child.errorReason ?? "",
+              flowId: child.flowId,
+            };
+          }),
+      ),
+    })),
+  );
+
+  const storyboardRows = await u
+    .db("o_storyboard")
+    .where({ projectId, scriptId: episodesId })
+    .orderBy("index", "asc")
+    .orderBy("id", "asc");
+  const storyboardIds = storyboardRows.map((item: any) => Number(item.id));
+  const assetLinks = storyboardIds.length
+    ? await u
+        .db("o_assets2Storyboard")
+        .whereIn("storyboardId", storyboardIds)
+        .orderBy("rowid")
+        .select("storyboardId", "assetId")
+    : [];
+  const assetMap = new Map<number, number[]>();
+  for (const link of assetLinks) {
+    const storyboardId = Number(link.storyboardId);
+    if (!assetMap.has(storyboardId)) assetMap.set(storyboardId, []);
+    assetMap.get(storyboardId)!.push(Number(link.assetId));
+  }
+  const flowTasks = storyboardIds.length
+    ? await u
+        .db("o_editImageTask")
+        .where("targetType", "storyboard")
+        .whereIn("targetId", storyboardIds)
+        .orderBy("updateTime", "desc")
+        .orderBy("id", "desc")
+        .select("id", "targetId", "nodeId", "status", "state", "reason")
+    : [];
+  const latestTaskByStoryboard = new Map<number, any>();
+  for (const task of flowTasks) {
+    const storyboardId = Number(task.targetId);
+    if (!latestTaskByStoryboard.has(storyboardId)) latestTaskByStoryboard.set(storyboardId, task);
+  }
+  const taskIds = [...latestTaskByStoryboard.values()].map((task: any) => Number(task.id)).filter(Number.isFinite);
+  const unifiedTasks = taskIds.length
+    ? await u
+        .db("o_tasks")
+        .where("businessType", "image-flow")
+        .whereIn("businessId", taskIds)
+        .select("taskId", "businessId", "status")
+    : [];
+  const unifiedTaskByEditTask = new Map(unifiedTasks.map((task: any) => [Number(task.businessId), task]));
+  const storyboard = await Promise.all(
+    storyboardRows.map(async (item: any) => {
+      const associateAssetsIds = assetMap.get(Number(item.id)) || [];
+      const fact = buildStoryboardVideoFact(item, associateAssetsIds);
+      const task = latestTaskByStoryboard.get(Number(item.id));
+      const unifiedTask = task ? unifiedTaskByEditTask.get(Number(task.id)) : null;
+      const status = task?.status || unifiedTask?.status || toTaskStatus(item.state) || "pending";
+      return {
+        id: item.id,
+        index: item.index,
+        duration: Number(fact.duration || 0),
+        prompt: item.prompt || "",
+        associateAssetsIds,
+        src: item.filePath ? await u.oss.getSmallImageUrl(item.filePath) : "",
+        state: item.state,
+        status,
+        taskId: unifiedTask?.taskId || undefined,
+        unifiedTaskId: unifiedTask?.taskId || undefined,
+        legacyTaskId: task?.id || undefined,
+        nodeId: task?.nodeId || undefined,
+        videoDesc: fact.rawVideoDesc,
+        scene: fact.scene,
+        picture: fact.picture,
+        action: fact.action,
+        shotSize: fact.shotSize,
+        cameraMove: fact.cameraMove,
+        dialogue: fact.dialogue,
+        sound: fact.sound,
+        visibleEmotion: fact.visibleEmotion,
+        location: fact.location,
+        timeOfDay: fact.timeOfDay,
+        sceneContinuityId: fact.tableRow?.sceneContinuityId || null,
+        tableRowJson: item.tableRowJson,
+        factSource: fact.factSource,
+        factStatus: fact.factStatus,
+        factVersion: item.factVersion || 1,
+        groupKey: fact.groupKey,
+        groupName: fact.groupName,
+        groupIntent: fact.groupIntent,
+        beatId: fact.beatId,
+        trackId: item.trackId,
+        shouldGenerateImage: item.shouldGenerateImage,
+        reason: item.reason ?? "",
+        flowId: item.flowId,
+        referenceImages: await resolveStoryboardReferences(item.referenceImages),
+      };
+    }),
+  );
+  const rendered = await renderStoryboardTableFromRows(projectId, episodesId);
+  const latestGenerationFailure = await u
+    .db("o_storyboardGeneration")
+    .where({ projectId, scriptId: episodesId })
+    .whereIn("state", ["invalid", "failed"])
+    .orderBy("updatedAt", "desc")
+    .first("generationId", "state", "expectedRowCount", "errorJson", "updatedAt");
+  const stored = parseStoredWorkData(storedWorkData?.data) as any;
+  const persistedScriptPlan = await readPersistedScriptPlan(projectId, episodesId);
+  return {
+    ...stored,
+    script: scriptData?.content ?? "",
+    scriptPlan: persistedScriptPlan || stored.scriptPlan || "",
+    assets,
+    storyboard,
+    storyboardTable: rendered.content,
+    storyboardTableMeta: rendered.meta,
+    storyboardGenerationLastFailure: latestGenerationFailure
+      ? {
+          generationId: latestGenerationFailure.generationId,
+          state: latestGenerationFailure.state,
+          expectedRowCount: latestGenerationFailure.expectedRowCount,
+          errorJson: latestGenerationFailure.errorJson,
+          updatedAt: latestGenerationFailure.updatedAt,
+        }
+      : null,
+    directorAssets,
+    workbench: stored.workbench || { videoList: [] },
+  };
+}

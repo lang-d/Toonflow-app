@@ -6,9 +6,23 @@ import { validateFields } from "@/middleware/middleware";
 
 const router = express.Router();
 
-function flowWorkspaceState(data: any) {
+function parseStoredWorkData(value: unknown) {
+  if (!value) return {};
+  try {
+    return typeof value === "string" ? JSON.parse(value) : value;
+  } catch {
+    return {};
+  }
+}
+
+function flowWorkspaceState(data: any, existingStored: any) {
+  const next: any = {};
+  if (typeof existingStored?.scriptPlan === "string" && existingStored.scriptPlan) {
+    next.scriptPlan = existingStored.scriptPlan;
+  }
+  if (data?.workbench) next.workbench = data.workbench;
   return {
-    scriptPlan: typeof data?.scriptPlan === "string" ? data.scriptPlan : "",
+    ...next,
   };
 }
 
@@ -28,13 +42,13 @@ export default router.post(
         }
       });
     }
-    const storageData = JSON.stringify(flowWorkspaceState(data));
     const existing = await u
       .db("o_agentWorkData")
       .where("projectId", String(projectId))
       .andWhere("episodesId", String(episodesId))
       .andWhere("key", "productionAgent")
       .first();
+    const storageData = JSON.stringify(flowWorkspaceState(data, parseStoredWorkData(existing?.data)));
     if (existing) {
       await u
         .db("o_agentWorkData")

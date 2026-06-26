@@ -7,6 +7,8 @@ const repoRoot = process.cwd();
 const skillsRoot = path.join(repoRoot, "data", "skills");
 const panelSkill = fs.readFileSync(path.join(skillsRoot, "production_execution_storyboard_panel.md"), "utf8");
 const genSkill = fs.readFileSync(path.join(skillsRoot, "production_execution_storyboard_gen.md"), "utf8");
+const tableSkill = fs.readFileSync(path.join(skillsRoot, "production_execution_storyboard_table.md"), "utf8");
+const directorSkill = fs.readFileSync(path.join(skillsRoot, "production_execution_director_plan.md"), "utf8");
 const promptSkill = fs.readFileSync(path.join(skillsRoot, "production_skills", "storyboard_prompt_techniques.md"), "utf8");
 const mainProcess = fs.readFileSync(path.join(repoRoot, "scripts", "main.ts"), "utf8");
 const toolsSource = fs.readFileSync(path.join(repoRoot, "src", "agents", "productionAgent", "tools.ts"), "utf8");
@@ -39,6 +41,25 @@ test("storyboard image generation uses generate_storyboard and waits for ack", (
   assert.match(toolsSource, /normalizeGenerateStoryboardResult/);
   assert.doesNotMatch(toolsSource, /new Promise\(\(resolve\) => socket\.emit\("generateStoryboard"/);
   assert.doesNotMatch(toolsSource, /return "开始生成分镜"/);
+});
+
+test("production agent reads flow data from backend facts and marks terminal storyboard commit failures", () => {
+  assert.match(toolsSource, /buildProductionFlowData/);
+  assert.match(toolsSource, /terminal:\s*true/);
+  assert.match(toolsSource, /VALIDATION_FAILED/);
+  assert.match(toolsSource, /GENERATION_SUPERSEDED/);
+  assert.doesNotMatch(toolsSource, /emitWithAckTimeout<FlowData>\(socket,\s*"getFlowData"/);
+});
+
+test("production skills require stop-on-failure and normalized storyboard generation status wording", () => {
+  assert.match(tableSkill, /terminal: true/);
+  assert.match(tableSkill, /GENERATION_SUPERSEDED/);
+  assert.match(tableSkill, /COMMIT_IN_PROGRESS/);
+  assert.match(tableSkill, /writing \/ invalid \/ failed \/ committing \/ superseded \/ committed \/ expired/);
+  assert.match(directorSkill, /get_flowData.*失败或超时/);
+  assert.match(directorSkill, /o_textAsset\(targetType="scriptPlan"\)/);
+  assert.match(panelSkill, /get_flowData.*失败或超时/);
+  assert.match(panelSkill, /不得继续调用 `update_storyboard_panel_v2`/);
 });
 
 test("storyboard prompt technique defines a static Chinese prompt and ordered Image references", () => {

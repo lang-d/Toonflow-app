@@ -7,6 +7,7 @@ import { legacyDataRoot, storageMode, workspaceRoot } from "@/services/storagePa
 
 export type TextAssetTargetType =
   | "storyboardTable"
+  | "scriptPlan"
   | "agentOutput"
   | "videoPromptDraft"
   | "promptDiagnostic"
@@ -136,7 +137,8 @@ export async function createTextAsset(input: CreateTextAssetInput) {
   await fs.rename(tempPath, absolutePath);
   const size = Buffer.byteLength(content, "utf8");
   const hash = sha256(content);
-  const summary = (input.summary || content.replace(/\s+/g, " ").slice(0, 500)).slice(0, 1000);
+  const summary =
+    input.summary === undefined ? content.replace(/\s+/g, " ").slice(0, 500).slice(0, 1000) : input.summary.slice(0, 1000);
   await u.db("o_textAsset").insert({
     id,
     projectId: input.projectId,

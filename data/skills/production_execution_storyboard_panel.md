@@ -54,6 +54,7 @@ description: 阶段5执行规则：读取正式结构化分镜，激活图片 Pr
 ## 执行流程
 
 1. 调用 `get_flowData("scriptPlan")`、`get_flowData("storyboard")` 和 `get_flowData("assets")`。
+   - 任一 `get_flowData` 失败或超时，必须立刻停止并向用户报告；不得凭空补数据，不得继续调用 `update_storyboard_panel_v2`。
 2. 只处理 `factStatus === "ready"` 且有合法 `tableRowJson` 的正式分镜。
 3. 以真实 `storyboardId` 优先定位；缺少 id 时才使用 `index`。
 4. 按 `storyboard_prompt_techniques` 将 `tableRowJson`、参考资产和导演视觉原则编译为图片 Prompt。

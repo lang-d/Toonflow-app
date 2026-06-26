@@ -93,6 +93,26 @@ function recentlyAskedStoryboardImageGeneration(mem: Awaited<ReturnType<Memory["
   return /是否生成分镜图|要不要生成分镜图|确认生成分镜图|生成分镜图/.test(recent);
 }
 
+export function extractCompleteScriptPlanXml(text: string) {
+  const match = String(text || "").match(/<scriptPlan\b[^>]*>([\s\S]*?)<\/scriptPlan>/i);
+  const content = match?.[1]?.trim() || "";
+  return content ? content : "";
+}
+
+async function persistDirectorScriptPlan(params: { projectId: number; scriptId: number; response: string }) {
+  const content = extractCompleteScriptPlanXml(params.response);
+  if (!content) return null;
+  return createTextAsset({
+    projectId: params.projectId,
+    scriptId: params.scriptId,
+    targetType: "scriptPlan",
+    targetId: "director-plan",
+    content,
+    summary: "",
+    state: "complete",
+  });
+}
+
 function skillDirCandidates(...parts: string[]) {
   const dirs = [
     findBuiltinDataDir("skills", ...parts),
@@ -330,7 +350,7 @@ async function createSubAgent(parentCtx: AgentContext) {
 
       const addPrompt = "\n你必须使用如下XML格式写入工作区：\n```\n<scriptPlan>内容</scriptPlan>\n```";
 
-      return runAgent({
+      const response = await runAgent({
         key: "productionAgent:directorPlanAgent",
         prompt,
         system: systemPrompt + addPrompt,
@@ -342,6 +362,17 @@ async function createSubAgent(parentCtx: AgentContext) {
         ],
         tools: { activate_skill: artSkills.tools.activate_skill },
       });
+      try {
+        const asset = await persistDirectorScriptPlan({
+          projectId: Number(resTool.data.projectId),
+          scriptId: Number(resTool.data.scriptId),
+          response,
+        });
+        if (asset) return `${response}\n\n导演规划已持久化为 textAsset:${asset.id}。`;
+      } catch (err) {
+        console.warn("[productionAgent] failed to persist scriptPlan", err);
+      }
+      return response;
     },
   });
 

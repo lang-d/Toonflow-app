@@ -14,6 +14,7 @@ import {
 } from "@/services/storyboardGeneration";
 import { applyStoryboardPanelImageFieldsWithDb, updateDeriveAssetPrompt } from "@/services/imageFlow";
 import { emitWithAckTimeout } from "@/agents/shared/socketAck";
+import { buildProductionFlowData } from "@/services/productionFlowData";
 
 const deriveAssetSchema = z.object({
   id: z.number().describe("衍生资产ID,如果新增则为空"),
@@ -254,9 +255,34 @@ function assertOptionalScopeMatches(input: { projectId?: number; scriptId?: numb
   }
 }
 
+function normalizeToolError(error: any) {
+  if (!error) return { code: "UNKNOWN_ERROR", message: "unknown error" };
+  if (typeof error === "string") return { code: "ERROR", message: error };
+  return {
+    ...error,
+    code: String(error.code || "ERROR"),
+    message: String(error.message || error.reason || "unknown error"),
+  };
+}
+
+function shortStoryboardCommitMessage(result: any) {
+  if (result?.status === "invalid") {
+    const issue = Array.isArray(result.issues) ? result.issues[0] : null;
+    return issue ? `${issue.field || "storyboard"}: ${issue.message || "validation failed"}` : "storyboard table validation failed";
+  }
+  if (result?.status === "failed") {
+    const error = normalizeToolError(result.error);
+    if (error.code === "COMMIT_IN_PROGRESS") return "提交仍被后端任务占用，请稍后重试或重新开始分镜表生成。";
+    if (error.code === "GENERATION_SUPERSEDED") return "当前分镜表 generation 已被新的写入轮次替代，请停止本轮执行。";
+    return error.message;
+  }
+  return "";
+}
+
 export default (toolCpnfig: ToolConfig) => {
   const { resTool, toolsNames, msg } = toolCpnfig;
   const { socket } = resTool;
+  let storyboardTableTerminalFailure = false;
   const tools: Record<string, Tool> = {
     get_flowData: tool({
       description: "获取工作区数据",
@@ -280,20 +306,18 @@ export default (toolCpnfig: ToolConfig) => {
         const thinking = msg.thinking(`正在获取${flowDataKeyLabels[flowKey]}工作区数据...`);
         console.log("[tools] get_flowData", flowKey);
         try {
-        const flowData = await emitWithAckTimeout<FlowData>(socket, "getFlowData", { key: flowKey }, undefined, {
-          agentName: "productionAgent",
-          toolName: "get_flowData",
-          projectId: resTool.data.projectId,
-          scriptId: resTool.data.scriptId,
-        });
-        thinking.appendText(`获取到${flowDataKeyLabels[flowKey]}:\n` + JSON.stringify(flowData[flowKey], null, 2));
-        thinking.updateTitle(`获取${flowDataKeyLabels[flowKey]}完成`);
-        thinking.complete();
-        return flowData[flowKey];
+          const projectId = scopedNumber(resTool.data.projectId, "projectId");
+          const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+          const flowData = (await buildProductionFlowData(projectId, scriptId)) as FlowData;
+          thinking.appendText(`读取到${flowDataKeyLabels[flowKey]}:\n` + JSON.stringify(flowData[flowKey], null, 2));
+          thinking.updateTitle(`获取${flowDataKeyLabels[flowKey]}完成`);
+          thinking.complete();
+          return flowData[flowKey];
         } catch (error: any) {
           thinking.appendText(u.error(error).message);
           thinking.updateTitle?.("get_flowData failed");
           thinking.complete();
+          storyboardTableTerminalFailure = true;
           throw error;
         }
       },
@@ -306,6 +330,9 @@ export default (toolCpnfig: ToolConfig) => {
         const projectId = scopedNumber(resTool.data.projectId, "projectId");
         const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
         assertOptionalScopeMatches(input, projectId, scriptId);
+        if (storyboardTableTerminalFailure) {
+          throw new Error("本轮已有终止型失败，不能重新 begin_storyboard_table；请向用户报告失败原因后停止。");
+        }
         const thinking = msg.thinking("正在创建分镜表写入批次...");
         try {
           const result = await beginStoryboardGeneration({
@@ -365,6 +392,23 @@ export default (toolCpnfig: ToolConfig) => {
                 : JSON.stringify(result.error);
             thinking.appendText(message);
             thinking.updateTitle?.("storyboard table commit failed");
+          }
+          if (result.status !== "committed") {
+            storyboardTableTerminalFailure = true;
+            return {
+              ...result,
+              status: result.status,
+              terminal: true,
+              error:
+                result.status === "failed"
+                  ? normalizeToolError(result.error)
+                  : {
+                      code: "VALIDATION_FAILED",
+                      message: shortStoryboardCommitMessage(result),
+                    },
+              message: shortStoryboardCommitMessage(result),
+              instruction: "Stop this execution turn. Do not retry commit and do not begin a new storyboard generation.",
+            };
           }
           return result;
         } catch (error: any) {
