@@ -1,7 +1,13 @@
 import axios from "axios";
 import u from "@/utils";
 import { toLegacyTaskState, type TaskStatus } from "@/lib/taskStatus";
-import { DERIVE_ASSET_DEFAULT_RATIO, ensureDeriveAssetImageFlow, updateImageFlowNodeWithDb, type ImageFlowTargetType } from "@/services/imageFlow";
+import {
+  DERIVE_ASSET_DEFAULT_RATIO,
+  ensureDeriveAssetImageFlow,
+  ensureStoryboardImageFlow,
+  updateImageFlowNodeWithDb,
+  type ImageFlowTargetType,
+} from "@/services/imageFlow";
 import { adoptLegacyTask, updateUnifiedTask } from "@/services/taskCoordinator";
 
 export interface CreateImageFlowTaskInput {
@@ -108,7 +114,18 @@ async function finishTask(
     model: string;
     quality: string;
   },
+  options: { allowMissingNode?: boolean } = {},
 ) {
+  const currentTask = await u.db("o_editImageTask").where("id", taskId).first("status", "reason");
+  if (currentTask?.status === "cancelled" && status !== "cancelled") {
+    await updateUnifiedTask(taskCenterId, {
+      status: "cancelled",
+      phase: "cancelled",
+      reason: currentTask.reason || "任务已取消",
+      clearLease: true,
+    });
+    return;
+  }
   const state = toLegacyTaskState(status);
   await u.db.transaction(async (trx: any) => {
     await trx("o_editImageTask").where("id", taskId).update({
@@ -119,7 +136,7 @@ async function finishTask(
       updateTime: Date.now(),
     });
     const updated = await updateImageFlowNodeWithDb(trx, flowId, nodeId, nodePatch);
-    if (flowId && !updated) throw new Error("图片任务对应的画布节点不存在");
+    if (flowId && !updated && !options.allowMissingNode) throw new Error("图片任务对应的画布节点不存在");
     if (status === "completed" && url && target?.targetType === "deriveAsset" && target.targetId != null && flowId) {
       const asset = await trx("o_assets")
         .where({ id: target.targetId, projectId: target.projectId })
@@ -141,6 +158,32 @@ async function finishTask(
         await trx("o_imageFlow").where("id", flowId).update({ flowData: JSON.stringify(flow) });
       }
     }
+    if (target?.targetType === "storyboard" && target.targetId != null) {
+      if (status === "completed" && url && flowId) {
+        await trx("o_storyboard")
+          .where({ id: target.targetId, projectId: target.projectId })
+          .update({
+            flowId,
+            filePath: url,
+            state: toLegacyTaskState("completed"),
+            reason: null,
+            shouldGenerateImage: 1,
+          });
+        const flowRow = await trx("o_imageFlow").where("id", flowId).first("flowData");
+        if (flowRow?.flowData) {
+          const flow = JSON.parse(flowRow.flowData);
+          flow.selectedImageUrl = url;
+          await trx("o_imageFlow").where("id", flowId).update({ flowData: JSON.stringify(flow) });
+        }
+      } else if (status === "failed") {
+        await trx("o_storyboard")
+          .where({ id: target.targetId, projectId: target.projectId })
+          .update({
+            state: toLegacyTaskState("failed"),
+            reason,
+          });
+      }
+    }
   });
   await updateUnifiedTask(taskCenterId, {
     status,
@@ -150,6 +193,59 @@ async function finishTask(
     result: url ? { media: await u.mediaRef.toMediaRef(url, { source: "generated", sourceId: taskId }), historyId: taskId, businessId: taskId } : undefined,
     clearLease: status === "completed" || status === "failed" || status === "cancelled",
   });
+}
+
+export async function failInterruptedImageFlowTask(input: {
+  taskCenterId: number;
+  taskId?: number | null;
+  reason: string;
+}) {
+  const legacyTask = await u
+    .db("o_editImageTask")
+    .where((builder: any) => {
+      if (input.taskId != null) builder.where("id", input.taskId);
+      builder.orWhere("taskCenterId", input.taskCenterId);
+    })
+    .orderBy("updateTime", "desc")
+    .orderBy("id", "desc")
+    .first();
+  if (!legacyTask) {
+    await updateUnifiedTask(input.taskCenterId, {
+      status: "failed",
+      phase: "failed",
+      reason: input.reason,
+      clearLease: true,
+    });
+    return;
+  }
+  if (["completed", "failed", "cancelled"].includes(String(legacyTask.status || ""))) return;
+  const targetType =
+    legacyTask.targetType === "storyboard" || legacyTask.targetType === "deriveAsset"
+      ? legacyTask.targetType
+      : undefined;
+  await finishTask(
+    Number(legacyTask.id),
+    input.taskCenterId,
+    legacyTask.flowId == null ? null : Number(legacyTask.flowId),
+    String(legacyTask.nodeId || ""),
+    "failed",
+    {
+      taskId: null,
+      status: "failed",
+      state: "failed",
+      reason: input.reason,
+    },
+    input.reason,
+    "",
+    {
+      targetType,
+      targetId: legacyTask.targetId == null ? null : Number(legacyTask.targetId),
+      projectId: Number(legacyTask.projectId || 0),
+      model: legacyTask.model || "",
+      quality: legacyTask.quality || "",
+    },
+    { allowMissingNode: true },
+  );
 }
 
 interface ExecuteImageFlowPayload {
@@ -234,6 +330,14 @@ export async function executeImageFlowTask(payload: ExecuteImageFlowPayload, tas
         reason,
       },
       reason,
+      "",
+      {
+        targetType,
+        targetId,
+        projectId: input.projectId,
+        model: input.model,
+        quality: input.quality,
+      },
     );
     throw err;
   }
@@ -249,7 +353,7 @@ export async function createImageFlowTask(input: CreateImageFlowTaskInput) {
   if (!["1K", "2K", "4K"].includes(input.quality)) throw new Error(`不支持的图片质量: ${input.quality}`);
   const inputRatio = normalizeRatio(input.ratio);
   if (inputRatio && !isValidRatio(inputRatio)) throw new Error(`不支持的图片比例: ${input.ratio}`);
-  if (targetType !== "deriveAsset" && !isValidRatio(inputRatio)) throw new Error(`不支持的图片比例: ${input.ratio}`);
+  if (targetType !== "deriveAsset" && targetType !== "storyboard" && !isValidRatio(inputRatio)) throw new Error(`不支持的图片比例: ${input.ratio}`);
   input = { ...input, ratio: inputRatio };
   if (targetType === "deriveAsset" && targetId != null) {
     const ensured = await ensureDeriveAssetImageFlow({
@@ -259,6 +363,23 @@ export async function createImageFlowTask(input: CreateImageFlowTaskInput) {
       model: input.model,
       quality: input.quality,
       ratio: input.ratio || DERIVE_ASSET_DEFAULT_RATIO,
+    });
+    input = {
+      ...input,
+      flowId: ensured.flowId,
+      nodeId: requestedNodeId || ensured.nodeId,
+      ratio: requestedNodeId ? inputRatio || ensured.ratio : ensured.ratio,
+      referenceMediaPaths: input.referenceMediaPaths?.length ? input.referenceMediaPaths : ensured.referenceMediaPaths,
+    };
+  }
+  if (targetType === "storyboard" && targetId != null) {
+    const ensured = await ensureStoryboardImageFlow({
+      projectId: input.projectId,
+      scriptId: input.scriptId,
+      targetId,
+      model: input.model,
+      quality: input.quality,
+      ratio: input.ratio,
     });
     input = {
       ...input,
@@ -315,7 +436,7 @@ export async function createImageFlowTask(input: CreateImageFlowTaskInput) {
       state: "generating",
       reason: "",
     };
-    if (targetType === "deriveAsset") nodePatch.ratio = resolvedInput.ratio;
+    if (targetType === "deriveAsset" || targetType === "storyboard") nodePatch.ratio = resolvedInput.ratio;
     if (promptResolution.shouldBackfillNodePrompt) nodePatch.prompt = resolvedInput.prompt;
     const nodeUpdated = await updateImageFlowNodeWithDb(trx, input.flowId, nodeId, nodePatch);
     if (!legacy && !nodeUpdated) throw new Error("未找到对应的画布生成节点");

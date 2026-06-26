@@ -1,6 +1,7 @@
 import express from "express";
 import { z } from "zod";
 import u from "@/utils";
+import { toTaskStatus } from "@/lib/taskStatus";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { resolveStoryboardReferences } from "@/services/storyboardEditor";
@@ -139,10 +140,36 @@ export default router.post(
         if (!assetMap.has(storyboardId)) assetMap.set(storyboardId, []);
         assetMap.get(storyboardId)!.push(Number(link.assetId));
       }
+      const flowTasks = storyboardIds.length
+        ? await u
+            .db("o_editImageTask")
+            .where("targetType", "storyboard")
+            .whereIn("targetId", storyboardIds)
+            .orderBy("updateTime", "desc")
+            .orderBy("id", "desc")
+            .select("id", "targetId", "nodeId", "status", "state", "reason")
+        : [];
+      const latestTaskByStoryboard = new Map<number, any>();
+      for (const task of flowTasks) {
+        const storyboardId = Number(task.targetId);
+        if (!latestTaskByStoryboard.has(storyboardId)) latestTaskByStoryboard.set(storyboardId, task);
+      }
+      const taskIds = [...latestTaskByStoryboard.values()].map((task: any) => Number(task.id)).filter(Number.isFinite);
+      const unifiedTasks = taskIds.length
+        ? await u
+            .db("o_tasks")
+            .where("businessType", "image-flow")
+            .whereIn("businessId", taskIds)
+            .select("taskId", "businessId", "status")
+        : [];
+      const unifiedTaskByEditTask = new Map(unifiedTasks.map((task: any) => [Number(task.businessId), task]));
       const storyboard = await Promise.all(
         storyboardRows.map(async (item) => {
           const associateAssetsIds = assetMap.get(Number(item.id)) || [];
           const fact = buildStoryboardVideoFact(item, associateAssetsIds);
+          const task = latestTaskByStoryboard.get(Number(item.id));
+          const unifiedTask = task ? unifiedTaskByEditTask.get(Number(task.id)) : null;
+          const status = task?.status || unifiedTask?.status || toTaskStatus(item.state) || "pending";
           return {
             id: item.id,
             index: item.index,
@@ -151,6 +178,11 @@ export default router.post(
             associateAssetsIds,
             src: item.filePath ? await u.oss.getSmallImageUrl(item.filePath) : "",
             state: item.state,
+            status,
+            taskId: unifiedTask?.taskId || undefined,
+            unifiedTaskId: unifiedTask?.taskId || undefined,
+            legacyTaskId: task?.id || undefined,
+            nodeId: task?.nodeId || undefined,
             videoDesc: fact.rawVideoDesc,
             scene: fact.scene,
             picture: fact.picture,

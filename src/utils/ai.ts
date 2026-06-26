@@ -333,6 +333,11 @@ class AiImage {
         providerTaskId,
         providerSubmittedAt,
       });
+      console.info("[image-provider] imageSubmit persisted providerTaskId", {
+        taskId: task.id,
+        taskKey: task.taskId,
+        providerTaskId,
+      });
     } else if (!providerSubmittedAt) {
       providerSubmittedAt = Date.now();
       await updateUnifiedTask(task.id, { providerSubmittedAt });

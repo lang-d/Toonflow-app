@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import db, { dbReady } from "@/utils/db";
 import u from "@/utils";
-import { executeImageFlowTask } from "@/services/imageFlowTask";
+import { executeImageFlowTask, failInterruptedImageFlowTask } from "@/services/imageFlowTask";
 import { generateWorkbenchVideoPromptResult } from "@/services/workbenchVideoPrompt";
 import {
   executeAssetImageTask,
@@ -61,19 +61,30 @@ const DEFAULT_LIMITS: Record<UnifiedTaskType, number> = {
 const ACTIVE_STATUSES = ["pending", "queued", "submitting", "processing"] as const;
 const PRODUCTION_TASK_TYPES: UnifiedTaskType[] = ["prompt", "image", "asset", "storyboard", "video", "audio", "media"];
 const AUTO_SNAPSHOT_IDLE_MS = 2 * 60 * 1000;
+const MISSING_PROVIDER_TASK_ID_REASON = "\u4f9b\u5e94\u5546\u4efb\u52a1ID\u672a\u4fdd\u5b58\uff0c\u8bf7\u91cd\u65b0\u751f\u6210";
 
 export interface UnifiedTaskWorker {
   stop(): Promise<void>;
 }
 
-export async function recoverInterruptedUnifiedTasks(database: any = db) {
+export async function recoverInterruptedUnifiedTasks(database: any = db, excludeTaskIds: Set<number> = new Set()) {
   const now = Date.now();
   const rows = await database("o_tasks")
     .whereNotNull("handler")
     .whereIn("status", ["submitting", "processing"])
     .where((builder: any) => builder.whereNull("leaseExpiresAt").orWhere("leaseExpiresAt", "<", now));
+  let recoveredCount = 0;
   for (const task of rows) {
+    if (excludeTaskIds.has(Number(task.id))) continue;
+    recoveredCount += 1;
     if (task.providerTaskId) {
+      console.warn("[unified-task-worker] recovering provider task", {
+        taskId: task.id,
+        businessType: task.businessType,
+        businessId: task.businessId,
+        phase: task.phase,
+        providerTaskId: task.providerTaskId,
+      });
       await updateUnifiedTask(task.id, {
         status: "queued",
         phase: "resume-provider-query",
@@ -81,15 +92,30 @@ export async function recoverInterruptedUnifiedTasks(database: any = db) {
         clearLease: true,
       }, database);
     } else {
-      await updateUnifiedTask(task.id, {
-        status: "failed",
-        phase: "interrupted",
-        reason: "任务执行进程重启，且缺少可安全恢复的供应商任务凭据",
-        clearLease: true,
-      }, database);
+      console.warn("[unified-task-worker] failing interrupted task without provider id", {
+        taskId: task.id,
+        businessType: task.businessType,
+        businessId: task.businessId,
+        phase: task.phase,
+      });
+      if (task.businessType === "image-flow" && task.businessId) {
+        await failInterruptedImageFlowTask({
+          taskCenterId: Number(task.id),
+          taskId: Number(task.businessId),
+          reason: MISSING_PROVIDER_TASK_ID_REASON,
+        });
+      } else {
+        await updateUnifiedTask(task.id, {
+          status: "failed",
+          phase: "interrupted",
+          reason: MISSING_PROVIDER_TASK_ID_REASON,
+          clearLease: true,
+        }, database);
+      }
+      continue;
     }
   }
-  return rows.length;
+  return recoveredCount;
 }
 
 export async function startUnifiedTaskWorker(
@@ -99,6 +125,7 @@ export async function startUnifiedTaskWorker(
   const workerId = `${process.pid}:${randomUUID()}`;
   const limits = { ...DEFAULT_LIMITS, ...options.limits };
   const running = new Map<UnifiedTaskType, number>();
+  const runningTaskIds = new Set<number>();
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
   let loopRunning = false;
@@ -123,7 +150,17 @@ export async function startUnifiedTaskWorker(
   const execute = async (task: any) => {
     const type = (task.taskType || "prompt") as UnifiedTaskType;
     running.set(type, (running.get(type) || 0) + 1);
+    runningTaskIds.add(Number(task.id));
     try {
+      console.info("[unified-task-worker] executing task", {
+        taskId: task.id,
+        taskKey: task.taskId,
+        handler: task.handler,
+        businessType: task.businessType,
+        businessId: task.businessId,
+        phase: task.phase,
+        providerTaskId: task.providerTaskId,
+      });
       const handler = handlers[task.handler];
       if (!handler) throw new Error(`未注册任务处理器: ${task.handler}`);
       const payload = task.payloadJson ? JSON.parse(task.payloadJson) : {};
@@ -151,6 +188,7 @@ export async function startUnifiedTaskWorker(
       }
     } finally {
       running.set(type, Math.max(0, (running.get(type) || 1) - 1));
+      runningTaskIds.delete(Number(task.id));
       options.onWake?.();
       schedule(0);
     }
@@ -160,6 +198,8 @@ export async function startUnifiedTaskWorker(
     if (stopped || loopRunning) return;
     loopRunning = true;
     try {
+      const recovered = await recoverInterruptedUnifiedTasks(db, runningTaskIds);
+      if (recovered) console.warn("[unified-task-worker] recovered interrupted tasks before dispatch", { recovered });
       const candidates = await (db as any)("o_tasks")
         .where("status", "queued")
         .whereNotNull("handler")

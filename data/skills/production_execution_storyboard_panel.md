@@ -1,6 +1,6 @@
 ---
 name: production_execution_storyboard_panel
-description: 阶段5执行规则：读取正式结构化分镜，激活图片 Prompt 技法，只写图片派生字段。
+description: 阶段5执行规则：读取正式结构化分镜，激活图片 Prompt 技法，只写分镜面板图片派生字段。
 ---
 
 # 阶段5：分镜面板图片派生写入
@@ -30,8 +30,26 @@ description: 阶段5执行规则：读取正式结构化分镜，激活图片 Pr
 - `prompt`
 - `shouldGenerateImage`
 - `associateAssetsIds`
+- `mode`
 
 不得新增、删除、重排或重新分组分镜。不得修改 `tableRowJson` 或任何分镜事实。不得触发分镜图生成任务。
+
+## update / replace 模式
+
+默认使用 `mode: "update"`：
+
+- 用于首次写入、补充提示词、普通局部优化。
+- 覆盖当前分镜的 `prompt`、`shouldGenerateImage`、`associateAssetsIds`。
+- 如果已有图片画布，后端只同步主生成节点提示词和引用信息，不清空探索节点，不清空最终图。
+
+只有用户明确要求“重写、重新写入、清空重做、覆盖分镜图提示词和引用图”时，必须先停下向用户确认。
+
+用户确认后才允许使用 `mode: "replace"`：
+
+- replace 会清空该分镜已有图片结果和图片画布探索，从新的 `prompt` 与 `associateAssetsIds` 重新开始。
+- replace 不删除分镜行本身。
+- replace 不修改 `tableRowJson`、镜头事实、台词、时长、分组。
+- replace 不触发生图任务；必须等待用户后续明确确认生成分镜图。
 
 ## 执行流程
 

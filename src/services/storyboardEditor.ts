@@ -1,4 +1,5 @@
 import u from "@/utils";
+import { syncStoryboardImageFlowFieldsWithDb } from "@/services/imageFlow";
 import { resolveDirectorAsset } from "@/services/directorAsset";
 import {
   buildStoryboardDraftRow,
@@ -273,6 +274,12 @@ export async function saveStoryboardEditor(input: StoryboardEditorInput) {
     if (assetIds.length) {
       await trx("o_assets2Storyboard").insert(assetIds.map((assetId) => ({ storyboardId: input.id, assetId })));
     }
+    await syncStoryboardImageFlowFieldsWithDb(trx, {
+      projectId: Number(storyboard.projectId),
+      scriptId: Number(storyboard.scriptId),
+      storyboardId: Number(input.id),
+      prompt: input.prompt,
+    });
     await updateTrackDuration(trx, storyboard.trackId);
     return {
       id: input.id,

@@ -804,7 +804,9 @@ function startRuntimeHealthMonitor(): void {
       if (record.stopping || !record.ready) continue;
       const state = runtimeStates.get(role);
       const heartbeatAge = now - (state?.lastHeartbeatAt || now);
-      if (heartbeatAge > 30_000 && !record.healthKillIssued) {
+      const killThresholdMs = role === "worker" ? 120_000 : 30_000;
+      const degradedThresholdMs = role === "worker" ? 30_000 : 15_000;
+      if (heartbeatAge > killThresholdMs && !record.healthKillIssued) {
         record.healthKillIssued = true;
         updateRuntimeState(role, {
           status: "failed",
@@ -815,9 +817,10 @@ function startRuntimeHealthMonitor(): void {
           childRole: role,
           childPid: record.process.pid,
           heartbeatAge,
+          killThresholdMs,
         });
         record.process.kill();
-      } else if (heartbeatAge > 15_000 && state?.status === "ready") {
+      } else if (heartbeatAge > degradedThresholdMs && state?.status === "ready") {
         updateRuntimeState(role, {
           status: "degraded",
           lastError: `heartbeat delayed ${Math.round(heartbeatAge / 1000)}s`,

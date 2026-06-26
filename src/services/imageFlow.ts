@@ -1,5 +1,5 @@
 import u from "@/utils";
-import { toTaskStatus, type TaskStatus } from "@/lib/taskStatus";
+import { toLegacyTaskState, toTaskStatus, type TaskStatus } from "@/lib/taskStatus";
 
 export type ImageFlowTargetType = "deriveAsset" | "storyboard";
 type HistorySource = "image-flow" | "storyboard" | "asset";
@@ -38,6 +38,27 @@ export interface EnsuredDeriveAssetImageFlow {
   ratio: string;
   referenceMediaPaths: string[];
 }
+
+export interface EnsureStoryboardImageFlowInput {
+  projectId: number;
+  scriptId: number;
+  targetId: number;
+  model?: string;
+  quality?: string;
+  ratio?: string;
+}
+
+export interface EnsuredStoryboardImageFlow {
+  flowId: number;
+  nodeId: string;
+  prompt: string;
+  model: string;
+  quality: string;
+  ratio: string;
+  referenceMediaPaths: string[];
+}
+
+export type StoryboardPanelMode = "update" | "replace";
 
 export class ImageFlowValidationError extends Error {
   issues: Array<{ path: string; message: string }>;
@@ -386,6 +407,50 @@ async function mergeFlowForSave(trx: any, flowId: number, submittedNodes: any[],
   return { nodes: mergedNodes, edges: mergedEdges };
 }
 
+async function overlayLatestFlowTaskNodes(flowId: number, nodes: any[]) {
+  const generatedNodeIds = nodes.filter((node) => node?.type === "generated" && node.id).map((node) => String(node.id));
+  if (!generatedNodeIds.length) return nodes;
+
+  const tasks = await u
+    .db("o_editImageTask")
+    .where("flowId", flowId)
+    .whereIn("nodeId", generatedNodeIds)
+    .orderBy("updateTime", "desc")
+    .orderBy("id", "desc");
+  if (!tasks.length) return nodes;
+
+  const taskCenterIds = tasks.map((task: any) => Number(task.taskCenterId)).filter(Number.isFinite);
+  const unifiedTasks = taskCenterIds.length
+    ? await u.db("o_tasks").whereIn("id", taskCenterIds).select("id", "status", "phase", "state", "reason", "resultJson", "finishTime", "updateTime")
+    : [];
+  const unifiedById = new Map(unifiedTasks.map((task: any) => [Number(task.id), task]));
+  const latestByNodeId = new Map<string, any>();
+
+  for (const task of tasks) {
+    const nodeId = String(task.nodeId || "");
+    if (!nodeId || latestByNodeId.has(nodeId)) continue;
+    const unifiedTask = unifiedById.get(Number(task.taskCenterId));
+    latestByNodeId.set(nodeId, {
+      ...task,
+      status: unifiedTask?.status || task.status,
+      state: unifiedTask?.state || task.state,
+      phase: unifiedTask?.phase,
+      reason: unifiedTask?.reason || task.reason,
+      finishTime: unifiedTask?.finishTime,
+    });
+  }
+
+  return nodes.map((node) => {
+    if (node?.type !== "generated") return node;
+    const latestTask = latestByNodeId.get(String(node.id));
+    if (!latestTask) return node;
+    const merged = clone(node);
+    merged.data = { ...(merged.data || {}), ...taskOwnedSnapshot(latestTask) };
+    if (latestTask.phase) merged.data.phase = latestTask.phase;
+    return merged;
+  });
+}
+
 async function originalUrl(value: unknown): Promise<string> {
   const filePath = stripUrl(value);
   return filePath ? u.oss.getFileUrl(filePath) : "";
@@ -497,6 +562,171 @@ async function validateDeriveAssetScope(
     throw new ImageFlowValidationError([{ path: "targetId", message: "父资产不属于当前项目" }]);
   }
   return asset;
+}
+
+async function loadProjectImageDefaults(db: any, projectId: number) {
+  const project = await db("o_project").where("id", projectId).first("imageModel", "imageQuality", "videoRatio");
+  return {
+    model: project?.imageModel || "",
+    quality: project?.imageQuality || "",
+    ratio: normalizeRatio(project?.videoRatio) || "",
+  };
+}
+
+async function validateStoryboardScope(db: any, input: EnsureStoryboardImageFlowInput) {
+  const storyboard = await db("o_storyboard")
+    .where({ id: input.targetId, projectId: input.projectId, scriptId: input.scriptId })
+    .first("id", "projectId", "scriptId", "prompt", "flowId", "filePath");
+  if (!storyboard) {
+    throw new ImageFlowValidationError([{ path: "targetId", message: "目标分镜不存在" }]);
+  }
+  const defaults = await loadProjectImageDefaults(db, input.projectId);
+  return {
+    ...storyboard,
+    model: input.model || defaults.model,
+    quality: input.quality || defaults.quality,
+    ratio: normalizeRatio(input.ratio) || defaults.ratio,
+  };
+}
+
+async function loadStoryboardAssetReferences(db: any, storyboardId: number) {
+  const rows = await db("o_assets2Storyboard")
+    .leftJoin("o_assets", "o_assets2Storyboard.assetId", "o_assets.id")
+    .leftJoin("o_image", "o_image.id", "o_assets.imageId")
+    .where("o_assets2Storyboard.storyboardId", storyboardId)
+    .orderBy("o_assets2Storyboard.rowid")
+    .select("o_assets2Storyboard.assetId", "o_assets.name", "o_image.filePath");
+  const seen = new Set<number>();
+  return rows
+    .map((row: any) => ({
+      assetId: Number(row.assetId),
+      name: row.name || "",
+      filePath: stripMediaRef(row.filePath),
+    }))
+    .filter((row: any) => {
+      if (!Number.isFinite(row.assetId) || seen.has(row.assetId)) return false;
+      seen.add(row.assetId);
+      return Boolean(row.filePath);
+    });
+}
+
+function createStoryboardGeneratedNode(input: EnsureStoryboardImageFlowInput, storyboard: any) {
+  const hasImage = Boolean(storyboard.filePath);
+  return {
+    id: `storyboard-generated:${u.uuid()}`,
+    type: "generated",
+    position: { x: 700, y: 100 },
+    data: {
+      generatedImage: storyboard.filePath || "",
+      references: [],
+      prompt: normalizePrompt(storyboard.prompt),
+      model: storyboard.model || input.model || "",
+      ratio: normalizeRatio(storyboard.ratio) || normalizeRatio(input.ratio) || "",
+      quality: storyboard.quality || input.quality || "",
+      status: hasImage ? "completed" : "pending",
+      state: hasImage ? "success" : "idle",
+      reason: "",
+      isPrimary: true,
+    },
+  };
+}
+
+function createStoryboardReferenceNode(ref: { assetId: number; name?: string; filePath: string }, index: number) {
+  return {
+    id: `storyboard-upload:${u.uuid()}`,
+    type: "upload",
+    position: { x: 100, y: 80 + index * 160 },
+    data: {
+      image: ref.filePath,
+      previewImage: ref.filePath,
+      source: "asset",
+      sourceId: ref.assetId,
+      label: ref.name || "",
+    },
+  };
+}
+
+function createReferenceEdge(source: string, target: string) {
+  return {
+    id: `storyboard-edge:${u.uuid()}`,
+    source,
+    target,
+    type: "removeLine",
+    animated: true,
+    style: { stroke: "#00000" },
+  };
+}
+
+function syncPrimaryStoryboardReferences(flow: any, primary: any, references: Array<{ assetId: number; name?: string; filePath: string }>) {
+  const nodes = Array.isArray(flow.nodes) ? flow.nodes : [];
+  const edges = Array.isArray(flow.edges) ? flow.edges : [];
+  const nodeById = new Map(nodes.map((node: any) => [node.id, node]));
+  const directReferenceNodeIds = new Set<string>();
+  for (const edge of edges) {
+    if (edge?.target !== primary?.id) continue;
+    const source: any = nodeById.get(edge.source);
+    if (source?.type === "upload" && source.data?.source === "asset") directReferenceNodeIds.add(source.id);
+  }
+
+  const keptEdges = edges.filter((edge: any) => !(edge?.target === primary?.id && directReferenceNodeIds.has(edge.source)));
+  const connectedIds = new Set<string>();
+  for (const edge of keptEdges) {
+    connectedIds.add(edge.source);
+    connectedIds.add(edge.target);
+  }
+  const keptNodes = nodes.filter((node: any) => !directReferenceNodeIds.has(node.id) || connectedIds.has(node.id));
+  const newNodes = references.map(createStoryboardReferenceNode);
+  flow.nodes = [...keptNodes, ...newNodes];
+  flow.edges = [...keptEdges, ...newNodes.map((node: any) => createReferenceEdge(node.id, primary.id))];
+}
+
+function createStoryboardFlow(input: EnsureStoryboardImageFlowInput, storyboard: any, references: Array<{ assetId: number; name?: string; filePath: string }>) {
+  const primary = createStoryboardGeneratedNode(input, storyboard);
+  const flow = {
+    projectId: input.projectId,
+    scriptId: input.scriptId,
+    targetType: "storyboard",
+    targetId: input.targetId,
+    selectedImageUrl: storyboard.filePath || "",
+    nodes: [primary],
+    edges: [],
+  };
+  syncPrimaryStoryboardReferences(flow, primary, references);
+  return { flow, primary };
+}
+
+async function cancelStoryboardImageFlowTasks(trx: any, flowId: number | null, targetId: number, reason: string) {
+  const query = trx("o_editImageTask").where((builder: any) => {
+    builder.where({ targetType: "storyboard", targetId });
+    if (flowId) builder.orWhere("flowId", flowId);
+  });
+  const tasks = await query.select("id", "taskCenterId");
+  if (!tasks.length) return;
+  const taskIds = tasks.map((task: any) => Number(task.id)).filter(Number.isFinite);
+  const taskCenterIds = tasks.map((task: any) => Number(task.taskCenterId)).filter(Number.isFinite);
+  const now = Date.now();
+  await trx("o_editImageTask").whereIn("id", taskIds).update({
+    status: "cancelled",
+    state: toLegacyTaskState("cancelled"),
+    reason,
+    url: null,
+    updateTime: now,
+  });
+  await trx("o_tasks")
+    .where((builder: any) => {
+      if (taskCenterIds.length) builder.whereIn("id", taskCenterIds);
+      if (taskIds.length) builder.orWhere((inner: any) => inner.where("businessType", "image-flow").whereIn("businessId", taskIds));
+    })
+    .update({
+      status: "cancelled",
+      phase: "cancelled",
+      state: toLegacyTaskState("cancelled"),
+      reason,
+      updateTime: now,
+      finishTime: now,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
 }
 
 function createDefaultGeneratedNode(input: EnsureDeriveAssetImageFlowInput, asset: any) {
@@ -625,6 +855,206 @@ export async function ensureDeriveAssetImageFlow(
       referenceMediaPaths: collectPrimaryReferences(flow, primary),
     };
   });
+}
+
+export async function ensureStoryboardImageFlow(
+  input: EnsureStoryboardImageFlowInput,
+): Promise<EnsuredStoryboardImageFlow> {
+  return u.db.transaction(async (trx: any) => {
+    const storyboard = await validateStoryboardScope(trx, input);
+    const references = await loadStoryboardAssetReferences(trx, input.targetId);
+    let flowId = storyboard.flowId ? Number(storyboard.flowId) : null;
+    let flow: any;
+
+    if (flowId) {
+      const row = await trx("o_imageFlow").where("id", flowId).first("flowData");
+      if (!row?.flowData) {
+        throw new ImageFlowValidationError([{ path: "flowId", message: "分镜绑定的图片画布不存在" }]);
+      }
+      flow = parseStoredFlow(row.flowData);
+      const requested = { projectId: input.projectId, scriptId: input.scriptId, targetType: "storyboard" as const, targetId: input.targetId };
+      assertSameTarget(
+        {
+          projectId: flow.projectId,
+          scriptId: flow.scriptId,
+          targetType: flow.targetType,
+          targetId: flow.targetId,
+        },
+        requested,
+      );
+      assertSameTarget(await findFlowTarget(trx, flowId), requested);
+    } else {
+      ({ flow } = createStoryboardFlow(input, storyboard, references));
+    }
+
+    let primary = selectPrimaryGeneratedNode(flow.nodes);
+    if (!primary) {
+      primary = createStoryboardGeneratedNode(input, storyboard);
+      flow.nodes.push(primary);
+      syncPrimaryStoryboardReferences(flow, primary, references);
+    }
+
+    primary.data = {
+      ...(primary.data || {}),
+      prompt: normalizePrompt(primary.data?.prompt) || normalizePrompt(storyboard.prompt),
+      model: primary.data?.model || storyboard.model || input.model || "",
+      quality: primary.data?.quality || storyboard.quality || input.quality || "",
+      ratio: normalizeRatio(primary.data?.ratio) || normalizeRatio(storyboard.ratio) || normalizeRatio(input.ratio),
+      isPrimary: true,
+    };
+    if (!primary.data.prompt) throw new Error("请先填写生图提示语");
+    if (!primary.data.model) throw new Error("请先配置图片模型");
+    if (!primary.data.quality) throw new Error("请先配置图片清晰度");
+    if (!primary.data.ratio) throw new Error("请先配置图片比例");
+
+    flow.projectId = input.projectId;
+    flow.scriptId = input.scriptId;
+    flow.targetType = "storyboard";
+    flow.targetId = input.targetId;
+    flow.nodes = cleanFlowNodes(flow.nodes);
+    flow.edges = clone(flow.edges || []);
+
+    if (flowId) {
+      await trx("o_imageFlow").where("id", flowId).update({ flowData: JSON.stringify(flow) });
+    } else {
+      const [insertedId] = await trx("o_imageFlow").insert({ flowData: JSON.stringify(flow) });
+      flowId = Number(insertedId);
+      await trx("o_storyboard").where({ id: input.targetId, projectId: input.projectId, scriptId: input.scriptId }).update({ flowId });
+    }
+
+    return {
+      flowId,
+      nodeId: primary.id,
+      prompt: primary.data.prompt,
+      model: primary.data.model,
+      quality: primary.data.quality,
+      ratio: primary.data.ratio,
+      referenceMediaPaths: collectPrimaryReferences(flow, primary),
+    };
+  });
+}
+
+export async function applyStoryboardPanelImageFieldsWithDb(
+  trx: any,
+  input: {
+    projectId: number;
+    scriptId: number;
+    storyboardId: number;
+    prompt: string;
+    shouldGenerateImage: boolean;
+    associateAssetsIds: number[];
+    mode?: StoryboardPanelMode;
+  },
+) {
+  const mode = input.mode || "update";
+  const assetIds = [...new Set((input.associateAssetsIds || []).map(Number).filter(Number.isFinite))];
+  const storyboard = await trx("o_storyboard")
+    .where({ id: input.storyboardId, projectId: input.projectId, scriptId: input.scriptId })
+    .first("id", "flowId", "tableRowJson", "prompt", "filePath");
+  if (!storyboard) throw new Error("storyboard not found");
+
+  const storyboardPatch: Record<string, unknown> = {
+    prompt: input.prompt,
+    shouldGenerateImage: input.shouldGenerateImage ? 1 : 0,
+  };
+  if (mode === "replace") {
+    storyboardPatch.filePath = "";
+    storyboardPatch.reason = "";
+    storyboardPatch.state = toLegacyTaskState("pending");
+  }
+  await trx("o_storyboard").where("id", input.storyboardId).update(storyboardPatch);
+  await trx("o_assets2Storyboard").where("storyboardId", input.storyboardId).del();
+  if (assetIds.length) {
+    await trx("o_assets2Storyboard").insert(assetIds.map((assetId) => ({ storyboardId: input.storyboardId, assetId })));
+  }
+
+  if (mode === "replace") {
+    await cancelStoryboardImageFlowTasks(trx, storyboard.flowId ? Number(storyboard.flowId) : null, input.storyboardId, "分镜图已重写");
+    const scoped = await validateStoryboardScope(trx, {
+      projectId: input.projectId,
+      scriptId: input.scriptId,
+      targetId: input.storyboardId,
+    });
+    const references = await loadStoryboardAssetReferences(trx, input.storyboardId);
+    const { flow, primary } = createStoryboardFlow(
+      {
+        projectId: input.projectId,
+        scriptId: input.scriptId,
+        targetId: input.storyboardId,
+        model: scoped.model,
+        quality: scoped.quality,
+        ratio: scoped.ratio,
+      },
+      { ...scoped, prompt: input.prompt, filePath: "" },
+      references,
+    );
+    let flowId = storyboard.flowId ? Number(storyboard.flowId) : null;
+    const flowData = JSON.stringify({ ...flow, nodes: cleanFlowNodes(flow.nodes), edges: clone(flow.edges || []) });
+    if (flowId) {
+      await trx("o_imageFlow").where("id", flowId).update({ flowData });
+    } else {
+      const [insertedId] = await trx("o_imageFlow").insert({ flowData });
+      flowId = Number(insertedId);
+    }
+    await trx("o_storyboard").where("id", input.storyboardId).update({ flowId });
+    return { flowId, nodeId: primary.id, mode, associateAssetsIds: assetIds };
+  }
+
+  if (storyboard.flowId) {
+    const row = await trx("o_imageFlow").where("id", storyboard.flowId).first("flowData");
+    if (row?.flowData) {
+      const flow = parseStoredFlow(row.flowData);
+      const primary = selectPrimaryGeneratedNode(flow.nodes);
+      if (primary) {
+        primary.data = {
+          ...(primary.data || {}),
+          prompt: input.prompt,
+          isPrimary: true,
+        };
+        const references = await loadStoryboardAssetReferences(trx, input.storyboardId);
+        syncPrimaryStoryboardReferences(flow, primary, references);
+        flow.projectId = input.projectId;
+        flow.scriptId = input.scriptId;
+        flow.targetType = "storyboard";
+        flow.targetId = input.storyboardId;
+        await trx("o_imageFlow").where("id", storyboard.flowId).update({
+          flowData: JSON.stringify({ ...flow, nodes: cleanFlowNodes(flow.nodes), edges: clone(flow.edges || []) }),
+        });
+        return { flowId: Number(storyboard.flowId), nodeId: primary.id, mode, associateAssetsIds: assetIds };
+      }
+    }
+  }
+  return { flowId: storyboard.flowId ? Number(storyboard.flowId) : null, nodeId: null, mode, associateAssetsIds: assetIds };
+}
+
+export async function syncStoryboardImageFlowFieldsWithDb(
+  trx: any,
+  input: { projectId: number; scriptId: number; storyboardId: number; prompt: string },
+) {
+  const storyboard = await trx("o_storyboard")
+    .where({ id: input.storyboardId, projectId: input.projectId, scriptId: input.scriptId })
+    .first("id", "flowId");
+  if (!storyboard?.flowId) return { flowId: null, nodeId: null };
+  const row = await trx("o_imageFlow").where("id", storyboard.flowId).first("flowData");
+  if (!row?.flowData) return { flowId: Number(storyboard.flowId), nodeId: null };
+  const flow = parseStoredFlow(row.flowData);
+  const primary = selectPrimaryGeneratedNode(flow.nodes);
+  if (!primary) return { flowId: Number(storyboard.flowId), nodeId: null };
+  primary.data = {
+    ...(primary.data || {}),
+    prompt: input.prompt,
+    isPrimary: true,
+  };
+  const references = await loadStoryboardAssetReferences(trx, input.storyboardId);
+  syncPrimaryStoryboardReferences(flow, primary, references);
+  flow.projectId = input.projectId;
+  flow.scriptId = input.scriptId;
+  flow.targetType = "storyboard";
+  flow.targetId = input.storyboardId;
+  await trx("o_imageFlow").where("id", storyboard.flowId).update({
+    flowData: JSON.stringify({ ...flow, nodes: cleanFlowNodes(flow.nodes), edges: clone(flow.edges || []) }),
+  });
+  return { flowId: Number(storyboard.flowId), nodeId: primary.id };
 }
 
 export async function updateDeriveAssetPrompt(
@@ -955,6 +1385,7 @@ export async function getImageFlow(flowId: number) {
           .first("o_image.filePath")
       )?.filePath || "";
   }
+  const nodes = await overlayLatestFlowTaskNodes(Number(row.id), flow.nodes || []);
   return {
     ...flow,
     id: row.id,
@@ -964,7 +1395,7 @@ export async function getImageFlow(flowId: number) {
     targetType,
     targetId,
     selectedImageUrl: selectedImagePath ? await u.oss.getFileUrl(stripUrl(selectedImagePath)) : "",
-    nodes: await resolveFlowNodes(flow.nodes || []),
+    nodes: await resolveFlowNodes(nodes),
     edges: flow.edges || [],
   };
 }

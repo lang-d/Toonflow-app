@@ -3,13 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-const skillsRoot = path.join(process.cwd(), "data", "skills");
+const repoRoot = process.cwd();
+const skillsRoot = path.join(repoRoot, "data", "skills");
 const panelSkill = fs.readFileSync(path.join(skillsRoot, "production_execution_storyboard_panel.md"), "utf8");
-const promptSkill = fs.readFileSync(
-  path.join(skillsRoot, "production_skills", "storyboard_prompt_techniques.md"),
-  "utf8",
-);
-const mainProcess = fs.readFileSync(path.join(process.cwd(), "scripts", "main.ts"), "utf8");
+const genSkill = fs.readFileSync(path.join(skillsRoot, "production_execution_storyboard_gen.md"), "utf8");
+const promptSkill = fs.readFileSync(path.join(skillsRoot, "production_skills", "storyboard_prompt_techniques.md"), "utf8");
+const mainProcess = fs.readFileSync(path.join(repoRoot, "scripts", "main.ts"), "utf8");
+const toolsSource = fs.readFileSync(path.join(repoRoot, "src", "agents", "productionAgent", "tools.ts"), "utf8");
 
 test("storyboard panel reads planning and facts without loading the legacy storyboard style skill", () => {
   assert.match(panelSkill, /get_flowData\("scriptPlan"\)/);
@@ -18,6 +18,27 @@ test("storyboard panel reads planning and facts without loading the legacy story
   assert.match(panelSkill, /只允许调用 `update_storyboard_panel_v2`/);
   assert.match(panelSkill, /不得激活 `director_storyboard`/);
   assert.doesNotMatch(panelSkill, /-\s+`director_storyboard`\s*$/m);
+});
+
+test("storyboard panel supports update and confirmed full replace modes", () => {
+  assert.match(toolsSource, /mode:\s*z\.enum\(\["update", "replace"\]\)/);
+  assert.match(toolsSource, /applyStoryboardPanelImageFieldsWithDb/);
+  assert.match(panelSkill, /默认使用 `mode: "update"`/);
+  assert.match(panelSkill, /必须先停下向用户确认/);
+  assert.match(panelSkill, /用户确认后才允许使用 `mode: "replace"`/);
+  assert.match(panelSkill, /清空该分镜已有图片结果和图片画布探索/);
+  assert.match(panelSkill, /replace 不修改 `tableRowJson`/);
+});
+
+test("storyboard image generation uses generate_storyboard and waits for ack", () => {
+  assert.match(genSkill, /generate_storyboard\(\{ ids: \[分镜ID列表\] \}\)/);
+  assert.match(genSkill, /后端统一走 `image-flow`/);
+  assert.doesNotMatch(genSkill, /generate_storyboard_images/);
+  assert.match(toolsSource, /emitWithAckTimeout<GenerateStoryboardAck>\(socket,\s*"generateStoryboard"/);
+  assert.match(toolsSource, /ack\?\.success === false/);
+  assert.match(toolsSource, /normalizeGenerateStoryboardResult/);
+  assert.doesNotMatch(toolsSource, /new Promise\(\(resolve\) => socket\.emit\("generateStoryboard"/);
+  assert.doesNotMatch(toolsSource, /return "开始生成分镜"/);
 });
 
 test("storyboard prompt technique defines a static Chinese prompt and ordered Image references", () => {
@@ -42,7 +63,7 @@ test("storyboard prompt technique freezes dynamic interactions into one visible 
 
 test("storyboard prompt technique rejects quality filler and limits style to the director plan", () => {
   assert.match(promptSkill, /`scriptPlan` 只提供“视觉风格与画面基调”/);
-  assert.match(promptSkill, /视觉风格：.*最多一句/);
+  assert.match(promptSkill, /视觉风格.*最多一句/);
   assert.match(promptSkill, /禁止自动加入“真人摄影、电影级、4K、8K、极致细节/);
   assert.match(promptSkill, /不从画风手册复制固定画质锁定词/);
 });

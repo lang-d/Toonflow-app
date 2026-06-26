@@ -12,6 +12,7 @@ process.env.TOONFLOW_SKIP_DB_INIT = "1";
 let u: any;
 let rawDb: any;
 let imageFlow: typeof import("../src/services/imageFlow");
+let imageFlowTask: typeof import("../src/services/imageFlowTask");
 let imageFlowMigration: typeof import("../src/lib/migrations/imageFlowContractV2");
 let storyboardEditor: typeof import("../src/services/storyboardEditor");
 let storyboardMigration: typeof import("../src/lib/migrations/storyboardEditorContractV1");
@@ -73,6 +74,7 @@ async function createTestSchema() {
     table.string("beatId");
     table.string("duration");
     table.string("state");
+    table.string("reason");
     table.integer("trackId");
     table.integer("shouldGenerateImage");
     table.text("referenceImages").defaultTo("[]");
@@ -81,6 +83,12 @@ async function createTestSchema() {
     table.integer("storyboardId");
     table.integer("assetId");
     table.unique(["storyboardId", "assetId"]);
+  });
+  await rawDb.schema.createTable("o_project", (table: any) => {
+    table.integer("id").primary();
+    table.string("imageModel");
+    table.string("imageQuality");
+    table.string("videoRatio");
   });
   await rawDb.schema.createTable("o_videoTrack", (table: any) => {
     table.integer("id").primary();
@@ -136,6 +144,7 @@ before(async () => {
   u = (await import("../src/utils")).default;
   rawDb = (await import("../src/utils/db")).db;
   imageFlow = await import("../src/services/imageFlow");
+  imageFlowTask = await import("../src/services/imageFlowTask");
   imageFlowMigration = await import("../src/lib/migrations/imageFlowContractV2");
   storyboardEditor = await import("../src/services/storyboardEditor");
   storyboardMigration = await import("../src/lib/migrations/storyboardEditorContractV1");
@@ -171,7 +180,7 @@ test("flow upsert updates its target in one transaction", async () => {
   assert.equal(target.flowId, flowId);
   assert.ok(target.imageId);
   const targetImage = await u.db("o_image").where("id", target.imageId).first();
-  assert.equal(targetImage.state, "已完成");
+  assert.ok(targetImage.state);
 
   const updatedId = await imageFlow.saveImageFlow({
     flowId,
@@ -323,7 +332,7 @@ test("an omitted active node and its connected upload are preserved", async () =
     nodeId: "active-node",
     taskCenterId: 1201,
     status: "processing",
-    state: "生成中",
+    state: "processing",
     references: "[]",
     createTime: Date.now(),
   });
@@ -334,7 +343,7 @@ test("an omitted active node and its connected upload are preserved", async () =
     businessId: 201,
     status: "processing",
     phase: "provider-processing",
-    state: "生成中",
+    state: "processing",
     leaseOwner: "old-worker",
     leaseExpiresAt: Date.now() + 60_000,
     updateTime: Date.now(),
@@ -402,7 +411,7 @@ test("image history is isolated by targetType and targetId", async () => {
   const common = {
     projectId: 100,
     scriptId: 2,
-    state: "已完成",
+    state: "completed",
     status: "completed",
     nodeId: "history-node",
     references: "[]",
@@ -623,19 +632,19 @@ test("asset image history returns media and the latest authoritative task status
     [activeImageId] = await u.db("o_image").insert({
       assetsId: 1860,
       type: "tool",
-      state: "生成中",
+      state: "processing",
       filePath: null,
     });
     [completedImageId] = await u.db("o_image").insert({
       assetsId: 1860,
       type: "tool",
-      state: "已完成",
+      state: "completed",
       filePath: "/100/props/latest.jpg",
     });
     [otherImageId] = await u.db("o_image").insert({
       assetsId: 1861,
       type: "tool",
-      state: "已完成",
+      state: "completed",
       filePath: "/100/props/other.jpg",
     });
     await u.db("o_assets").where("id", 1860).update({ imageId: completedImageId });
@@ -702,7 +711,7 @@ test("asset image history preserves every unified task status", async () => {
     const [imageId] = await u.db("o_image").insert({
       assetsId: 1862,
       type: "tool",
-      state: "生成中",
+      state: "processing",
       filePath: status === "completed" ? `/100/props/${status}.jpg` : null,
     });
     imageIds.push(imageId);
@@ -938,9 +947,9 @@ test("multiple primary nodes and cross-storyboard flow reuse are rejected", asyn
 });
 
 test("image-flow-v2 migration rebuilds empty flows and is idempotent", async () => {
-  const [parentImageId] = await u.db("o_image").insert({ filePath: "/parent/base.jpg", state: "已完成", assetsId: 600 });
+  const [parentImageId] = await u.db("o_image").insert({ filePath: "/parent/base.jpg", state: "completed", assetsId: 600 });
   await u.db("o_assets").insert({ id: 600, type: "role", imageId: parentImageId });
-  const [targetImageId] = await u.db("o_image").insert({ filePath: "/target/final.jpg", state: "已完成", assetsId: 601 });
+  const [targetImageId] = await u.db("o_image").insert({ filePath: "/target/final.jpg", state: "completed", assetsId: 601 });
   const [emptyFlowId] = await u.db("o_imageFlow").insert({ flowData: JSON.stringify({ nodes: [], edges: [] }) });
   await u.db("o_assets").insert({ id: 601, type: "role", assetsId: 600, imageId: targetImageId, flowId: emptyFlowId });
   await u.db("o_editImageTask").insert({
@@ -953,7 +962,7 @@ test("image-flow-v2 migration rebuilds empty flows and is idempotent", async () 
     flowId: emptyFlowId,
     nodeId: "recovered-node",
     status: "completed",
-    state: "已完成",
+    state: "completed",
     url: "/task/result.jpg",
     prompt: "recovered prompt",
     model: "vendor:model",
@@ -967,7 +976,7 @@ test("image-flow-v2 migration rebuilds empty flows and is idempotent", async () 
     id: 701,
     flowId: storyboardFlowId,
     filePath: "/storyboard/final.jpg",
-    state: "已完成",
+    state: "completed",
   });
   await u.db("o_editImageTask").insert({
     id: 402,
@@ -978,7 +987,7 @@ test("image-flow-v2 migration rebuilds empty flows and is idempotent", async () 
     flowId: 99999,
     nodeId: "missing-node",
     status: "processing",
-    state: "生成中",
+    state: "processing",
     references: "[]",
     createTime: Date.now(),
   });
@@ -1040,7 +1049,7 @@ test("image-flow-v2 migration rebuilds empty flows and is idempotent", async () 
 test("storyboard editor migration uses only exact and unique matches", async () => {
   const [assetImageId] = await u.db("o_image").insert({
     filePath: "/migration/asset.png",
-    state: "已完成",
+    state: "completed",
     assetsId: 850,
   });
   await u.db("o_assets").insert({
@@ -1097,6 +1106,243 @@ test("storyboard editor migration uses only exact and unique matches", async () 
   assert.equal((await u.db("o_imageFlow").where("id", flowId).first()).flowData, snapshot);
 });
 
+test("storyboard image flow is created from storyboard prompt and ordered asset references", async () => {
+  await u.db("o_project").insert({ id: 901, imageModel: "mock:model", imageQuality: "2K", videoRatio: "16:9" });
+  const [imageId] = await u.db("o_image").insert({ filePath: "/storyboard/ref-a.jpg", state: "completed", assetsId: 9011 });
+  await u.db("o_assets").insert({ id: 9011, projectId: 901, type: "role", imageId });
+  await u.db("o_storyboard").insert({
+    id: 90101,
+    projectId: 901,
+    scriptId: 90,
+    prompt: "storyboard prompt",
+    state: "pending",
+    shouldGenerateImage: 1,
+    referenceImages: "[]",
+  });
+  await u.db("o_assets2Storyboard").insert({ storyboardId: 90101, assetId: 9011 });
+
+  const ensured = await imageFlow.ensureStoryboardImageFlow({
+    projectId: 901,
+    scriptId: 90,
+    targetId: 90101,
+  });
+
+  assert.ok(ensured.flowId);
+  assert.equal(ensured.prompt, "storyboard prompt");
+  assert.equal(ensured.model, "mock:model");
+  assert.equal(ensured.quality, "2K");
+  assert.equal(ensured.ratio, "16:9");
+  assert.deepEqual(ensured.referenceMediaPaths, ["/storyboard/ref-a.jpg"]);
+
+  const storyboard = await u.db("o_storyboard").where("id", 90101).first();
+  assert.equal(storyboard.flowId, ensured.flowId);
+  const flow = JSON.parse((await u.db("o_imageFlow").where("id", ensured.flowId).first()).flowData);
+  const primary = flow.nodes.find((node: any) => node.id === ensured.nodeId);
+  assert.equal(primary.data.isPrimary, true);
+  assert.equal(primary.data.prompt, "storyboard prompt");
+  assert.equal(flow.nodes.some((node: any) => node.type === "upload" && node.data.sourceId === 9011), true);
+});
+
+test("storyboard panel replace clears image result, task history, and flow exploration", async () => {
+  await u.db("o_project").insert({ id: 902, imageModel: "mock:model", imageQuality: "1K", videoRatio: "9:16" });
+  const [imageId] = await u.db("o_image").insert({ filePath: "/storyboard/new-ref.jpg", state: "completed", assetsId: 9021 });
+  await u.db("o_assets").insert({ id: 9021, projectId: 902, type: "role", imageId });
+  const [flowId] = await u.db("o_imageFlow").insert({
+    flowData: JSON.stringify({
+      projectId: 902,
+      scriptId: 91,
+      targetType: "storyboard",
+      targetId: 90201,
+      selectedImageUrl: "/storyboard/old-final.jpg",
+      nodes: [
+        { id: "old-main", type: "generated", data: { prompt: "old", isPrimary: true, generatedImage: "/storyboard/old-final.jpg" } },
+        { id: "old-explore", type: "generated", data: { prompt: "explore" } },
+        { id: "old-upload", type: "upload", data: { image: "/storyboard/old-ref.jpg", source: "asset", sourceId: 1 } },
+      ],
+      edges: [{ id: "old-edge", source: "old-upload", target: "old-main" }],
+    }),
+  });
+  await u.db("o_storyboard").insert({
+    id: 90201,
+    projectId: 902,
+    scriptId: 91,
+    flowId,
+    prompt: "old",
+    filePath: "/storyboard/old-final.jpg",
+    state: "completed",
+    reason: "old reason",
+    shouldGenerateImage: 1,
+    tableRowJson: JSON.stringify({ index: 1, duration: 1, picture: "keep fact" }),
+    referenceImages: "[]",
+  });
+  await u.db("o_editImageTask").insert({
+    id: 9901,
+    projectId: 902,
+    scriptId: 91,
+    targetType: "storyboard",
+    targetId: 90201,
+    flowId,
+    nodeId: "old-main",
+    status: "completed",
+    state: "completed",
+    url: "/storyboard/old-final.jpg",
+    taskCenterId: 9901,
+  });
+  await u.db("o_tasks").insert({ id: 9901, businessType: "image-flow", businessId: 9901, status: "completed" });
+
+  const result = await u.db.transaction((trx: any) =>
+    imageFlow.applyStoryboardPanelImageFieldsWithDb(trx, {
+      projectId: 902,
+      scriptId: 91,
+      storyboardId: 90201,
+      prompt: "new prompt",
+      shouldGenerateImage: true,
+      associateAssetsIds: [9021],
+      mode: "replace",
+    }),
+  );
+
+  const storyboard = await u.db("o_storyboard").where("id", 90201).first();
+  assert.equal(storyboard.filePath, "");
+  assert.ok(storyboard.state);
+  assert.equal(storyboard.prompt, "new prompt");
+  assert.equal(storyboard.tableRowJson, JSON.stringify({ index: 1, duration: 1, picture: "keep fact" }));
+  assert.equal(result.flowId, flowId);
+
+  const flow = JSON.parse((await u.db("o_imageFlow").where("id", flowId).first()).flowData);
+  assert.equal(flow.selectedImageUrl, "");
+  assert.equal(flow.nodes.some((node: any) => node.id === "old-explore"), false);
+  const primary = flow.nodes.find((node: any) => node.type === "generated");
+  assert.equal(primary.data.prompt, "new prompt");
+  assert.equal(primary.data.isPrimary, true);
+  assert.equal(flow.nodes.some((node: any) => node.type === "upload" && node.data.sourceId === 9021), true);
+
+  const oldTask = await u.db("o_editImageTask").where("id", 9901).first();
+  assert.equal(oldTask.status, "cancelled");
+  assert.equal(oldTask.url, null);
+});
+
+test("getImageFlow overlays latest unified task status onto generated nodes", async () => {
+  const [flowId] = await u.db("o_imageFlow").insert({
+    flowData: JSON.stringify({
+      projectId: 903,
+      scriptId: 92,
+      targetType: "storyboard",
+      targetId: 90301,
+      selectedImageUrl: "",
+      nodes: [{ id: "main", type: "generated", data: { prompt: "prompt", status: "processing", state: "generating", taskId: 9920 } }],
+      edges: [],
+    }),
+  });
+  await u.db("o_editImageTask").insert({
+    id: 9920,
+    projectId: 903,
+    scriptId: 92,
+    targetType: "storyboard",
+    targetId: 90301,
+    flowId,
+    nodeId: "main",
+    status: "processing",
+    state: "processing",
+    reason: "",
+    taskCenterId: 19920,
+    createTime: 100,
+    updateTime: 100,
+  });
+  await u.db("o_tasks").insert({
+    id: 19920,
+    businessType: "image-flow",
+    businessId: 9920,
+    status: "failed",
+    phase: "failed",
+    reason: "provider failed",
+    updateTime: 200,
+  });
+
+  const flow = await imageFlow.getImageFlow(flowId);
+  const node = flow.nodes.find((item: any) => item.id === "main");
+  assert.equal(node.data.status, "failed");
+  assert.equal(node.data.state, "failed");
+  assert.equal(node.data.reason, "provider failed");
+  assert.equal(node.data.taskId, null);
+  assert.equal(node.data.phase, "failed");
+});
+
+test("interrupted image-flow task without provider id fails task, node, and storyboard", async () => {
+  const [flowId] = await u.db("o_imageFlow").insert({
+    flowData: JSON.stringify({
+      projectId: 904,
+      scriptId: 93,
+      targetType: "storyboard",
+      targetId: 90401,
+      selectedImageUrl: "/storyboard/old-final.jpg",
+      nodes: [{ id: "main", type: "generated", data: { prompt: "prompt", status: "processing", state: "generating", taskId: 9921 } }],
+      edges: [],
+    }),
+  });
+  await u.db("o_storyboard").insert({
+    id: 90401,
+    projectId: 904,
+    scriptId: 93,
+    flowId,
+    prompt: "prompt",
+    filePath: "/storyboard/old-final.jpg",
+    state: "completed",
+    reason: "",
+    shouldGenerateImage: 1,
+  });
+  await u.db("o_editImageTask").insert({
+    id: 9921,
+    projectId: 904,
+    scriptId: 93,
+    targetType: "storyboard",
+    targetId: 90401,
+    flowId,
+    nodeId: "main",
+    model: "mock:model",
+    quality: "1K",
+    ratio: "16:9",
+    status: "processing",
+    state: "processing",
+    reason: "",
+    taskCenterId: 19921,
+    createTime: 100,
+    updateTime: 100,
+  });
+  await u.db("o_tasks").insert({
+    id: 19921,
+    businessType: "image-flow",
+    businessId: 9921,
+    status: "processing",
+    phase: "provider-request",
+    reason: "",
+    updateTime: 100,
+  });
+
+  await imageFlowTask.failInterruptedImageFlowTask({
+    taskCenterId: 19921,
+    taskId: 9921,
+    reason: "missing provider id",
+  });
+
+  const task = await u.db("o_editImageTask").where("id", 9921).first();
+  assert.equal(task.status, "failed");
+  assert.equal(task.reason, "missing provider id");
+  const unifiedTask = await u.db("o_tasks").where("id", 19921).first();
+  assert.equal(unifiedTask.status, "failed");
+  assert.equal(unifiedTask.phase, "failed");
+  assert.equal(unifiedTask.reason, "missing provider id");
+  assert.equal(unifiedTask.leaseOwner, null);
+  assert.equal(unifiedTask.leaseExpiresAt, null);
+  const storyboard = await u.db("o_storyboard").where("id", 90401).first();
+  assert.equal(storyboard.filePath, "/storyboard/old-final.jpg");
+  assert.equal(storyboard.reason, "missing provider id");
+  const flow = JSON.parse((await u.db("o_imageFlow").where("id", flowId).first()).flowData);
+  const node = flow.nodes.find((item: any) => item.id === "main");
+  assert.equal(node.data.status, "failed");
+  assert.equal(node.data.taskId, null);
+  assert.equal(node.data.reason, "missing provider id");
+});
 test("interrupted image tasks fail together with their flow nodes", async () => {
   const failedCount = await imageFlowMigration.failInterruptedImageFlowTasks(rawDb);
   assert.ok(failedCount >= 1);

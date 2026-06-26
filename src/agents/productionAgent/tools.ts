@@ -12,7 +12,7 @@ import {
   beginStoryboardGeneration,
   commitStoryboardGeneration,
 } from "@/services/storyboardGeneration";
-import { updateDeriveAssetPrompt } from "@/services/imageFlow";
+import { applyStoryboardPanelImageFieldsWithDb, updateDeriveAssetPrompt } from "@/services/imageFlow";
 import { emitWithAckTimeout } from "@/agents/shared/socketAck";
 
 const deriveAssetSchema = z.object({
@@ -39,12 +39,25 @@ interface GenerateDeriveAssetAck {
   message?: unknown;
 }
 
+interface GenerateStoryboardAck {
+  success?: boolean;
+  message?: unknown;
+}
+
 interface GenerateDeriveAssetResult {
   total?: number;
   tasks?: Array<{ assetId?: number; id?: number }>;
   successCount?: number;
   failedCount?: number;
   errors?: Array<{ assetId?: number; error?: string; message?: string }>;
+}
+
+interface GenerateStoryboardResult {
+  total?: number;
+  tasks?: Array<{ storyboardId?: number; id?: number }>;
+  successCount?: number;
+  failedCount?: number;
+  errors?: Array<{ storyboardId?: number; error?: string; message?: string }>;
 }
 
 function stringifyAckMessage(value: unknown) {
@@ -80,6 +93,50 @@ function summarizeGenerateDeriveAssetResult(result: GenerateDeriveAssetResult) {
       ...result.errors.map((item) => {
         const asset = item.assetId == null ? "未知资产" : `资产 ${item.assetId}`;
         return `${asset}: ${item.error || item.message || "创建失败"}`;
+      }),
+    );
+  }
+  return lines.join("\n");
+}
+
+function normalizeGenerateStoryboardResult(value: unknown): GenerateStoryboardResult {
+  if (Array.isArray(value)) {
+    const tasks = value
+      .filter((item: any) => item?.taskId || item?.unifiedTaskId || item?.legacyTaskId)
+      .map((item: any) => ({ storyboardId: item.id }));
+    const errors = value
+      .filter((item: any) => item?.status === "failed" || item?.state === "生成失败")
+      .map((item: any) => ({ storyboardId: item.id, error: item.reason || "创建失败" }));
+    return {
+      total: value.length,
+      tasks,
+      errors,
+      successCount: tasks.length,
+      failedCount: errors.length,
+    };
+  }
+  const result = value && typeof value === "object" ? (value as GenerateStoryboardResult) : {};
+  const tasks = Array.isArray(result.tasks) ? result.tasks : [];
+  const errors = Array.isArray(result.errors) ? result.errors : [];
+  return {
+    ...result,
+    tasks,
+    errors,
+    successCount: Number.isFinite(Number(result.successCount)) ? Number(result.successCount) : tasks.length,
+    failedCount: Number.isFinite(Number(result.failedCount)) ? Number(result.failedCount) : errors.length,
+    total: Number.isFinite(Number(result.total)) ? Number(result.total) : tasks.length + errors.length,
+  };
+}
+
+function summarizeGenerateStoryboardResult(result: GenerateStoryboardResult) {
+  const successCount = Number(result.successCount || 0);
+  const failedCount = Number(result.failedCount || 0);
+  const lines = [`已创建 ${successCount} 个分镜图生成任务，${failedCount} 个创建失败。`];
+  if (result.errors?.length) {
+    lines.push(
+      ...result.errors.map((item) => {
+        const storyboard = item.storyboardId == null ? "未知分镜" : `分镜 ${item.storyboardId}`;
+        return `${storyboard}: ${item.error || item.message || "创建失败"}`;
       }),
     );
   }
@@ -135,6 +192,7 @@ const commitStoryboardTableInputSchema = z.object({
 const updateStoryboardPanelV2InputSchema = z.object({
   projectId: z.number().optional(),
   scriptId: z.number().optional(),
+  mode: z.enum(["update", "replace"]).optional().default("update"),
   items: z.array(
     z.object({
       storyboardId: z.number().optional(),
@@ -346,15 +404,15 @@ export default (toolCpnfig: ToolConfig) => {
               continue;
             }
             const storyboardId = Number(storyboard.id);
-            await trx("o_storyboard").where("id", storyboardId).update({
+            await applyStoryboardPanelImageFieldsWithDb(trx, {
+              projectId,
+              scriptId,
+              storyboardId,
               prompt: item.prompt,
-              shouldGenerateImage: item.shouldGenerateImage ? 1 : 0,
+              shouldGenerateImage: item.shouldGenerateImage,
+              associateAssetsIds: item.associateAssetsIds || [],
+              mode: input.mode,
             });
-            await trx("o_assets2Storyboard").where("storyboardId", storyboardId).del();
-            const assetIds = [...new Set(item.associateAssetsIds || [])];
-            if (assetIds.length) {
-              await trx("o_assets2Storyboard").insert(assetIds.map((assetId) => ({ storyboardId, assetId })));
-            }
             updatedIds.push(storyboardId);
           }
         });
@@ -519,19 +577,36 @@ export default (toolCpnfig: ToolConfig) => {
       ),
       execute: async ({ ids }) => {
         const thinking = msg.thinking("正在生成分镜...");
-        new Promise((resolve) => socket.emit("generateStoryboard", { ids }, (res: any) => resolve(res)))
-          .then((res) => {
-            thinking.appendText("生成的分镜数据:\n" + JSON.stringify(res, null, 2));
-            thinking.updateTitle("分镜生成完成");
-            thinking.complete();
-          })
-          .catch((e) => {
-            thinking.appendText("分镜生成失败:\n" + u.error(e).message);
-            thinking.updateTitle("分镜生成失败");
-            thinking.complete();
+        try {
+          const ack = await emitWithAckTimeout<GenerateStoryboardAck>(socket, "generateStoryboard", { ids }, undefined, {
+            agentName: "productionAgent",
+            toolName: "generate_storyboard",
+            projectId: resTool.data.projectId,
+            scriptId: resTool.data.scriptId,
           });
-
-        return "开始生成分镜";
+          if (ack?.success === false) {
+            throw new Error(stringifyAckMessage(ack.message) || "分镜图生成任务提交失败");
+          }
+          const payload =
+            ack && typeof ack === "object" && !Array.isArray(ack) && Object.prototype.hasOwnProperty.call(ack, "message")
+              ? ack.message
+              : ack;
+          const result = normalizeGenerateStoryboardResult(payload);
+          const summary = summarizeGenerateStoryboardResult(result);
+          thinking.appendText(summary + "\n");
+          if ((result.successCount || 0) === 0 && (result.failedCount || 0) > 0) {
+            throw new Error(summary);
+          }
+          thinking.updateTitle((result.failedCount || 0) > 0 ? "分镜图生成部分启动" : "分镜图生成已启动");
+          thinking.complete();
+          return summary;
+        } catch (e) {
+          const message = u.error(e).message;
+          thinking.appendText("分镜生成失败:\n" + message);
+          thinking.updateTitle("分镜生成失败");
+          thinking.complete();
+          throw e;
+        }
       },
     }),
   };
