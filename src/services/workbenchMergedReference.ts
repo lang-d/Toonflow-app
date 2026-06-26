@@ -37,6 +37,7 @@ const labelHeight = 92;
 const gap = 20;
 const outerPadding = 24;
 const categoryHeaderHeight = 56;
+const storyboardLongSide = 640;
 
 function escapeXml(value: unknown) {
   return String(value ?? "")
@@ -65,7 +66,7 @@ function getColumns(count: number, mergeType: MergeType) {
   return count > 9 ? 4 : 3;
 }
 
-async function prepareImage(item: ResolvedWorkbenchReference) {
+async function prepareImage(item: ResolvedWorkbenchReference, options: { fit?: "contain" | "cover"; width?: number; height?: number } = {}) {
   const source = await u.oss.getFile(item.filePath);
   if (source.length > maxSourceBytes) throw new Error(`引用 ${item.id} 超过 25MB 限制`);
   const metadata = await sharp(source).metadata();
@@ -75,12 +76,40 @@ async function prepareImage(item: ResolvedWorkbenchReference) {
   if (width * height > maxSourcePixels) throw new Error(`引用 ${item.id} 超过 4000 万像素限制`);
   return sharp(source)
     .rotate()
-    .resize(cellWidth, imageHeight, {
-      fit: "contain",
+    .resize(options.width ?? cellWidth, options.height ?? imageHeight, {
+      fit: options.fit ?? "contain",
+      position: "centre",
       background: { r: 255, g: 255, b: 255, alpha: 1 },
     })
     .jpeg({ quality: 90 })
     .toBuffer();
+}
+
+async function getImageAspect(item: ResolvedWorkbenchReference) {
+  const source = await u.oss.getFile(item.filePath);
+  const metadata = await sharp(source).metadata();
+  const width = metadata.width || 0;
+  const height = metadata.height || 0;
+  if (!width || !height) return 1;
+  return width / height;
+}
+
+async function getStoryboardImageSize(items: ResolvedWorkbenchReference[]) {
+  const aspects = (await Promise.all(items.map(getImageAspect)))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  const rawAspect = aspects.length ? aspects[Math.floor(aspects.length / 2)] : 16 / 9;
+  const aspect = Math.max(0.5, Math.min(2.4, rawAspect));
+  if (aspect >= 1) {
+    return {
+      width: storyboardLongSide,
+      height: Math.round(storyboardLongSide / aspect),
+    };
+  }
+  return {
+    width: Math.round(storyboardLongSide * aspect),
+    height: storyboardLongSide,
+  };
 }
 
 function textSvg(width: number, height: number, text: string, options: { fontSize?: number; dark?: boolean; bold?: boolean } = {}) {
@@ -111,21 +140,22 @@ function truncateLabel(value: string, maxLength = 20) {
 async function renderStoryboard(items: ResolvedWorkbenchReference[], labels: string[]) {
   const columns = getColumns(items.length, "storyboard");
   const rows = Math.ceil(items.length / columns);
-  const cellHeight = imageHeight + labelHeight;
-  const width = outerPadding * 2 + columns * cellWidth + Math.max(0, columns - 1) * gap;
+  const imageSize = await getStoryboardImageSize(items);
+  const cellHeight = imageSize.height + labelHeight;
+  const width = outerPadding * 2 + columns * imageSize.width + Math.max(0, columns - 1) * gap;
   const height = outerPadding * 2 + rows * cellHeight + Math.max(0, rows - 1) * gap;
   const overlays: sharp.OverlayOptions[] = [];
-  const images = await Promise.all(items.map(prepareImage));
+  const images = await Promise.all(items.map((item) => prepareImage(item, { width: imageSize.width, height: imageSize.height })));
   items.forEach((item, index) => {
     const column = index % columns;
     const row = Math.floor(index / columns);
-    const left = outerPadding + column * (cellWidth + gap);
+    const left = outerPadding + column * (imageSize.width + gap);
     const top = outerPadding + row * (cellHeight + gap);
     overlays.push({ input: images[index], left, top });
     overlays.push({
-      input: textSvg(cellWidth, labelHeight, labels[index] || item.name || `P${index + 1}`, { bold: true }),
+      input: textSvg(imageSize.width, labelHeight, labels[index] || item.name || `P${index + 1}`, { bold: true }),
       left,
-      top: top + imageHeight,
+      top: top + imageSize.height,
     });
   });
   return sharp({
@@ -157,7 +187,7 @@ async function renderAssets(items: ResolvedWorkbenchReference[]) {
       top,
     });
     top += categoryHeaderHeight + gap;
-    const images = await Promise.all(group.items.map(prepareImage));
+    const images = await Promise.all(group.items.map((item) => prepareImage(item)));
     group.items.forEach((item, index) => {
       const column = index % columns;
       const row = Math.floor(index / columns);

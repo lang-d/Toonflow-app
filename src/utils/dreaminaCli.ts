@@ -829,7 +829,39 @@ export interface DreaminaTaskOutput {
   evidence: DreaminaRemoteEvidence;
   queueInfo: DreaminaQueueInfo;
   providerCode?: string;
+  imageUrl?: string;
   videoUrl?: string;
+  failureReason?: string;
+}
+
+function extractStructuredMediaUrl(records: JsonRecord[], type: "image" | "video") {
+  let result: string | undefined;
+  const extension = type === "image" ? /\.(png|jpe?g|webp)(\?|$)/i : /\.(mp4|mov|webm)(\?|$)/i;
+  const typeText = type.toLowerCase();
+  const visit = (value: unknown, pathParts: string[] = []) => {
+    if (result) return;
+    if (Array.isArray(value)) {
+      value.forEach((child) => visit(child, pathParts));
+      return;
+    }
+    if (!isJsonRecord(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      const pathText = [...pathParts, key].join(".").toLowerCase();
+      if (
+        typeof child === "string" &&
+        /^https?:\/\//i.test(child) &&
+        (new RegExp(`^${typeText}_?url$`, "i").test(key) ||
+          /^download_?url$/i.test(key) ||
+          (key.toLowerCase() === "url" && (pathText.includes(typeText) || extension.test(child))))
+      ) {
+        result = child;
+        return;
+      }
+      visit(child, [...pathParts, key]);
+    }
+  };
+  records.forEach((record) => visit(record));
+  return result;
 }
 
 export function parseDreaminaTaskOutput(output: string, submitId: string): DreaminaTaskOutput {
@@ -856,7 +888,7 @@ export function parseDreaminaTaskOutput(output: string, submitId: string): Dream
     visit(record);
     return values;
   });
-  const failureReason = findNestedValue(records, new Set(["fail_reason", "error_reason"]));
+  const failureReason = findNestedValue(records, new Set(["fail_reason", "error_reason", "error_message", "message"]));
   let status: DreaminaTaskOutput["status"] = "unknown";
   if (failureReason || statusValues.some((value) => /failed|fail|error|cancelled|canceled/.test(value))) status = "failed";
   else if (statusValues.some((value) => /success|succeeded|done|completed/.test(value)) || queueInfo.status === 3) status = "success";
@@ -877,7 +909,22 @@ export function parseDreaminaTaskOutput(output: string, submitId: string): Dream
     },
     queueInfo,
     providerCode: parseDreaminaProviderCode(records.map((record) => JSON.stringify(record)).join("\n")),
-    videoUrl: extractStructuredVideoUrl(records),
+    imageUrl: extractStructuredMediaUrl(records, "image"),
+    videoUrl: extractStructuredMediaUrl(records, "video") || extractStructuredVideoUrl(records),
+    failureReason: failureReason === undefined ? undefined : normalizeError(String(failureReason)),
+  };
+}
+
+export function parseDreaminaImagePollOutput(output: string, submitId: string) {
+  const task = parseDreaminaTaskOutput(output, submitId);
+  const normalized = task.status === "unknown" ? normalizeTaskOutputStatus(output) : task.status;
+  return {
+    status: normalized,
+    evidence: task.evidence,
+    queueInfo: task.queueInfo,
+    providerCode: task.providerCode,
+    imageUrl: task.imageUrl,
+    errorReason: task.failureReason,
   };
 }
 
@@ -1193,7 +1240,7 @@ async function runGeneration(command: string, args: string[], type: "image" | "v
   });
 }
 
-async function imageRequest(config: ImageConfig, model: ToonflowModel) {
+export function buildImageArgs(config: ImageConfig, model: ToonflowModel) {
   const { command, modelVersion } = parseModelName(model.modelName);
   const refs = writeReferenceFiles(config.referenceList || [], "image");
   const args = [
@@ -1207,7 +1254,93 @@ async function imageRequest(config: ImageConfig, model: ToonflowModel) {
     if (!refs.length) throw new Error("即梦图生图需要至少一张参考图。");
     args.push(...flag("images", refs.join(",")));
   }
-  return runGeneration(command, args, "image");
+  return { command, args };
+}
+
+async function imageSubmit(config: ImageConfig, model: ToonflowModel) {
+  const { command, args } = buildImageArgs(config, model);
+  if (!COMMANDS.includes(command as any) || !command.endsWith("image")) throw new Error(`涓嶆敮鎸佺殑鍗虫ⅵ鍥剧墖鍛戒护: ${command}`);
+  const submit = await runRawWithLogs([command, ...args, "--poll=0"], 180000);
+  const submitOutput = outputText(submit.result);
+  const rawSubmit = `${submitOutput}\n----- cli logs (diagnostic only) -----\n${submit.logs}`.trim();
+  const providerCode = parseDreaminaProviderCode(submitOutput);
+  if (isDreaminaCapacityLimit(submitOutput)) {
+    throw new Error("Dreamina image capacity is currently full; please retry later.");
+  }
+  const submitId = extractSubmitId(submitOutput);
+  if (!submitId) {
+    const message =
+      submit.code === 0
+        ? "Dreamina CLI did not return submit_id for image generation."
+        : cliFailureMessage(submit.result, `Dreamina CLI exited with code ${submit.code}`);
+    throw new Error(`${message}\n${rawSubmit}`.trim());
+  }
+  return {
+    providerTaskId: submitId,
+    taskId: submitId,
+    pollIntervalMs: 30000,
+    providerCode,
+  };
+}
+
+async function imagePoll(submitId: string) {
+  const downloadDir = tempDir("downloads", `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const query = await runRawWithLogs(["query_result", `--submit_id=${submitId}`, `--download_dir=${downloadDir}`], 90000);
+  const queryOutput = outputText(query.result);
+  const rawOutput = `${queryOutput}\n----- query_result cli logs (diagnostic only) -----\n${query.logs}`.trim();
+  const parsed = parseDreaminaImagePollOutput(queryOutput, submitId);
+  const file = findNewestFile(downloadDir, "image");
+  if (file) {
+    return {
+      completed: true,
+      data: fileToDataUrl(file),
+      progress: 100,
+    };
+  }
+  if (parsed.imageUrl) {
+    return {
+      completed: true,
+      data: parsed.imageUrl,
+      progress: 100,
+    };
+  }
+  if (parsed.status === "failed" || (query.code !== 0 && parsed.status !== "generating")) {
+    return {
+      completed: true,
+      error: parsed.errorReason || cliFailureMessage(query.result, "Dreamina image generation failed."),
+    };
+  }
+  if (parsed.status === "success") {
+    return {
+      completed: true,
+      error: "Dreamina image task succeeded, but no downloadable image was found.",
+    };
+  }
+  return {
+    completed: false,
+    nextPollMs: 30000,
+    progress: 50,
+    rawOutput,
+  };
+}
+
+async function imageRequest(config: ImageConfig, model: ToonflowModel) {
+  const submit = await imageSubmit(config, model);
+  const submitId = submit.providerTaskId;
+  const startedAt = Date.now();
+  const timeoutMs = Math.min(normalizeQueueConfig(model.queueConfig, 1).maxWorkHours * 60 * 60 * 1000, 30 * 60 * 1000);
+  if (!submitId) throw new Error("Dreamina CLI did not return submit_id for image generation.");
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const poll = await imagePoll(submitId);
+    if (poll.completed) {
+      if (poll.error) throw new Error(poll.error);
+      if (!poll.data) throw new Error("Dreamina image generation completed without image data.");
+      return poll.data;
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.max(1000, Number(poll.nextPollMs || submit.pollIntervalMs || 30000))));
+  }
+  throw new Error(`Dreamina image task timed out, submit_id=${submitId}`);
 }
 
 async function videoRequest(config: VideoConfig, model: ToonflowModel) {
@@ -1531,6 +1664,8 @@ export default {
   refreshModels,
   getQueueStatus,
   imageRequest,
+  imageSubmit,
+  imagePoll,
   videoRequest,
   videoSubmit,
   videoConfirm,

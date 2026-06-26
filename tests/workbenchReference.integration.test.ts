@@ -118,12 +118,18 @@ before(async () => {
   const red = await sharp({ create: { width: 80, height: 80, channels: 3, background: "#ff0000" } }).png().toBuffer();
   const blue = await sharp({ create: { width: 80, height: 80, channels: 3, background: "#0000ff" } }).png().toBuffer();
   const green = await sharp({ create: { width: 80, height: 80, channels: 3, background: "#00ff00" } }).png().toBuffer();
+  const tallYellow = await sharp({ create: { width: 90, height: 160, channels: 3, background: "#ffff00" } }).png().toBuffer();
+  const tallPurple = await sharp({ create: { width: 90, height: 160, channels: 3, background: "#8000ff" } }).png().toBuffer();
   await u.oss.writeFile("/1/storyboard/red.png", red);
   await u.oss.writeFile("/1/storyboard/blue.png", blue);
+  await u.oss.writeFile("/1/storyboard/tall-yellow.png", tallYellow);
+  await u.oss.writeFile("/1/storyboard/tall-purple.png", tallPurple);
   await u.oss.writeFile("/2/storyboard/green.png", green);
   await db("o_storyboard").insert([
     { id: 101, projectId: 1, scriptId: 10, trackId: 100, index: 0, filePath: "/1/storyboard/red.png", videoDesc: "red" },
     { id: 102, projectId: 1, scriptId: 10, trackId: 100, index: 1, filePath: "/1/storyboard/blue.png", videoDesc: "blue" },
+    { id: 103, projectId: 1, scriptId: 10, trackId: 100, index: 2, filePath: "/1/storyboard/tall-yellow.png", videoDesc: "yellow" },
+    { id: 104, projectId: 1, scriptId: 10, trackId: 100, index: 3, filePath: "/1/storyboard/tall-purple.png", videoDesc: "purple" },
     { id: 201, projectId: 2, scriptId: 20, trackId: 200, index: 0, filePath: "/2/storyboard/green.png", videoDesc: "green" },
   ]);
 });
@@ -179,6 +185,32 @@ test("same ordered source group archives the previous merged reference", async (
   });
   assert.equal((await db("o_workbenchMergedReference").where("id", before.id).first()).state, "archived");
   assert.equal((await db("o_workbenchMergedReference").where("id", next.id).first()).state, "active");
+});
+
+test("storyboard merged reference covers narrow frames to avoid white gutters", async () => {
+  const result = await mergedService.createMergedReference({
+    projectId: 1,
+    scriptId: 10,
+    trackId: 100,
+    mergeType: "storyboard",
+    refs: [
+      { id: 103, sources: "storyboard", order: 0, label: "P3" },
+      { id: 104, sources: "storyboard", order: 1, label: "P4" },
+    ],
+  });
+  const row = await db("o_workbenchMergedReference").where("id", result.id).first();
+  const output = await u.oss.getFile(row.filePath);
+  const { data, info } = await sharp(output).raw().toBuffer({ resolveWithObject: true });
+  assert.ok(info.width <= 8192);
+  assert.ok(info.height <= 8192);
+  const pixel = (x: number, y: number) => {
+    const offset = (y * info.width + x) * info.channels;
+    return [data[offset], data[offset + 1], data[offset + 2]];
+  };
+  const leftEdge = pixel(34, 284);
+  const secondEdge = pixel(414, 284);
+  assert.ok(leftEdge[0] > 200 && leftEdge[1] > 200 && leftEdge[2] < 80, `expected covered yellow edge, got ${leftEdge}`);
+  assert.ok(secondEdge[0] > 80 && secondEdge[2] > 180 && secondEdge[1] < 80, `expected covered purple edge, got ${secondEdge}`);
 });
 
 test("reference resolver supports merged URLs and keeps missing items isolated", async () => {
@@ -292,6 +324,31 @@ test("asset merged reference uses database categories and parent-child labels", 
   );
   assert.equal(sourceRefs.find((item: any) => item.id === 311).label, "林若溪+常服");
   assert.equal(await u.oss.fileExists(row.filePath), true);
+});
+
+test("asset merged reference still contains narrow assets without cropping", async () => {
+  const [yellowImageId] = await db("o_image").insert({ assetsId: 321, filePath: "/1/storyboard/tall-yellow.png", type: "image" });
+  const [purpleImageId] = await db("o_image").insert({ assetsId: 322, filePath: "/1/storyboard/tall-purple.png", type: "image" });
+  await db("o_assets").insert([
+    { id: 321, projectId: 1, imageId: yellowImageId, name: "Tall Yellow", type: "role" },
+    { id: 322, projectId: 1, imageId: purpleImageId, name: "Tall Purple", type: "role" },
+  ]);
+  const result = await mergedService.createMergedReference({
+    projectId: 1,
+    scriptId: 10,
+    trackId: 100,
+    mergeType: "assets",
+    refs: [
+      { id: 321, sources: "assets", order: 0 },
+      { id: 322, sources: "assets", order: 1 },
+    ],
+  });
+  const row = await db("o_workbenchMergedReference").where("id", result.id).first();
+  const output = await u.oss.getFile(row.filePath);
+  const { data, info } = await sharp(output).raw().toBuffer({ resolveWithObject: true });
+  const offset = (360 * info.width + 34) * info.channels;
+  const edge = [data[offset], data[offset + 1], data[offset + 2]];
+  assert.ok(edge[0] > 240 && edge[1] > 240 && edge[2] > 240, `expected contained asset white edge, got ${edge}`);
 });
 
 test("merged reference validation rejects duplicate and cross-project inputs", async () => {

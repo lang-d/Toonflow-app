@@ -77,8 +77,25 @@ interface VideoConfig {
   mode: VideoMode[];
 }
 
+interface ImageSubmitResult {
+  providerTaskId: string;
+  taskId?: string;
+  pollIntervalMs?: number;
+  providerCode?: string;
+}
+
+interface ImagePollResult {
+  completed: boolean;
+  data?: string;
+  error?: string;
+  progress?: number;
+  nextPollMs?: number;
+}
+
 declare const dreaminaCli: {
   imageRequest: (config: ImageConfig, model: ImageModel) => Promise<string>;
+  imageSubmit: (config: ImageConfig, model: ImageModel) => Promise<ImageSubmitResult>;
+  imagePoll: (providerTaskId: string, model: ImageModel) => Promise<ImagePollResult>;
   videoRequest: (config: VideoConfig, model: VideoModel) => Promise<string>;
 };
 
@@ -86,6 +103,8 @@ declare const exports: {
   vendor: VendorConfig;
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any;
   imageRequest: (c: ImageConfig, m: ImageModel) => Promise<string>;
+  imageSubmit: (c: ImageConfig, m: ImageModel) => Promise<ImageSubmitResult>;
+  imagePoll: (providerTaskId: string, m: ImageModel) => Promise<ImagePollResult>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>;
   ttsRequest: (c: any, m: TTSModel) => Promise<string>;
 };
@@ -110,6 +129,14 @@ const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<str
   return dreaminaCli.imageRequest(config, model);
 };
 
+const imageSubmit = async (config: ImageConfig, model: ImageModel): Promise<ImageSubmitResult> => {
+  return dreaminaCli.imageSubmit(config, model);
+};
+
+const imagePoll = async (providerTaskId: string, model: ImageModel): Promise<ImagePollResult> => {
+  return dreaminaCli.imagePoll(providerTaskId, model);
+};
+
 const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<string> => {
   return dreaminaCli.videoRequest(config, model);
 };
@@ -121,6 +148,8 @@ const ttsRequest = async (): Promise<string> => {
 exports.vendor = vendor;
 exports.textRequest = textRequest;
 exports.imageRequest = imageRequest;
+exports.imageSubmit = imageSubmit;
+exports.imagePoll = imagePoll;
 exports.videoRequest = videoRequest;
 exports.ttsRequest = ttsRequest;
 
