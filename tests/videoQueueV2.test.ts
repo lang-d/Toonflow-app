@@ -7,6 +7,7 @@ import knexFactory from "knex";
 import {
   buildVideoArgs,
   getDreaminaVideoResolutions,
+  getDreaminaVideoSubmitFailureReason,
   getDreaminaProviderModelKey,
   isDreaminaCapacityLimit,
   normalizeQueueConfig,
@@ -72,6 +73,25 @@ test("Dreamina transient CLI errors do not become provider task failures", () =>
       '{"submit_id":"submit-1","gen_status":"failed","fail_reason":"素材审核未通过"}',
     ),
     "failed",
+  );
+});
+
+test("Dreamina video submit upload failure is detected even when submit_id exists", () => {
+  const submitId = "submit-with-upload-failure";
+  const rawOutput = [
+    `{"submit_id":"${submitId}","gen_status":"querying"}`,
+    `[ResourceUpload] upload file failed resource_type=image path=E:\\data\\scene\\ref.jpg index=3 err=<Error: upload image: apply phase, ApplyImageUpload: unmarshal response, request 20260627, code 201007, request to backend service failed, bad gateway>`,
+    `[SubmitTask] execute submit failed gen_task_type=multimodal2video submit_id=${submitId}`,
+  ].join("\n");
+  const reason = getDreaminaVideoSubmitFailureReason(rawOutput, 0);
+  assert.match(reason || "", /参考图上传到即梦失败/);
+  assert.match(reason || "", /bad gateway/i);
+  assert.equal(
+    getDreaminaVideoSubmitFailureReason(
+      `ERROR failed to initialize optional logger\n{"submit_id":"${submitId}","gen_status":"querying"}`,
+      0,
+    ),
+    undefined,
   );
 });
 

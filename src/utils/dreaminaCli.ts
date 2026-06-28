@@ -98,10 +98,11 @@ export interface NormalizedQueueConfig {
 }
 
 export interface DreaminaSubmitResult {
-  state: "submitted" | "capacity_wait";
+  state: "submitted" | "capacity_wait" | "failed";
   submitId?: string;
   confirmed?: boolean;
   rawOutput: string;
+  errorReason?: string;
   officialTaskId?: string;
   historyRecordId?: string;
   providerAccountId?: string;
@@ -989,6 +990,40 @@ function extractFailureReason(output: string) {
   return normalizeError(line.slice(0, 1000));
 }
 
+const VIDEO_SUBMIT_FAILURE_PATTERN =
+  /(execute submit failed|upload file failed|upload result contains error|ApplyImageUpload|bad gateway|upload resource|request to backend service failed)/i;
+
+export function getDreaminaVideoSubmitFailureReason(rawOutput: string, exitCode?: number | null) {
+  const hasSubmitFailure = VIDEO_SUBMIT_FAILURE_PATTERN.test(rawOutput);
+  if (!hasSubmitFailure && (exitCode === undefined || exitCode === null || exitCode === 0)) return undefined;
+
+  const lines = rawOutput
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const matchedLine =
+    lines.find((item) => VIDEO_SUBMIT_FAILURE_PATTERN.test(item)) ||
+    lines.find((item) => /err=<Error:|Error:/i.test(item)) ||
+    "";
+  const errorMatch =
+    matchedLine.match(/err=<Error:\s*([^>]+)>/i) ||
+    matchedLine.match(/Error:\s*([^\r\n]+)/i);
+  let reason = normalizeError((errorMatch?.[1] || matchedLine || extractFailureReason(rawOutput)).slice(0, 1000));
+  reason = reason
+    .replace(/^.*upload resource\s+"[^"]+":\s*/i, "")
+    .replace(/^.*upload file failed\s+/i, "")
+    .replace(/^.*execute submit failed\s*/i, "")
+    .replace(/^.*upload result contains error\s*/i, "")
+    .trim();
+  if (/bad gateway/i.test(rawOutput) && !/bad gateway/i.test(reason)) {
+    reason = reason ? `${reason}; bad gateway` : "bad gateway";
+  }
+  if (hasSubmitFailure) {
+    return `参考图上传到即梦失败：${reason || "供应商上传服务异常"}`;
+  }
+  return reason || `即梦 CLI 提交失败${exitCode === undefined || exitCode === null ? "" : `，退出码 ${exitCode}`}`;
+}
+
 export function buildVideoArgs(config: VideoConfig, model: ToonflowModel) {
   const { command, modelVersion } = parseModelName(model.modelName);
   const refs = writeReferenceFileItems(config.referenceList || [], "media");
@@ -1038,6 +1073,20 @@ async function videoSubmit(config: VideoConfig, model: ToonflowModel): Promise<D
     };
   }
   const submitId = extractSubmitId(submitOutput);
+  const submitFailureReason = getDreaminaVideoSubmitFailureReason(rawSubmit, submit.code);
+  if (submitFailureReason && submitId) {
+    return {
+      state: "failed",
+      submitId,
+      rawOutput: rawSubmit,
+      errorReason: submitFailureReason,
+      providerAccountId,
+      providerCode,
+    };
+  }
+  if (submitFailureReason) {
+    throw new Error(`${submitFailureReason}\n${rawSubmit}`.trim());
+  }
   if (!submitId) {
     const message = submit.code === 0 ? "即梦 CLI 未返回 submit_id，无法进入异步轮询。" : cliFailureMessage(submit, `即梦 CLI 退出码 ${submit.code}`);
     throw new Error(`${message}\n${rawSubmit}`.trim());

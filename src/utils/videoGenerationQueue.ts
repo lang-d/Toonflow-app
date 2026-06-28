@@ -81,6 +81,7 @@ interface QueueRow {
 
 const RAW_OUTPUT_LIMIT = 32 * 1024;
 const CAPACITY_RETRY_MS = 90_000;
+const DREAMINA_CONFIRM_TIMEOUT_MS = 20 * 60 * 1000;
 const SCHEDULER_LEASE_KEY = "runtime:video-queue-scheduler-lease";
 const SCHEDULER_LEASE_TTL_MS = 90_000;
 const submissionModels = new Set<string>();
@@ -114,6 +115,14 @@ function taskLogDetails(row: Pick<QueueRow, "id" | "videoId" | "model" | "provid
 function truncateDiagnostic(value?: string | null) {
   if (!value) return "";
   return value.length > RAW_OUTPUT_LIMIT ? value.slice(-RAW_OUTPUT_LIMIT) : value;
+}
+
+function mergeDiagnostics(previous?: string | null, current?: string | null) {
+  if (!previous) return truncateDiagnostic(current);
+  if (!current) return truncateDiagnostic(previous);
+  if (previous.includes(current)) return truncateDiagnostic(previous);
+  if (current.includes(previous)) return truncateDiagnostic(current);
+  return truncateDiagnostic(`${previous}\n----- latest poll diagnostic -----\n${current}`);
 }
 
 function summarizeError(value: string) {
@@ -376,7 +385,10 @@ async function failTask(row: QueueRow, reason: string, rawOutput?: string) {
       status: "failed",
       state: "生成失败",
       errorReason,
-      rawOutput: truncateDiagnostic(rawOutput || row.rawOutput),
+      submitId: row.submitId || null,
+      providerAccountId: row.providerAccountId || null,
+      lastProviderCode: row.lastProviderCode || null,
+      rawOutput: mergeDiagnostics(row.rawOutput, rawOutput),
       updateTime: now,
       finishTime: now,
     });
@@ -671,6 +683,30 @@ async function submitDreamina(row: QueueRow, request: StoredRequest) {
   }
 
   if (!submit.submitId) throw new Error("即梦 CLI 未返回 submit_id。");
+  if (submit.state === "failed") {
+    await failTask(
+      {
+        ...row,
+        submitId: submit.submitId || row.submitId,
+        providerAccountId: submit.providerAccountId || row.providerAccountId,
+        lastProviderCode: submit.providerCode || row.lastProviderCode,
+      },
+      submit.errorReason || "即梦视频提交失败",
+      submit.rawOutput,
+    );
+    queueLog(
+      "submit.failed",
+      {
+        ...taskLogDetails({ ...row, submitId: submit.submitId || row.submitId }),
+        providerAccountId: submit.providerAccountId || undefined,
+        providerCode: submit.providerCode || undefined,
+        reason: submit.errorReason || "即梦视频提交失败",
+      },
+      "error",
+    );
+    return;
+  }
+
   const confirmed = Boolean(submit.confirmed);
   await u.db("o_videoGenerationTask").where("id", row.id).update({
     providerModelKey,
@@ -814,11 +850,26 @@ async function pollDreamina(row: QueueRow) {
     return;
   }
   if (poll.state === "success" && poll.data) {
-    await saveResult(row, poll.data, poll.dataType || "base64", poll.rawOutput);
+    await saveResult(row, poll.data, poll.dataType || "base64", mergeDiagnostics(row.rawOutput, poll.rawOutput));
     return;
   }
   if (poll.state === "failed") {
     await failTask(row, poll.errorReason || "即梦视频生成失败", poll.rawOutput);
+    return;
+  }
+  const remoteConfirmed = poll.evidence.confirmed || Boolean(row.officialTaskId || row.historyRecordId || row.remoteConfirmedAt);
+  const confirmStartedAt = Number(row.confirmStartedAt || providerSubmittedAt || 0);
+  if (
+    row.status === "confirming" &&
+    !remoteConfirmed &&
+    confirmStartedAt > 0 &&
+    Date.now() - confirmStartedAt >= DREAMINA_CONFIRM_TIMEOUT_MS
+  ) {
+    await failTask(
+      { ...row, providerSubmittedAt },
+      `提交未被即梦确认，请重新生成。submit_id=${row.submitId}`,
+      mergeDiagnostics(row.rawOutput, poll.rawOutput),
+    );
     return;
   }
   if (workTimedOut) {
@@ -832,7 +883,7 @@ async function pollDreamina(row: QueueRow) {
 
   const now = Date.now();
   const pollCount = Number(row.pollCount || 0) + 1;
-  const confirmed = poll.evidence.confirmed || Boolean(row.officialTaskId || row.historyRecordId || row.remoteConfirmedAt);
+  const confirmed = remoteConfirmed;
   const status: QueueStatus = confirmed ? "processing" : "confirming";
   const phase = confirmed ? "processing" : "confirming";
   const nextPollTime = now + nextProviderPollDelayMs(config, poll.queueInfo.status, confirmed);
@@ -850,7 +901,7 @@ async function pollDreamina(row: QueueRow) {
     providerQueueStatus: poll.queueInfo.status ?? null,
     providerQueueIndex: poll.queueInfo.index ?? null,
     providerQueueLength: poll.queueInfo.length ?? null,
-    rawOutput: truncateDiagnostic(poll.rawOutput || row.rawOutput),
+    rawOutput: mergeDiagnostics(row.rawOutput, poll.rawOutput),
     pollCount,
     nextPollTime,
     updateTime: now,
