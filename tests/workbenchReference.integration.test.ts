@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
@@ -16,6 +17,25 @@ let mergedService: typeof import("../src/services/workbenchMergedReference");
 let referenceService: typeof import("../src/services/workbenchReference");
 let directorAssetService: typeof import("../src/services/directorAsset");
 
+async function postRoute(route: any, body: Record<string, unknown>) {
+  const express = (await import("express")).default;
+  const app = express();
+  app.use(express.json({ limit: "20mb" }));
+  app.use("/", route);
+  const server = app.listen(0);
+  try {
+    const { port } = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${port}/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json() };
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 before(async () => {
   u = (await import("../src/utils")).default;
   db = (await import("../src/utils/db")).db;
@@ -25,6 +45,9 @@ before(async () => {
 
   await db.schema.createTable("o_project", (table: any) => {
     table.integer("id").primary();
+    table.string("videoModel");
+    table.text("mode");
+    table.string("artStyle");
   });
   await db.schema.createTable("o_script", (table: any) => {
     table.integer("id").primary();
@@ -34,6 +57,19 @@ before(async () => {
     table.integer("id").primary();
     table.integer("projectId");
     table.integer("scriptId");
+    table.integer("archived").defaultTo(0);
+    table.string("state");
+    table.string("reason");
+    table.integer("duration");
+    table.integer("videoId");
+    table.string("groupKey");
+    table.string("groupName");
+    table.string("groupIntent");
+    table.text("groupPlanJson");
+    table.text("musicPlanJson");
+    table.string("reviewState");
+    table.text("reviewIssuesJson");
+    table.text("prompt");
   });
   await db.schema.createTable("o_storyboard", (table: any) => {
     table.integer("id").primary();
@@ -43,6 +79,27 @@ before(async () => {
     table.integer("index");
     table.string("filePath");
     table.string("videoDesc");
+    table.string("duration");
+    table.string("scene");
+    table.string("picture");
+    table.string("action");
+    table.string("shotSize");
+    table.string("cameraMove");
+    table.string("dialogue");
+    table.string("sound");
+    table.string("visibleEmotion");
+    table.string("location");
+    table.string("timeOfDay");
+    table.string("sceneContinuityId");
+    table.text("referenceImages").defaultTo("[]");
+    table.string("tableRowJson");
+    table.string("factStatus");
+    table.integer("factVersion");
+    table.string("groupKey");
+    table.string("groupName");
+    table.string("groupIntent");
+    table.string("beatId");
+    table.integer("shouldGenerateImage");
   });
   await db.schema.createTable("o_assets2Storyboard", (table: any) => {
     table.integer("storyboardId");
@@ -69,6 +126,19 @@ before(async () => {
     table.string("type");
     table.string("model");
     table.string("state");
+  });
+  await db.schema.createTable("o_assetsRole2Audio", (table: any) => {
+    table.integer("assetsRoleId");
+    table.integer("assetsAudioId");
+  });
+  await db.schema.createTable("o_video", (table: any) => {
+    table.increments("id");
+    table.integer("videoTrackId");
+    table.integer("scriptId");
+    table.integer("projectId");
+    table.string("filePath");
+    table.string("state");
+    table.string("errorReason");
   });
   await db.schema.createTable("o_directorAsset", (table: any) => {
     table.increments("id");
@@ -105,8 +175,21 @@ before(async () => {
     table.integer("createTime");
     table.integer("updateTime");
   });
+  await db.schema.createTable("o_modelPrompt", (table: any) => {
+    table.string("vendorId");
+    table.string("model");
+    table.string("path");
+  });
+  await db.schema.createTable("o_prompt", (table: any) => {
+    table.string("type");
+    table.text("data");
+    table.text("useData");
+  });
 
-  await db("o_project").insert([{ id: 1 }, { id: 2 }]);
+  await db("o_project").insert([
+    { id: 1, videoModel: "dreamina:seedance", mode: JSON.stringify(["imageReference:9", "audioReference:3"]) },
+    { id: 2, videoModel: "dreamina:seedance", mode: JSON.stringify(["imageReference:9", "audioReference:3"]) },
+  ]);
   await db("o_script").insert([
     { id: 10, projectId: 1 },
     { id: 20, projectId: 2 },
@@ -293,6 +376,147 @@ test("asset media type is inferred without changing reference order", async () =
     resolved.map((item: any) => item.fileType),
     ["video", "audio"],
   );
+});
+
+test("private audio upload stores a local media ref without creating assets", async () => {
+  const uploadMediaRoute = (await import("../src/routes/production/editImage/uploadMedia")).default;
+  const assetCountBefore = await db("o_assets").count({ count: "*" }).first().then((row: any) => Number(row.count));
+  const imageCountBefore = await db("o_image").count({ count: "*" }).first().then((row: any) => Number(row.count));
+  const dataUrl = `data:audio/wav;base64,${Buffer.from("RIFF0000WAVE").toString("base64")}`;
+
+  const response = await postRoute(uploadMediaRoute, {
+    projectId: 1,
+    scriptId: 10,
+    type: "audio",
+    base64Data: dataUrl,
+    name: "clip.wav",
+  });
+
+  assert.equal(response.status, 200);
+  const media = response.body.data.media;
+  assert.equal(media.type, "audio");
+  assert.equal(media.source, "local");
+  assert.equal(media.id, media.path);
+  assert.equal(media.sourceId, media.path);
+  assert.equal(media.previewUrl, media.url);
+  assert.match(media.path, /^1\/imageFlow\/10\/media\/.+\.wav$/);
+  assert.equal(await u.oss.fileExists(media.path), true);
+  assert.equal(await db("o_assets").count({ count: "*" }).first().then((row: any) => Number(row.count)), assetCountBefore);
+  assert.equal(await db("o_image").count({ count: "*" }).first().then((row: any) => Number(row.count)), imageCountBefore);
+});
+
+test("local private audio references resolve only inside the current project script media directory", async () => {
+  const audioPath = "1/imageFlow/10/media/private-voice.wav";
+  await u.oss.writeFile(audioPath, Buffer.from("RIFF0000WAVE"));
+
+  const [resolved] = await referenceService.resolveWorkbenchReferences(
+    [{ id: audioPath, sources: "local" }],
+    { projectId: 1, scriptId: 10 },
+  );
+  assert.equal(resolved.id, audioPath);
+  assert.equal(resolved.sources, "local");
+  assert.equal(resolved.filePath, audioPath);
+  assert.equal(resolved.fileType, "audio");
+
+  await assert.rejects(
+    referenceService.resolveWorkbenchReferences([{ id: audioPath, sources: "local" }], { projectId: 2, scriptId: 10 }),
+    /不属于当前项目或剧集/,
+  );
+  await assert.rejects(
+    referenceService.resolveWorkbenchReferences([{ id: "1/assets/voice.wav", sources: "local" }], { projectId: 1, scriptId: 10 }),
+    /不属于当前项目或剧集/,
+  );
+});
+
+test("workbench data exposes storyboard private audio references as local track media", async () => {
+  const getGenerateDataRoute = (await import("../src/routes/production/workbench/getGenerateData")).default;
+  const audioPath = "1/imageFlow/10/media/storyboard-private.wav";
+  await u.oss.writeFile(audioPath, Buffer.from("RIFF0000WAVE"));
+  await db("o_storyboard").where("id", 101).update({
+    referenceImages: JSON.stringify([
+      {
+        id: audioPath,
+        source: "local",
+        sourceId: audioPath,
+        url: await u.oss.getFileUrl(audioPath),
+        previewUrl: await u.oss.getFileUrl(audioPath),
+        name: "台词片段",
+        type: "audio",
+      },
+    ]),
+  });
+
+  const response = await postRoute(getGenerateDataRoute, { projectId: 1, scriptId: 10 });
+  assert.equal(response.status, 200);
+  const track = response.body.data.trackList.find((item: any) => item.id === 100);
+  const audio = track.medias.find((item: any) => item.sources === "local" && item.fileType === "audio");
+  assert.ok(audio);
+  assert.equal(audio.id, audioPath);
+  assert.equal(audio.media.path, audioPath);
+  assert.equal(audio.media.source, "local");
+  assert.equal(audio.media.sourceId, audioPath);
+});
+
+test("video prompt context keeps audio out of visual @Image numbering", async () => {
+  const { compileWorkbenchVideoPrompt } = await import("../src/services/videoPromptCompiler");
+  const audioPath = "1/imageFlow/10/media/prompt-private.wav";
+  await u.oss.writeFile(audioPath, Buffer.from("RIFF0000WAVE"));
+  const readyFact = {
+    version: 1,
+    index: 0,
+    durationSec: 3,
+    location: "厨房",
+    timeOfDay: "清晨",
+    picture: "角色站在窗边",
+    action: "角色看向桌面",
+    shotSize: "中景",
+    cameraMove: "固定",
+    characters: [],
+    dialogue: [],
+    soundEffects: ["水壶声"],
+    requiredAssets: [],
+  };
+  await db("o_videoTrack").insert({ id: 300, projectId: 1, scriptId: 10, archived: 0 });
+  await db("o_storyboard").insert({
+    id: 301,
+    projectId: 1,
+    scriptId: 10,
+    trackId: 300,
+    index: 0,
+    filePath: "/1/storyboard/red.png",
+    tableRowJson: JSON.stringify(readyFact),
+    factStatus: "ready",
+  });
+  await db("o_prompt").insert({ type: "videoPromptGeneration", data: "Return target video prompt only." });
+  const originalAi = u.Ai;
+  u.Ai = {
+    ...u.Ai,
+    Text: () => ({
+      invoke: async () => ({ text: "厨房中景，角色看向桌面，水壶声。" }),
+    }),
+  };
+  try {
+    const result = await compileWorkbenchVideoPrompt({
+      projectId: 1,
+      scriptId: 10,
+      trackId: 300,
+      references: [
+        { id: audioPath, sources: "local" },
+        { id: 101, sources: "storyboard" },
+        { id: 301, sources: "storyboard" },
+      ],
+      model: "dreamina:seedance",
+      mode: JSON.stringify(["imageReference:2", "audioReference:1"]),
+    });
+    assert.match(result.promptContext, /audioReferenceIndex='1'/);
+    assert.match(result.promptContext, /不得写成 @ImageN/);
+    assert.match(result.promptContext, /visualToken='@Image1'[\s\S]*referenceId='101'/);
+    assert.match(result.promptContext, /visualToken='@Image2'[\s\S]*referenceId='301'/);
+    const audioBlock = result.promptContext.match(/<audioReference[\s\S]*?<\/audioReference>/)?.[0] || "";
+    assert.doesNotMatch(audioBlock, /visualToken='@Image/);
+  } finally {
+    u.Ai = originalAi;
+  }
 });
 
 test("asset merged reference uses database categories and parent-child labels", async () => {

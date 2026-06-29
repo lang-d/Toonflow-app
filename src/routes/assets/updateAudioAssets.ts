@@ -3,9 +3,31 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { getAudioAssetResponse } from "@/services/audioAssetResponse";
 const router = express.Router();
 
-// 新增资产
+const mimeToExt: Record<string, string> = {
+  mpeg: "mp3",
+  "x-wav": "wav",
+  "x-aiff": "aiff",
+  "x-m4a": "m4a",
+  "x-flac": "flac",
+};
+
+async function normalizeAudioItem(item: { src?: string; id?: number; base64?: string }, projectId: number) {
+  if (item.src) {
+    item.src = u.replaceUrl(item.src);
+  }
+  if (!item.base64) return;
+  const mimeMatch = item.base64.match(/^data:audio\/([^;]+);base64,/);
+  const mimeExt = mimeMatch ? mimeMatch[1] : "mp3";
+  const ext = mimeToExt[mimeExt] ?? mimeExt;
+  const savePath = `/${projectId}/assets/audio/${u.uuid()}.${ext}`;
+  const base64Data = item.base64.replace(/^data:[^;]+;base64,/, "");
+  await u.oss.writeFile(savePath, base64Data);
+  item.src = savePath;
+}
+
 export default router.post(
   "/",
   validateFields({
@@ -27,27 +49,7 @@ export default router.post(
   async (req, res) => {
     const { id, name, describe, projectId, assetsItem } = req.body;
     await Promise.all(
-      assetsItem.map(async (i: { src?: string; id?: number; base64: string; prompt: string }) => {
-        if (i.src) {
-          i.src = u.replaceUrl(i.src);
-        }
-        if (i.base64) {
-          const mimeMatch = i.base64.match(/^data:audio\/([^;]+);base64,/);
-          const mimeExt = mimeMatch ? mimeMatch[1] : "mp3";
-          const mimeToExt: Record<string, string> = {
-            mpeg: "mp3",
-            "x-wav": "wav",
-            "x-aiff": "aiff",
-            "x-m4a": "m4a",
-            "x-flac": "flac",
-          };
-          const ext = mimeToExt[mimeExt] ?? mimeExt;
-          const savePath = `/${projectId}/assets/audio/${u.uuid()}.${ext}`;
-          const base64Data = i.base64.replace(/^data:[^;]+;base64,/, "");
-          await u.oss.writeFile(savePath, base64Data);
-          i.src = savePath;
-        }
-      }),
+      assetsItem.map(async (item: { src?: string; id?: number; base64?: string }) => normalizeAudioItem(item, projectId)),
     );
 
     await u.db("o_assets").where("id", id).update({
@@ -55,15 +57,13 @@ export default router.post(
       describe,
     });
 
-    // 删除不在 assetsItem 中的子项
     const existingItems = await u.db("o_assets").where("assetsId", id).select("id");
-    const existingIds = existingItems.map((i: { id?: number }) => i.id!);
-    const incomingIds = assetsItem.filter((i: { id?: number }) => i.id).map((i: { id?: number }) => i.id);
-    const toDeleteIds = existingIds.filter((eid: number) => !incomingIds.includes(eid));
+    const existingIds = existingItems.map((item: { id?: number }) => item.id!);
+    const incomingIds = assetsItem.filter((item: { id?: number }) => item.id).map((item: { id?: number }) => item.id);
+    const toDeleteIds = existingIds.filter((existingId: number) => !incomingIds.includes(existingId));
     if (toDeleteIds.length > 0) {
       const deleteItems = await u.db("o_assets").whereIn("id", toDeleteIds).select("imageId");
-      const deleteImageIds = deleteItems.map((i: { imageId?: number | null }) => i.imageId!).filter(Boolean);
-      // 先将 o_assets.imageId 置空，解除外键约束，再删除 o_image，最后删除 o_assets
+      const deleteImageIds = deleteItems.map((item: { imageId?: number | null }) => item.imageId!).filter(Boolean);
       await u.db("o_assets").whereIn("id", toDeleteIds).update({ imageId: null });
       if (deleteImageIds.length > 0) {
         await u.db("o_image").whereIn("id", deleteImageIds).delete();
@@ -104,6 +104,7 @@ export default router.post(
       }
     }
 
-    res.status(200).send(success({ message: "新增资产成功" }));
+    const audioAsset = await getAudioAssetResponse(id);
+    res.status(200).send(success({ message: "更新音频资产成功", audioAsset }));
   },
 );

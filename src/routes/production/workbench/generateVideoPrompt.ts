@@ -6,18 +6,17 @@ import { validateFields } from "@/middleware/middleware";
 import { createUnifiedTask } from "@/services/taskCoordinator";
 
 const router = express.Router();
+const referenceSchema = z.object({
+  id: z.union([z.number(), z.string()]),
+  sources: z.enum(["storyboard", "assets", "merged", "directorAsset", "local"]),
+});
 
 export default router.post(
   "/",
   validateFields({
     trackId: z.number(),
     projectId: z.number(),
-    info: z.array(
-      z.object({
-        id: z.number(),
-        sources: z.enum(["storyboard", "assets", "merged", "directorAsset"]),
-      }),
-    ),
+    info: z.array(referenceSchema),
     model: z.string(),
     mode: z.string(),
     promptPrefix: z.string().optional(),

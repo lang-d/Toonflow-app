@@ -5,10 +5,53 @@ import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { buildStoryboardVideoFact } from "@/services/storyboardFacts";
 import { parseMusicPlan } from "@/services/musicSuggestion";
+import { parseStoryboardReferences } from "@/services/storyboardEditor";
 const router = express.Router();
 
 function normalizeReviewState(value: unknown): "pending" | "passed" | "hasIssues" | "blocked" {
   return value === "passed" || value === "hasIssues" || value === "blocked" ? value : "pending";
+}
+
+function isPrivateMediaPath(value: string, projectId: number, scriptId: number) {
+  return value.startsWith(`${projectId}/imageFlow/${scriptId}/media/`);
+}
+
+async function buildLocalAudioReference(item: any, projectId: number, scriptId: number): Promise<TrackMedia | null> {
+  if (item?.source !== "local" || item?.type !== "audio") return null;
+  const rawPath = item?.media?.path || item?.sourceId || item?.id || item?.url;
+  const mediaPath = u.mediaRef.normalizeMediaPath(rawPath);
+  if (!isPrivateMediaPath(mediaPath, projectId, scriptId)) return null;
+  const media = await u.mediaRef.toMediaRef(mediaPath, {
+    id: mediaPath,
+    type: "audio",
+    source: "local",
+    sourceId: mediaPath,
+    name: item?.name || item?.media?.name || item?.label || "本地音频",
+    preview: false,
+  });
+  if (!media) return null;
+  media.previewUrl = media.previewUrl || media.url;
+  return {
+    id: mediaPath,
+    sources: "local",
+    fileType: "audio",
+    src: media.url,
+    media,
+    name: media.name,
+  };
+}
+
+async function buildLocalAudioReferences(storyboard: any, projectId: number, scriptId: number): Promise<TrackMedia[]> {
+  const refs = parseStoryboardReferences(storyboard.referenceImages);
+  const result: TrackMedia[] = [];
+  const seen = new Set<string>();
+  for (const ref of refs) {
+    const item = await buildLocalAudioReference(ref, projectId, scriptId);
+    if (!item || seen.has(String(item.id))) continue;
+    seen.add(String(item.id));
+    result.push(item);
+  }
+  return result;
 }
 
 interface VideoItem {
@@ -19,7 +62,7 @@ interface VideoItem {
 
 interface TrackMedia {
   src: string;
-  id?: number;
+  id?: number | string;
   fileType: "image" | "video" | "audio";
   videoDesc?: string;
   scene?: string;
@@ -30,8 +73,10 @@ interface TrackMedia {
   dialogue?: string;
   sound?: string;
   visibleEmotion?: string;
-  sources?: "storyboard" | "assets" | "merged" | "directorAsset";
+  sources?: "storyboard" | "assets" | "merged" | "directorAsset" | "local";
   sourceRefs?: Array<{ id: number; sources: "storyboard" | "assets" | "directorAsset"; order: number }>;
+  media?: Awaited<ReturnType<typeof u.mediaRef.toMediaRef>>;
+  name?: string;
 }
 
 interface TrackItem {
@@ -79,6 +124,13 @@ export default router.post(
       }),
     );
     const storyboardTrackRecord: Record<number, any[]> = {};
+    const localAudioByStoryboard: Record<number, TrackMedia[]> = {};
+    await Promise.all(
+      storyboardList.map(async (storyboard) => {
+        if (storyboard.id == null) return;
+        localAudioByStoryboard[Number(storyboard.id)] = await buildLocalAudioReferences(storyboard, projectId, scriptId);
+      }),
+    );
     storyboardList.forEach((i) => {
       const fact = buildStoryboardVideoFact(i);
       const factSummary = [
@@ -269,6 +321,7 @@ export default router.post(
         medias: (() => {
           const storyboardMedias = storyboardTrackRecord[trackId] ?? [];
           const assetMedias = storyboardMedias.flatMap((s) => otherDataMap[s.id] ?? []);
+          const localAudioMedias = storyboardMedias.flatMap((s) => localAudioByStoryboard[Number(s.id)] ?? []);
 
           const seenAssetIds = new Set<number>();
           const uniqueAssets = assetMedias.filter((a) => {
@@ -291,7 +344,7 @@ export default router.post(
           const hasImageAssetData = filteredAssets.filter((i) => i.src);
           const notHasImageAssetData = filteredAssets.filter((i) => !i.src);
 
-          let medias = [...hasImageAssetData, ...storyboardMedias, ...notHasImageAssetData];
+          let medias = [...hasImageAssetData, ...localAudioMedias, ...storyboardMedias, ...notHasImageAssetData];
           for (const merged of mergedByTrack[trackId] || []) {
             const sourceKeys = new Set(merged.sourceRefs.map((ref: any) => `${ref.sources}:${ref.id}`));
             const firstMatchedIndex = medias.findIndex((item: any) => sourceKeys.has(`${item.sources}:${item.id}`));

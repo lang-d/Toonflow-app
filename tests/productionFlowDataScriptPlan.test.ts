@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
@@ -13,12 +14,33 @@ let db: any;
 let flowData: typeof import("../src/services/productionFlowData");
 let textAsset: typeof import("../src/services/textAsset");
 let productionAgent: typeof import("../src/agents/productionAgent");
+let addDeriveAssetRoute: any;
+
+async function postRoute(route: any, body: Record<string, unknown>) {
+  const express = (await import("express")).default;
+  const app = express();
+  app.use(express.json({ limit: "20mb" }));
+  app.use("/", route);
+  const server = app.listen(0);
+  try {
+    const { port } = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${port}/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json() };
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
 
 before(async () => {
   db = (await import("../src/utils/db")).db;
   flowData = await import("../src/services/productionFlowData");
   textAsset = await import("../src/services/textAsset");
   productionAgent = await import("../src/agents/productionAgent");
+  addDeriveAssetRoute = (await import("../src/routes/production/assets/addDeriveAsset")).default;
 
   await db.schema.createTable("o_agentWorkData", (table: any) => {
     table.increments("id");
@@ -44,7 +66,9 @@ before(async () => {
   });
   await db.schema.createTable("o_image", (table: any) => {
     table.integer("id").primary();
+    table.integer("assetsId");
     table.string("filePath");
+    table.string("type");
     table.string("state");
     table.string("errorReason");
   });
@@ -52,12 +76,15 @@ before(async () => {
     table.integer("id").primary();
     table.integer("projectId");
     table.integer("assetsId");
+    table.integer("scriptId");
     table.integer("imageId");
     table.integer("flowId");
     table.string("name");
     table.string("type");
+    table.string("promptState");
     table.text("prompt");
     table.text("describe");
+    table.integer("startTime");
   });
   await db.schema.createTable("o_directorAsset", (table: any) => {
     table.increments("id");
@@ -190,6 +217,105 @@ test("getFlowData prefers latest complete scriptPlan text asset over legacy work
 
   const result = await flowData.buildProductionFlowData(1, 10);
   assert.equal(result.scriptPlan, "persisted director plan v2");
+});
+
+test("getFlowData keeps bound audio out of visual derive assets", async () => {
+  await db("o_image").insert([
+    { id: 1001, assetsId: 101, filePath: "/1/role/base.png", type: "role", state: "已完成" },
+    { id: 1002, assetsId: 102, filePath: "/1/role/derive.png", type: "role", state: "已完成" },
+    { id: 2001, assetsId: 201, filePath: "/1/assets/audio-cover.png", type: "audio", state: "已完成" },
+    { id: 2002, assetsId: 202, filePath: "/1/assets/audio/voice.wav", type: "audio", state: "已完成" },
+  ]);
+  await db("o_assets").insert([
+    { id: 101, projectId: 1, imageId: 1001, name: "Hero", type: "role", prompt: "role prompt", describe: "role desc" },
+    {
+      id: 102,
+      projectId: 1,
+      assetsId: 101,
+      imageId: 1002,
+      name: "Hero smile",
+      type: "role",
+      prompt: "derive prompt",
+      describe: "derive desc",
+    },
+    {
+      id: 201,
+      projectId: 1,
+      imageId: 2001,
+      name: "Voice pack",
+      type: "audio",
+      prompt: "audio parent prompt",
+      describe: "male|warm",
+    },
+    {
+      id: 202,
+      projectId: 1,
+      assetsId: 201,
+      imageId: 2002,
+      name: "voice.wav",
+      type: "audio",
+      prompt: "audio file prompt",
+      describe: "audio file desc",
+    },
+  ]);
+  await db("o_scriptAssets").insert({ scriptId: 10, assetId: 101 });
+  await db("o_assetsRole2Audio").insert({ assetsRoleId: 101, assetsAudioId: 201 });
+
+  const result = await flowData.buildProductionFlowData(1, 10);
+
+  assert.ok(result.assets.length > 0);
+  assert.equal(result.assets.some((asset: any) => asset.type === "audio"), false);
+  const hero = result.assets.find((asset: any) => asset.id === 101);
+  assert.ok(hero);
+  assert.deepEqual(
+    hero.derive.map((asset: any) => asset.id),
+    [102],
+  );
+  assert.equal(hero.derive.some((asset: any) => asset.type === "audio"), false);
+  assert.deepEqual(result.assetAudioBindings.map((item: any) => item.assetId), [101]);
+  assert.equal(result.assetAudioBindings[0].audioAssetId, 201);
+  assert.deepEqual(
+    result.assetAudioBindings[0].files.map((item: any) => item.id),
+    [202],
+  );
+});
+
+test("addDeriveAsset allows audio-bound visual assets and rejects audio assets", async () => {
+  await db("o_assets").insert([
+    { id: 301, projectId: 1, name: "Audio bound role", type: "role", describe: "role" },
+    { id: 302, projectId: 1, name: "Voice parent", type: "audio", describe: "voice" },
+    { id: 303, projectId: 1, assetsId: 302, name: "voice.wav", type: "audio", describe: "file" },
+  ]);
+  await db("o_assetsRole2Audio").insert({ assetsRoleId: 301, assetsAudioId: 302 });
+
+  const allowed = await postRoute(addDeriveAssetRoute, {
+    projectId: 1,
+    scriptId: 10,
+    assetsId: 301,
+    name: "Role variant",
+    desc: "visual variant",
+  });
+  assert.equal(allowed.status, 200);
+  const inserted = await db("o_assets").where({ projectId: 1, assetsId: 301, name: "Role variant" }).first();
+  assert.equal(inserted?.type, "role");
+
+  const rejectedParent = await postRoute(addDeriveAssetRoute, {
+    projectId: 1,
+    scriptId: 10,
+    assetsId: 302,
+    name: "Audio variant",
+    desc: "should fail",
+  });
+  assert.equal(rejectedParent.status, 400);
+
+  const rejectedChild = await postRoute(addDeriveAssetRoute, {
+    projectId: 1,
+    scriptId: 10,
+    assetsId: 303,
+    name: "Audio child variant",
+    desc: "should fail",
+  });
+  assert.equal(rejectedChild.status, 400);
 });
 
 test("scriptPlan XML extraction only accepts complete non-empty tags", () => {

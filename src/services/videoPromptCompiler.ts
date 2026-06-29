@@ -52,6 +52,13 @@ export interface CompileVideoPromptOptions {
 
 const promptLog = createLogger("video-prompt-compiler");
 
+interface PromptReferenceMeta {
+  inputOrder: number;
+  visualImageIndex?: number;
+  audioReferenceIndex?: number;
+  videoReferenceIndex?: number;
+}
+
 function escapeAttribute(value: unknown) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -109,11 +116,49 @@ ${cleanSuffix ? `- 后置约束：${cleanSuffix}` : ""}
 这些内容只用于约束本次视频提示词生成，不要逐字重复写入轨道提示词正文。`;
 }
 
-function referenceLine(item: ResolvedWorkbenchReference, index: number) {
+function annotateReferences(items: ResolvedWorkbenchReference[]) {
+  let visualImageIndex = 0;
+  let audioReferenceIndex = 0;
+  let videoReferenceIndex = 0;
+  return items.map((item, index) => {
+    const meta: PromptReferenceMeta = { inputOrder: index + 1 };
+    if (item.fileType === "image") meta.visualImageIndex = ++visualImageIndex;
+    if (item.fileType === "audio") meta.audioReferenceIndex = ++audioReferenceIndex;
+    if (item.fileType === "video") meta.videoReferenceIndex = ++videoReferenceIndex;
+    return { item, meta };
+  });
+}
+
+function referenceLine(item: ResolvedWorkbenchReference, meta: PromptReferenceMeta) {
+  if (item.fileType === "audio") {
+    return `${meta.inputOrder}. <audioReference
+  inputOrder='${meta.inputOrder}'
+  audioReferenceIndex='${meta.audioReferenceIndex ?? ""}'
+  source='${item.sources}'
+  referenceId='${escapeAttribute(item.id)}'
+  name='${escapeAttribute(item.name)}'
+  fileType='audio'
+  note='参考音频${meta.audioReferenceIndex ?? ""}只用于声音、音色、台词语气或画内音效参考；不得写成 @ImageN，也不占用视觉 @ImageN 编号'
+></audioReference>`;
+  }
+  if (item.fileType === "video") {
+    return `${meta.inputOrder}. <videoReference
+  inputOrder='${meta.inputOrder}'
+  videoReferenceIndex='${meta.videoReferenceIndex ?? ""}'
+  source='${item.sources}'
+  referenceId='${escapeAttribute(item.id)}'
+  name='${escapeAttribute(item.name)}'
+  fileType='video'
+  note='参考视频${meta.videoReferenceIndex ?? ""}只作为动态、动作或节奏参考；不得写成 @ImageN，也不占用视觉 @ImageN 编号'
+></videoReference>`;
+  }
   if (item.sources === "storyboard") {
-    return `${index + 1}. <visualReference
+    return `${meta.inputOrder}. <visualReference
+  inputOrder='${meta.inputOrder}'
+  visualImageIndex='${meta.visualImageIndex ?? ""}'
+  visualToken='${meta.visualImageIndex ? `@Image${meta.visualImageIndex}` : ""}'
   source='storyboard'
-  referenceId='${item.id}'
+  referenceId='${escapeAttribute(item.id)}'
   name='${escapeAttribute(item.name)}'
   fileType='${item.fileType}'
   note='该分镜图只作为视觉参考；完整分镜叙事以 trackId 查询到的分镜表事实为准'
@@ -123,9 +168,12 @@ function referenceLine(item: ResolvedWorkbenchReference, index: number) {
     const sourceRefs = (item.sourceRefs || [])
       .map((ref) => `${ref.sources}:${ref.id}${ref.label ? `(${ref.label})` : ""}`)
       .join(", ");
-    return `${index + 1}. <visualReference
+    return `${meta.inputOrder}. <visualReference
+  inputOrder='${meta.inputOrder}'
+  visualImageIndex='${meta.visualImageIndex ?? ""}'
+  visualToken='${meta.visualImageIndex ? `@Image${meta.visualImageIndex}` : ""}'
   source='merged'
-  referenceId='${item.id}'
+  referenceId='${escapeAttribute(item.id)}'
   name='${escapeAttribute(item.name)}'
   fileType='${item.fileType}'
   sourceRefs='${escapeAttribute(sourceRefs)}'
@@ -133,7 +181,17 @@ function referenceLine(item: ResolvedWorkbenchReference, index: number) {
 ></visualReference>`;
   }
   const sourceType = item.category || item.fileType;
-  return `${index + 1}. [${item.id}, ${sourceType}, ${item.name}, fileType=${item.fileType}]`;
+  return `${meta.inputOrder}. <visualReference
+  inputOrder='${meta.inputOrder}'
+  visualImageIndex='${meta.visualImageIndex ?? ""}'
+  visualToken='${meta.visualImageIndex ? `@Image${meta.visualImageIndex}` : ""}'
+  source='${item.sources}'
+  referenceId='${escapeAttribute(item.id)}'
+  name='${escapeAttribute(item.name)}'
+  sourceType='${escapeAttribute(sourceType)}'
+  fileType='${item.fileType}'
+  note='该素材是视觉参考；若使用 @ImageN，只能使用 visualToken 对应的编号'
+></visualReference>`;
 }
 
 function buildTrackFacts(track: any) {
@@ -291,6 +349,8 @@ function buildGenerationConstraints() {
   return `
 **生成阶段质量约束**
 - 保留模型专属 Prompt 的详细格式和引用编号规则。
+- 当模型专属 Prompt 要求使用 @ImageN 时，@ImageN 只对应引用区 visualToken='@ImageN' 的图片引用；音频和视频引用不占用、不改写、不顺延 @ImageN。
+- 音频引用只能写成“参考音频N”或音频素材名，用于声音、音色、台词语气或画内音效参考，不得当作视觉参考。
 - 分镜表事实是视频提示词主输入；分镜面板 prompt / imagePrompt 不作为视频主上下文。
 - 不创造新剧情，不自行改写场景时间、光影、色调、人物关系。
 - 有分镜图、合图或参考图时，沿用参考图中的环境、光线、色彩、人物外观、构图；不要强写与参考图冲突的站位和朝向。
@@ -331,7 +391,8 @@ export async function compileWorkbenchVideoPrompt(
     requireFile: false,
   });
 
-  const orderedReferenceText = references.map(referenceLine).join("\n");
+  const annotatedReferences = annotateReferences(references);
+  const orderedReferenceText = annotatedReferences.map(({ item, meta }) => referenceLine(item, meta)).join("\n");
   const promptContext = `
 **模型名称**：${modelName}
 **模式**：${input.mode}
@@ -354,12 +415,16 @@ ${buildGenerationConstraints()}
     mode: input.mode,
     systemPromptSource: system.source,
     references: referenceInputs,
-    resolvedReferences: references.map((item, index) => ({
-      order: index + 1,
+    resolvedReferences: annotatedReferences.map(({ item, meta }) => ({
+      order: meta.inputOrder,
+      inputOrder: meta.inputOrder,
       id: item.id,
       sources: item.sources,
       fileType: item.fileType,
       name: item.name,
+      visualImageIndex: meta.visualImageIndex,
+      audioReferenceIndex: meta.audioReferenceIndex,
+      videoReferenceIndex: meta.videoReferenceIndex,
       sourceRefs: item.sourceRefs,
     })),
     storyboardCount: trackStoryboards.length,

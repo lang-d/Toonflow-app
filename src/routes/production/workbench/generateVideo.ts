@@ -11,6 +11,11 @@ import { assertVideoDurationSupported, getVideoModelPolicy } from "@/services/vi
 import { assertTrackStoryboardsReady } from "@/services/storyboardFacts";
 
 const router = express.Router();
+type VideoReferenceSource = "storyboard" | "assets" | "merged" | "directorAsset" | "local";
+const referenceSchema = z.object({
+  id: z.union([z.number(), z.string()]),
+  sources: z.enum(["storyboard", "assets", "merged", "directorAsset", "local"]),
+});
 
 function parseMode(mode: unknown) {
   if (Array.isArray(mode)) return mode;
@@ -27,12 +32,7 @@ export default router.post(
   validateFields({
     projectId: z.number(),
     scriptId: z.number(),
-    uploadData: z.array(
-      z.object({
-        id: z.number(),
-        sources: z.enum(["storyboard", "assets", "merged", "directorAsset"]),
-      }),
-    ),
+    uploadData: z.array(referenceSchema),
     prompt: z.string(),
     model: z.string(),
     mode: z.string(),
@@ -95,7 +95,7 @@ export default router.post(
       model,
       input: {
         prompt,
-        references: uploadData.map((item: { id: number; sources: "storyboard" | "assets" | "merged" | "directorAsset" }, order: number) => ({
+        references: uploadData.map((item: { id: number | string; sources: VideoReferenceSource }, order: number) => ({
           ...item,
           order,
         })),

@@ -5,6 +5,7 @@ import { renderStoryboardTableFromRows } from "@/services/storyboardTableText";
 import { buildStoryboardVideoFact } from "@/services/storyboardFacts";
 import { getDeriveAssetPromptSnapshot } from "@/services/imageFlow";
 import { getTextAssetContent } from "@/services/textAsset";
+import { VISUAL_ASSET_TYPES } from "@/services/assetTypes";
 
 function parseStoredWorkData(value: unknown) {
   if (!value) return {};
@@ -39,28 +40,49 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
   ]);
   const assetIds = scriptAssets.map((item: any) => Number(item.assetId)).filter(Number.isFinite);
   const boundAudioRows = assetIds.length
-    ? await u.db("o_assetsRole2Audio").whereIn("assetsRoleId", assetIds).select("assetsAudioId")
+    ? await u.db("o_assetsRole2Audio").whereIn("assetsRoleId", assetIds).select("assetsRoleId", "assetsAudioId")
     : [];
-  const flowAssetIds = [
-    ...new Set([...assetIds, ...boundAudioRows.map((item: any) => Number(item.assetsAudioId)).filter(Number.isFinite)]),
+  const visualAssetIds = [...new Set(assetIds)];
+  const boundAudioAssetIds = [
+    ...new Set(boundAudioRows.map((item: any) => Number(item.assetsAudioId)).filter(Number.isFinite)),
   ];
-  const assetsData = flowAssetIds.length
+  const assetsData = visualAssetIds.length
     ? await u
         .db("o_assets")
         .leftJoin("o_image", "o_assets.imageId", "o_image.id")
         .select("o_assets.*", "o_image.filePath", "o_image.state", "o_image.errorReason")
-        .whereIn("o_assets.id", flowAssetIds)
+        .whereIn("o_assets.id", visualAssetIds)
+        .whereIn("o_assets.type", VISUAL_ASSET_TYPES as unknown as string[])
         .whereNull("o_assets.assetsId")
         .where("o_assets.projectId", projectId)
     : [];
-  const childAssetsData = flowAssetIds.length
+  const childAssetsData = visualAssetIds.length
     ? await u
         .db("o_assets")
         .leftJoin("o_image", "o_assets.imageId", "o_image.id")
         .select("o_assets.*", "o_image.filePath", "o_image.state", "o_image.errorReason")
         .where("o_assets.projectId", projectId)
-        .whereIn("o_assets.assetsId", flowAssetIds)
+        .whereIn("o_assets.assetsId", visualAssetIds)
+        .whereIn("o_assets.type", VISUAL_ASSET_TYPES as unknown as string[])
         .whereNotNull("o_assets.assetsId")
+    : [];
+  const audioParentRows = boundAudioAssetIds.length
+    ? await u
+        .db("o_assets")
+        .leftJoin("o_image", "o_assets.imageId", "o_image.id")
+        .select("o_assets.*", "o_image.filePath", "o_image.state", "o_image.errorReason")
+        .whereIn("o_assets.id", boundAudioAssetIds)
+        .where("o_assets.projectId", projectId)
+        .where("o_assets.type", "audio")
+    : [];
+  const audioFileRows = boundAudioAssetIds.length
+    ? await u
+        .db("o_assets")
+        .leftJoin("o_image", "o_assets.imageId", "o_image.id")
+        .select("o_assets.*", "o_image.filePath", "o_image.state", "o_image.errorReason")
+        .whereIn("o_assets.assetsId", boundAudioAssetIds)
+        .where("o_assets.projectId", projectId)
+        .where("o_assets.type", "audio")
     : [];
   const directorAssetsRows = await u
     .db("o_directorAsset")
@@ -126,6 +148,43 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
           }),
       ),
     })),
+  );
+  const audioParentsById = new Map(audioParentRows.map((item: any) => [Number(item.id), item]));
+  const audioFilesByParentId = new Map<number, any[]>();
+  for (const item of audioFileRows) {
+    const parentId = Number(item.assetsId);
+    if (!audioFilesByParentId.has(parentId)) audioFilesByParentId.set(parentId, []);
+    audioFilesByParentId.get(parentId)!.push(item);
+  }
+  const assetAudioBindings = await Promise.all(
+    boundAudioRows
+      .map((item: any) => ({
+        assetsRoleId: Number(item.assetsRoleId),
+        assetsAudioId: Number(item.assetsAudioId),
+      }))
+      .filter((item: any) => Number.isFinite(item.assetsRoleId) && Number.isFinite(item.assetsAudioId))
+      .map(async (item: any) => {
+        const audio = audioParentsById.get(item.assetsAudioId);
+        return {
+          assetId: item.assetsRoleId,
+          audioAssetId: item.assetsAudioId,
+          name: audio?.name ?? "",
+          desc: audio?.describe ?? "",
+          src: audio?.filePath ? await u.oss.getFileUrl(audio.filePath) : "",
+          files: await Promise.all(
+            (audioFilesByParentId.get(item.assetsAudioId) || []).map(async (file: any) => ({
+              id: file.id,
+              audioAssetId: item.assetsAudioId,
+              name: file.name ?? "",
+              prompt: file.prompt ?? "",
+              desc: file.describe ?? "",
+              src: file.filePath ? await u.oss.getFileUrl(file.filePath) : "",
+              state: file.state ?? "未生成",
+              errorReason: file.errorReason ?? "",
+            })),
+          ),
+        };
+      }),
   );
 
   const storyboardRows = await u
@@ -232,6 +291,7 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
     script: scriptData?.content ?? "",
     scriptPlan: persistedScriptPlan || stored.scriptPlan || "",
     assets,
+    assetAudioBindings,
     storyboard,
     storyboardTable: rendered.content,
     storyboardTableMeta: rendered.meta,

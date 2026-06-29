@@ -10,6 +10,11 @@ import { assertVideoDurationSupported, getVideoModelPolicy } from "@/services/vi
 import { assertTrackStoryboardsReady } from "@/services/storyboardFacts";
 
 const router = express.Router();
+type VideoReferenceSource = "storyboard" | "assets" | "merged" | "directorAsset" | "local";
+const referenceSchema = z.object({
+  id: z.union([z.number(), z.string()]),
+  sources: z.enum(["storyboard", "assets", "merged", "directorAsset", "local"]),
+});
 
 function parseMode(mode: unknown) {
   if (Array.isArray(mode)) return mode;
@@ -28,12 +33,7 @@ export default router.post(
     scriptId: z.number(),
     trackData: z.array(
       z.object({
-        uploadData: z.array(
-          z.object({
-            id: z.number(),
-            sources: z.enum(["storyboard", "assets", "merged", "directorAsset"]),
-          }),
-        ),
+        uploadData: z.array(referenceSchema),
         trackId: z.number(),
         prompt: z.string(),
         duration: z.number(),
@@ -72,7 +72,7 @@ export default router.post(
     }
 
     const tasks = await Promise.all(
-      (trackData as { uploadData: { id: number; sources: "storyboard" | "assets" | "merged" | "directorAsset" }[]; trackId: number; prompt: string; duration: number }[]).map(async (track) => {
+      (trackData as { uploadData: { id: number | string; sources: VideoReferenceSource }[]; trackId: number; prompt: string; duration: number }[]).map(async (track) => {
         const { uploadData, trackId, prompt, duration } = track;
         const references = await resolveWorkbenchReferences(uploadData, { projectId, scriptId, trackId });
         validateReferenceLimits(references, modeData);

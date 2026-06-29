@@ -4,10 +4,10 @@ import u from "@/utils";
 import { ReferenceList } from "@/utils/ai";
 import { resolveDirectorAsset } from "@/services/directorAsset";
 
-export type WorkbenchReferenceSource = "storyboard" | "assets" | "merged" | "directorAsset";
+export type WorkbenchReferenceSource = "storyboard" | "assets" | "merged" | "directorAsset" | "local";
 
 export interface WorkbenchReferenceInput {
-  id: number;
+  id: number | string;
   sources: WorkbenchReferenceSource;
 }
 
@@ -25,7 +25,7 @@ export interface StoredSourceReference extends WorkbenchReferenceInput {
 }
 
 export interface ResolvedWorkbenchReference {
-  id: number;
+  id: number | string;
   sources: WorkbenchReferenceSource;
   filePath: string;
   fileType: "image" | "video" | "audio";
@@ -90,8 +90,33 @@ function assertOwnership(value: unknown, expected: number | undefined, message: 
   if (expected != null && Number(value) !== expected) throw new Error(message);
 }
 
+function assertLocalPrivateMediaPath(filePath: string, options: ResolveOptions) {
+  if (options.projectId != null && options.scriptId != null) {
+    const expectedPrefix = `${options.projectId}/imageFlow/${options.scriptId}/media/`;
+    if (!filePath || !filePath.startsWith(expectedPrefix)) {
+      throw new Error("本地媒体引用不属于当前项目或剧集");
+    }
+    return;
+  }
+  if (!/^\d+\/imageFlow\/\d+\/media\/[^/]+$/i.test(filePath)) {
+    throw new Error("本地媒体引用不属于当前项目或剧集");
+  }
+}
+
 async function resolveOne(input: WorkbenchReferenceInput, options: ResolveOptions): Promise<ResolvedWorkbenchReference> {
   const db = options.knex ?? u.db;
+  if (input.sources === "local") {
+    const filePath = u.mediaRef.normalizeMediaPath(input.id);
+    assertLocalPrivateMediaPath(filePath, options);
+    return {
+      id: filePath,
+      sources: "local",
+      filePath,
+      fileType: detectFileType("audio", filePath),
+      name: path.basename(filePath) || "本地音频",
+      category: "audio",
+    };
+  }
   if (input.sources === "directorAsset") return resolveDirectorAssetReference(input, options);
   if (input.sources === "storyboard") {
     const row = await db("o_storyboard").where("id", input.id).first();
@@ -171,7 +196,7 @@ async function resolveOne(input: WorkbenchReferenceInput, options: ResolveOption
 
 async function resolveDirectorAssetReference(input: WorkbenchReferenceInput, options: ResolveOptions) {
   const db = options.knex ?? u.db;
-  const row = await resolveDirectorAsset(input.id, { projectId: options.projectId, knex: db });
+  const row = await resolveDirectorAsset(Number(input.id), { projectId: options.projectId, knex: db });
   return {
     id: input.id,
     sources: "directorAsset" as const,
@@ -270,11 +295,12 @@ export function validateReferenceLimits(items: ResolvedWorkbenchReference[], mod
 
 export async function resolveReferenceUrls(
   inputs: WorkbenchReferenceInput[],
+  options: ResolveOptions = {},
 ): Promise<Record<string, Awaited<ReturnType<typeof u.mediaRef.toMediaRef>> | null>> {
   const result: Record<string, Awaited<ReturnType<typeof u.mediaRef.toMediaRef>> | null> = {};
   for (const input of inputs) {
     try {
-      const [item] = await resolveWorkbenchReferences([input], { requireFile: false });
+      const [item] = await resolveWorkbenchReferences([input], { ...options, requireFile: false });
       result[`${input.id}:${input.sources}`] = item.filePath
         ? await u.mediaRef.toMediaRef(item.filePath, { source: input.sources, sourceId: input.id })
         : null;

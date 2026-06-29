@@ -15,6 +15,7 @@ import {
 import { applyStoryboardPanelImageFieldsWithDb, updateDeriveAssetPrompt } from "@/services/imageFlow";
 import { emitWithAckTimeout } from "@/agents/shared/socketAck";
 import { buildProductionFlowData } from "@/services/productionFlowData";
+import { VISUAL_ASSET_TYPES, isVisualAssetType } from "@/services/assetTypes";
 
 const deriveAssetSchema = z.object({
   id: z.number().describe("衍生资产ID,如果新增则为空"),
@@ -24,15 +25,35 @@ const deriveAssetSchema = z.object({
   desc: z.string().describe("衍生资产描述"),
   src: z.string().nullable().describe("衍生资产资源路径"),
   state: z.enum(["未生成", "生成中", "已完成", "生成失败"]).describe("衍生资产生成状态"),
-  type: z.enum(["role", "tool", "scene", "clip"]).describe("衍生资产类型"),
+  type: z.enum(VISUAL_ASSET_TYPES).describe("衍生资产类型"),
 });
 export const assetItemSchema = z.object({
   id: z.number().describe("资产唯一标识"),
   name: z.string().describe("资产名称"),
-  type: z.enum(["role", "tool", "scene", "clip"]).describe("资产类型"),
+  type: z.enum(VISUAL_ASSET_TYPES).describe("资产类型"),
   prompt: z.string().describe("生成提示词"),
   desc: z.string().describe("资产描述"),
   derive: z.array(deriveAssetSchema).describe("衍生资产列表"),
+});
+
+const assetAudioBindingSchema = z.object({
+  assetId: z.number().describe("Visual asset ID that owns the audio binding"),
+  audioAssetId: z.number().describe("Audio library parent asset ID"),
+  name: z.string().describe("Audio asset name"),
+  desc: z.string().describe("Audio asset description"),
+  src: z.string().optional().describe("Audio parent preview URL when available"),
+  files: z.array(
+    z.object({
+      id: z.number().describe("Audio file asset ID"),
+      audioAssetId: z.number().describe("Audio library parent asset ID"),
+      name: z.string(),
+      prompt: z.string(),
+      desc: z.string(),
+      src: z.string(),
+      state: z.string(),
+      errorReason: z.string(),
+    }),
+  ),
 });
 
 interface GenerateDeriveAssetAck {
@@ -211,13 +232,14 @@ export const addDeriveAssetInputSchema = z.object({
   desc: z.string().describe("中文视觉差异说明，不是生图提示词"),
   prompt: z.string().min(1).describe("可直接用于生图的中文提示词"),
   promptMode: z.enum(["preserve", "replace"]).optional().default("preserve").describe("保留或覆盖共享画布主节点提示词"),
-  type: z.enum(["role", "tool", "scene", "clip"]).optional().describe("衍生资产类型，由父资产类型校验"),
+  type: z.enum(VISUAL_ASSET_TYPES).optional().describe("衍生资产类型，由父资产类型校验"),
 });
 const posterItemSchema = z.object({
   id: z.number().describe("海报ID"),
   image: z.string().describe("海报图片路径"),
 });
 export const flowDataSchema = z.object({
+  assetAudioBindings: z.array(assetAudioBindingSchema).describe("Visual asset audio bindings"),
   script: z.string().describe("剧本内容"),
   scriptPlan: z.string().describe("拍摄计划"),
   assets: z.array(assetItemSchema).describe("衍生资产"),
@@ -482,6 +504,9 @@ export default (toolCpnfig: ToolConfig) => {
         if (!script) throw new Error("当前剧集不属于该项目");
         const parentAssets = await u.db("o_assets").where({ id: deriveAsset.assetsId, projectId }).select("id", "type").first();
         if (!parentAssets) return "关联的资产不存在";
+        if (!isVisualAssetType(parentAssets.type)) {
+          throw new Error(`Only role, scene, and tool assets can have derive assets; got ${parentAssets.type || "unknown"}`);
+        }
         if (deriveAsset.type && deriveAsset.type !== parentAssets.type) {
           throw new Error(`derive asset type ${deriveAsset.type} does not match parent asset type ${parentAssets.type}`);
         }
