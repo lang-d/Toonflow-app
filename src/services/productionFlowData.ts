@@ -7,6 +7,8 @@ import { getDeriveAssetPromptSnapshot } from "@/services/imageFlow";
 import { getTextAssetContent } from "@/services/textAsset";
 import { VISUAL_ASSET_TYPES } from "@/services/assetTypes";
 
+const ACTIVE_IMAGE_TASK_STATUSES = new Set(["queued", "submitting", "processing"]);
+
 function parseStoredWorkData(value: unknown) {
   if (!value) return {};
   try {
@@ -14,6 +16,43 @@ function parseStoredWorkData(value: unknown) {
   } catch {
     return {};
   }
+}
+
+function resolveStoryboardImageStatus(item: any, task: any, unifiedTask: any) {
+  const storyboardStatus = toTaskStatus(item.state) || "pending";
+  const taskStatus = task ? toTaskStatus(task.status) || toTaskStatus(task.state) : undefined;
+  const unifiedStatus = unifiedTask ? toTaskStatus(unifiedTask.status) || toTaskStatus(unifiedTask.state) : undefined;
+  const activeStatus = [taskStatus, unifiedStatus].find((status) => status && ACTIVE_IMAGE_TASK_STATUSES.has(status));
+  const hasSelectedFinalImage = storyboardStatus === "completed" && Boolean(item.filePath);
+
+  if (activeStatus) {
+    return {
+      status: activeStatus,
+      taskId: unifiedTask?.taskId || undefined,
+      unifiedTaskId: unifiedTask?.taskId || undefined,
+      legacyTaskId: task?.id || undefined,
+      nodeId: task?.nodeId || undefined,
+    };
+  }
+
+  if (hasSelectedFinalImage) {
+    return {
+      status: storyboardStatus,
+      taskId: undefined,
+      unifiedTaskId: undefined,
+      legacyTaskId: undefined,
+      nodeId: undefined,
+    };
+  }
+
+  const status = taskStatus || unifiedStatus || storyboardStatus;
+  return {
+    status,
+    taskId: unifiedTask?.taskId || undefined,
+    unifiedTaskId: unifiedTask?.taskId || undefined,
+    legacyTaskId: task?.id || undefined,
+    nodeId: task?.nodeId || undefined,
+  };
 }
 
 export async function readPersistedScriptPlan(projectId: number, scriptId: number) {
@@ -235,7 +274,7 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
       const fact = buildStoryboardVideoFact(item, associateAssetsIds);
       const task = latestTaskByStoryboard.get(Number(item.id));
       const unifiedTask = task ? unifiedTaskByEditTask.get(Number(task.id)) : null;
-      const status = task?.status || unifiedTask?.status || toTaskStatus(item.state) || "pending";
+      const imageStatus = resolveStoryboardImageStatus(item, task, unifiedTask);
       return {
         id: item.id,
         index: item.index,
@@ -244,11 +283,11 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
         associateAssetsIds,
         src: item.filePath ? await u.oss.getSmallImageUrl(item.filePath) : "",
         state: item.state,
-        status,
-        taskId: unifiedTask?.taskId || undefined,
-        unifiedTaskId: unifiedTask?.taskId || undefined,
-        legacyTaskId: task?.id || undefined,
-        nodeId: task?.nodeId || undefined,
+        status: imageStatus.status,
+        taskId: imageStatus.taskId,
+        unifiedTaskId: imageStatus.unifiedTaskId,
+        legacyTaskId: imageStatus.legacyTaskId,
+        nodeId: imageStatus.nodeId,
         videoDesc: fact.rawVideoDesc,
         scene: fact.scene,
         picture: fact.picture,

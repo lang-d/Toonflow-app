@@ -6,6 +6,39 @@ import { toTaskStatus } from "@/lib/taskStatus";
 import { validateFields } from "@/middleware/middleware";
 const router = express.Router();
 
+const ACTIVE_IMAGE_TASK_STATUSES = new Set(["queued", "submitting", "processing"]);
+
+function resolveStoryboardPollingStatus(item: any, task: any) {
+  const storyboardStatus = toTaskStatus(item.state) || "pending";
+  const taskStatus = task ? toTaskStatus(task.status) || toTaskStatus(task.state) : undefined;
+  const hasSelectedFinalImage = storyboardStatus === "completed" && Boolean(item.filePath);
+
+  if (taskStatus && ACTIVE_IMAGE_TASK_STATUSES.has(taskStatus)) {
+    return {
+      status: taskStatus,
+      reason: task?.reason || item.reason || "",
+      legacyTaskId: task?.id,
+      nodeId: task?.nodeId,
+    };
+  }
+
+  if (taskStatus && !hasSelectedFinalImage) {
+    return {
+      status: taskStatus,
+      reason: task?.reason || item.reason || "",
+      legacyTaskId: task?.id,
+      nodeId: task?.nodeId,
+    };
+  }
+
+  return {
+    status: storyboardStatus,
+    reason: item.reason || "",
+    legacyTaskId: taskStatus === "completed" ? task?.id : undefined,
+    nodeId: taskStatus === "completed" ? task?.nodeId : undefined,
+  };
+}
+
 export default router.post(
   "/",
   validateFields({
@@ -29,12 +62,10 @@ export default router.post(
     const result = await Promise.all(
       data.map(async (item: any) => {
         const task = latestTaskByStoryboard.get(Number(item.id));
+        const pollingStatus = resolveStoryboardPollingStatus(item, task);
         return {
           ...item,
-          status: task?.status || toTaskStatus(item.state) || "pending",
-          legacyTaskId: task?.id,
-          nodeId: task?.nodeId,
-          reason: task?.reason || item.reason || "",
+          ...pollingStatus,
           src: item.filePath ? await u.oss.getSmallImageUrl(item.filePath) : null,
         };
       }),

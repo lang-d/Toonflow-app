@@ -1288,6 +1288,7 @@ export async function updateImageFlowTarget(
   if (selectedImageUrl) {
     updateData.filePath = stripUrl(selectedImageUrl);
     updateData.state = "已完成";
+    updateData.reason = null;
     updateData.shouldGenerateImage = 1;
   }
   await trx("o_storyboard").where("id", targetId).update(updateData);

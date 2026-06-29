@@ -257,6 +257,48 @@ test("flow save without explicit final image does not revalidate stale selected 
   assert.equal(storyboard.filePath, "/storyboard/current.jpg");
 });
 
+test("saveImageFlow selected storyboard result clears stale failure state", async () => {
+  const [flowId] = await u.db("o_imageFlow").insert({
+    flowData: JSON.stringify({
+      projectId: 100,
+      scriptId: 2,
+      targetType: "storyboard",
+      targetId: 703,
+      selectedImageUrl: "",
+      nodes: [{ id: "result-node", type: "generated", data: { generatedImage: "/storyboard/final.jpg" } }],
+      edges: [],
+    }),
+  });
+  await u.db("o_storyboard").insert({
+    id: 703,
+    projectId: 100,
+    scriptId: 2,
+    flowId,
+    filePath: "",
+    state: "生成失败",
+    reason: "provider failed",
+    shouldGenerateImage: 1,
+    referenceImages: "[]",
+  });
+
+  await imageFlow.saveImageFlow({
+    flowId,
+    projectId: 100,
+    scriptId: 2,
+    targetType: "storyboard",
+    targetId: 703,
+    selectedMediaPath: "/storyboard/final.jpg",
+    nodes: [{ id: "result-node", type: "generated", data: { generatedImage: "/storyboard/final.jpg" } }],
+    edges: [],
+  });
+
+  const storyboard = await u.db("o_storyboard").where("id", 703).first();
+  assert.equal(storyboard.filePath, "storyboard/final.jpg");
+  assert.equal(storyboard.state, "已完成");
+  assert.equal(storyboard.reason, null);
+  assert.equal(storyboard.shouldGenerateImage, 1);
+});
+
 test("multiple generated nodes keep independent task state", async () => {
   const flowId = await imageFlow.saveImageFlow({
     nodes: [

@@ -318,6 +318,103 @@ test("addDeriveAsset allows audio-bound visual assets and rejects audio assets",
   assert.equal(rejectedChild.status, 400);
 });
 
+test("getFlowData returns completed storyboard over stale failed image-flow task", async () => {
+  await db("o_script").insert({ id: 810, projectId: 81, content: "script" });
+  await db("o_storyboard").insert({
+    id: 8101,
+    projectId: 81,
+    scriptId: 810,
+    index: 1,
+    filePath: "/81/storyboard/final.jpg",
+    state: "已完成",
+    reason: "",
+    shouldGenerateImage: 1,
+    referenceImages: "[]",
+  });
+  await db("o_editImageTask").insert({
+    id: 81001,
+    targetType: "storyboard",
+    targetId: 8101,
+    nodeId: "old-node",
+    status: "failed",
+    state: "failed",
+    reason: "provider failed",
+    updateTime: 100,
+  });
+
+  const result = await flowData.buildProductionFlowData(81, 810);
+  const storyboard = result.storyboard.find((item: any) => item.id === 8101);
+
+  assert.equal(storyboard.status, "completed");
+  assert.equal(storyboard.legacyTaskId, undefined);
+  assert.equal(storyboard.nodeId, undefined);
+  assert.ok(storyboard.src);
+});
+
+test("getFlowData keeps failed task when storyboard has no final image", async () => {
+  await db("o_script").insert({ id: 820, projectId: 82, content: "script" });
+  await db("o_storyboard").insert({
+    id: 8201,
+    projectId: 82,
+    scriptId: 820,
+    index: 1,
+    filePath: "",
+    state: "生成失败",
+    reason: "provider failed",
+    shouldGenerateImage: 1,
+    referenceImages: "[]",
+  });
+  await db("o_editImageTask").insert({
+    id: 82001,
+    targetType: "storyboard",
+    targetId: 8201,
+    nodeId: "failed-node",
+    status: "failed",
+    state: "failed",
+    reason: "provider failed",
+    updateTime: 100,
+  });
+
+  const result = await flowData.buildProductionFlowData(82, 820);
+  const storyboard = result.storyboard.find((item: any) => item.id === 8201);
+
+  assert.equal(storyboard.status, "failed");
+  assert.equal(storyboard.legacyTaskId, 82001);
+  assert.equal(storyboard.nodeId, "failed-node");
+});
+
+test("getFlowData keeps active task over existing storyboard image", async () => {
+  await db("o_script").insert({ id: 830, projectId: 83, content: "script" });
+  await db("o_storyboard").insert({
+    id: 8301,
+    projectId: 83,
+    scriptId: 830,
+    index: 1,
+    filePath: "/83/storyboard/old.jpg",
+    state: "已完成",
+    reason: "",
+    shouldGenerateImage: 1,
+    referenceImages: "[]",
+  });
+  await db("o_editImageTask").insert({
+    id: 83001,
+    targetType: "storyboard",
+    targetId: 8301,
+    nodeId: "active-node",
+    status: "processing",
+    state: "processing",
+    reason: "working",
+    updateTime: 100,
+  });
+
+  const result = await flowData.buildProductionFlowData(83, 830);
+  const storyboard = result.storyboard.find((item: any) => item.id === 8301);
+
+  assert.equal(storyboard.status, "processing");
+  assert.equal(storyboard.legacyTaskId, 83001);
+  assert.equal(storyboard.nodeId, "active-node");
+});
+
 test("scriptPlan XML extraction only accepts complete non-empty tags", () => {
   assert.equal(productionAgent.extractCompleteScriptPlanXml("<scriptPlan>usable plan</scriptPlan>"), "usable plan");
   assert.equal(productionAgent.extractCompleteScriptPlanXml("<scriptPlan>unfinished"), "");
