@@ -267,7 +267,7 @@ export default router.post(
       );
     }
 
-    const trackData = await u.db("o_videoTrack").where({ projectId, scriptId, archived: 0 });
+    const trackData = await u.db("o_videoTrack").where({ projectId, scriptId, archived: 0 }).orderBy("id", "asc");
     const mergedRows = await u
       .db("o_workbenchMergedReference")
       .where({ projectId, scriptId, state: "active" })

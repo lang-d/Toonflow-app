@@ -457,6 +457,91 @@ test("workbench data exposes storyboard private audio references as local track 
   assert.equal(audio.media.sourceId, audioPath);
 });
 
+test("manual addTrack creates a complete empty video group without video model lookup", async () => {
+  const addTrackRoute = (await import("../src/routes/production/workbench/addTrack")).default;
+  await db("o_project").insert({ id: 3, mode: JSON.stringify([]) });
+  await db("o_script").insert({ id: 30, projectId: 3 });
+
+  const response = await postRoute(addTrackRoute, {
+    projectId: 3,
+    scriptId: 30,
+    duration: 5,
+    groupName: "Manual Cut",
+    groupIntent: "User controlled group",
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.trackId, response.body.data.track.id);
+  assert.equal(response.body.data.track.duration, 5);
+  assert.equal(response.body.data.track.groupName, "Manual Cut");
+  assert.equal(response.body.data.track.groupIntent, "User controlled group");
+  assert.match(response.body.data.track.groupKey, /^manual-\d+$/);
+  assert.equal(response.body.data.track.state, "未生成");
+  assert.deepEqual(response.body.data.track.medias, []);
+  assert.deepEqual(response.body.data.track.videoList, []);
+
+  const row = await db("o_videoTrack").where({ id: response.body.data.trackId }).first();
+  assert.equal(row.projectId, 3);
+  assert.equal(row.scriptId, 30);
+  assert.equal(row.archived, 0);
+  assert.equal(row.reviewState, "pending");
+  assert.deepEqual(JSON.parse(row.reviewIssuesJson), []);
+});
+
+test("manual addTrack can move storyboards into the new video group and derive duration", async () => {
+  const addTrackRoute = (await import("../src/routes/production/workbench/addTrack")).default;
+  await db("o_storyboard").insert([
+    { id: 901, projectId: 1, scriptId: 10, trackId: 100, index: 901, duration: "1.5", filePath: "/1/storyboard/red.png" },
+    { id: 902, projectId: 1, scriptId: 10, trackId: 100, index: 902, duration: "2", filePath: "/1/storyboard/blue.png" },
+  ]);
+
+  const response = await postRoute(addTrackRoute, {
+    projectId: 1,
+    scriptId: 10,
+    groupName: "Picked Storyboards",
+    storyboardIds: [901, 902],
+  });
+
+  assert.equal(response.status, 200);
+  const track = response.body.data.track;
+  assert.equal(track.duration, 3.5);
+  assert.equal(track.groupName, "Picked Storyboards");
+  assert.match(track.groupKey, /^manual-\d+$/);
+
+  const rows = await db("o_storyboard").whereIn("id", [901, 902]).orderBy("id", "asc");
+  assert.deepEqual(
+    rows.map((row: any) => ({
+      id: row.id,
+      trackId: row.trackId,
+      groupKey: row.groupKey,
+      groupName: row.groupName,
+      groupIntent: row.groupIntent,
+    })),
+    [
+      { id: 901, trackId: track.id, groupKey: track.groupKey, groupName: "Picked Storyboards", groupIntent: "" },
+      { id: 902, trackId: track.id, groupKey: track.groupKey, groupName: "Picked Storyboards", groupIntent: "" },
+    ],
+  );
+});
+
+test("workbench data returns video groups in stable id order", async () => {
+  const addTrackRoute = (await import("../src/routes/production/workbench/addTrack")).default;
+  const getGenerateDataRoute = (await import("../src/routes/production/workbench/getGenerateData")).default;
+  const response = await postRoute(addTrackRoute, {
+    projectId: 1,
+    scriptId: 10,
+    duration: 4,
+    groupName: "Ordering Check",
+  });
+  assert.equal(response.status, 200);
+
+  const dataResponse = await postRoute(getGenerateDataRoute, { projectId: 1, scriptId: 10 });
+  assert.equal(dataResponse.status, 200);
+  const ids = dataResponse.body.data.trackList.map((item: any) => item.id);
+  assert.deepEqual(ids, [...ids].sort((a: number, b: number) => a - b));
+  assert.ok(ids.includes(response.body.data.trackId));
+});
+
 test("video prompt context keeps audio out of visual @Image numbering", async () => {
   const { compileWorkbenchVideoPrompt } = await import("../src/services/videoPromptCompiler");
   const audioPath = "1/imageFlow/10/media/prompt-private.wav";
