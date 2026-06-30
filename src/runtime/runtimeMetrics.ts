@@ -15,6 +15,20 @@ export interface RuntimeMetric {
   external: number;
   database?: Record<string, unknown>;
   externalProcesses?: Array<{ pid: number; command: string; startedAt: number }>;
+  activeTasks?: Array<{
+    taskId: number;
+    taskKey?: string;
+    handler?: string;
+    taskType?: string;
+    businessType?: string;
+    businessId?: number;
+    phase?: string;
+    providerTaskId?: string | null;
+    projectId?: number;
+    scriptId?: number | null;
+    startedAt: number;
+    runningMs: number;
+  }>;
 }
 
 export function startRuntimeMetrics(role: RuntimeMetric["role"], publish: (metric: RuntimeMetric) => void) {

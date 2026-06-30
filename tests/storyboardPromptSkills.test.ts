@@ -48,6 +48,7 @@ test("production agent reads flow data from backend facts and marks terminal sto
   assert.match(toolsSource, /terminal:\s*true/);
   assert.match(toolsSource, /VALIDATION_FAILED/);
   assert.match(toolsSource, /GENERATION_SUPERSEDED/);
+  assert.match(toolsSource, /storyboardGenerationLastFailure/);
   assert.doesNotMatch(toolsSource, /emitWithAckTimeout<FlowData>\(socket,\s*"getFlowData"/);
 });
 

@@ -121,18 +121,48 @@ async function createTestSchema() {
   await rawDb.schema.createTable("o_tasks", (table: any) => {
     table.increments("id");
     table.string("taskId");
+    table.integer("projectId");
+    table.integer("scriptId");
+    table.integer("episode");
+    table.string("taskType");
+    table.string("targetType");
+    table.string("targetId");
+    table.string("nodeId");
     table.string("businessType");
     table.integer("businessId");
     table.string("status");
     table.string("phase");
+    table.float("progress");
     table.string("state");
     table.string("reason");
     table.text("resultJson");
+    table.integer("availableAt");
     table.integer("finishTime");
     table.string("leaseOwner");
     table.integer("leaseExpiresAt");
     table.string("model");
+    table.integer("version").defaultTo(1);
+    table.string("providerTaskId");
+    table.integer("providerSubmittedAt");
     table.integer("updateTime");
+  });
+  await rawDb.schema.createTable("o_taskEvent", (table: any) => {
+    table.increments("id");
+    table.string("taskId");
+    table.integer("legacyTaskId");
+    table.integer("version");
+    table.string("taskType");
+    table.integer("projectId");
+    table.integer("scriptId");
+    table.string("targetType");
+    table.string("targetId");
+    table.string("nodeId");
+    table.string("status");
+    table.string("phase");
+    table.float("progress");
+    table.text("resultJson");
+    table.text("reason");
+    table.integer("createdAt");
   });
   await rawDb.schema.createTable("o_setting", (table: any) => {
     table.string("key").primary();
@@ -1376,6 +1406,10 @@ test("interrupted image-flow task without provider id fails task, node, and stor
   assert.equal(unifiedTask.reason, "missing provider id");
   assert.equal(unifiedTask.leaseOwner, null);
   assert.equal(unifiedTask.leaseExpiresAt, null);
+  const unifiedEvent = await u.db("o_taskEvent").where("legacyTaskId", 19921).orderBy("id", "desc").first();
+  assert.equal(unifiedEvent.status, "failed");
+  assert.equal(unifiedEvent.phase, "failed");
+  assert.equal(unifiedEvent.reason, "missing provider id");
   const storyboard = await u.db("o_storyboard").where("id", 90401).first();
   assert.equal(storyboard.filePath, "/storyboard/old-final.jpg");
   assert.equal(storyboard.reason, "missing provider id");
@@ -1399,9 +1433,113 @@ test("interrupted image tasks fail together with their flow nodes", async () => 
   assert.equal(unifiedTask.leaseOwner, null);
   assert.equal(unifiedTask.leaseExpiresAt, null);
   assert.ok(Number(unifiedTask.finishTime) > 0);
+  const event = await u.db("o_taskEvent").where("legacyTaskId", 1201).orderBy("id", "desc").first();
+  assert.equal(event.status, "failed");
+  assert.equal(event.phase, "failed");
 
   const stored = await u.db("o_imageFlow").where("id", task.flowId).first();
   const node = JSON.parse(stored.flowData).nodes.find((item: any) => item.id === task.nodeId);
   assert.equal(node.data.status, "failed");
   assert.equal(node.data.taskId, null);
+});
+
+test("interrupted image-flow task with provider id resumes provider polling", async () => {
+  const [flowId] = await u.db("o_imageFlow").insert({
+    flowData: JSON.stringify({
+      nodes: [{ id: "provider-node", type: "generated", data: { taskId: 9930, status: "processing", state: "generating" } }],
+      edges: [],
+    }),
+  });
+  await u.db("o_editImageTask").insert({
+    id: 9930,
+    projectId: 905,
+    scriptId: 94,
+    targetType: "storyboard",
+    targetId: 90501,
+    flowId,
+    nodeId: "provider-node",
+    status: "processing",
+    state: "processing",
+    reason: "",
+    taskCenterId: 19930,
+    createTime: Date.now(),
+    updateTime: Date.now(),
+  });
+  await u.db("o_tasks").insert({
+    id: 19930,
+    taskId: "image-flow-provider-resume",
+    projectId: 905,
+    scriptId: 94,
+    taskType: "image",
+    targetType: "storyboard",
+    targetId: "90501",
+    nodeId: "provider-node",
+    businessType: "image-flow",
+    businessId: 9930,
+    status: "processing",
+    phase: "provider-processing",
+    progress: 45,
+    state: "processing",
+    leaseOwner: "old-worker",
+    leaseExpiresAt: Date.now() + 60_000,
+    version: 2,
+    providerTaskId: "provider-task-9930",
+    providerSubmittedAt: Date.now() - 10_000,
+    updateTime: Date.now(),
+  });
+
+  const count = await imageFlowMigration.failInterruptedImageFlowTasks(rawDb);
+  assert.ok(count >= 1);
+
+  const legacyTask = await u.db("o_editImageTask").where("id", 9930).first();
+  assert.equal(legacyTask.status, "processing");
+  assert.equal(legacyTask.reason, "");
+  const unifiedTask = await u.db("o_tasks").where("id", 19930).first();
+  assert.equal(unifiedTask.status, "queued");
+  assert.equal(unifiedTask.phase, "resume-provider-query");
+  assert.equal(unifiedTask.providerTaskId, "provider-task-9930");
+  assert.equal(unifiedTask.leaseOwner, null);
+  assert.equal(unifiedTask.leaseExpiresAt, null);
+  assert.equal(Number(unifiedTask.version), 3);
+  const event = await u.db("o_taskEvent").where("legacyTaskId", 19930).orderBy("id", "desc").first();
+  assert.equal(event.status, "queued");
+  assert.equal(event.phase, "resume-provider-query");
+
+  const stored = await u.db("o_imageFlow").where("id", flowId).first();
+  const node = JSON.parse(stored.flowData).nodes.find((item: any) => item.id === "provider-node");
+  assert.equal(node.data.status, "queued");
+  assert.equal(node.data.phase, "resume-provider-query");
+  assert.equal(node.data.taskId, 9930);
+});
+
+test("interrupted image-flow terminal task backfills missing failed event", async () => {
+  const interruptedReason = "\u8f6f\u4ef6\u91cd\u542f\u5bfc\u81f4\u4efb\u52a1\u4e2d\u65ad";
+  await u.db("o_tasks").insert({
+    id: 19931,
+    taskId: "image-flow-missing-terminal-event",
+    projectId: 905,
+    scriptId: 94,
+    taskType: "image",
+    targetType: "storyboard",
+    targetId: "90502",
+    nodeId: "missing-event-node",
+    businessType: "image-flow",
+    businessId: 9931,
+    status: "failed",
+    phase: "failed",
+    progress: 50,
+    state: "failed",
+    reason: interruptedReason,
+    version: 4,
+    updateTime: Date.now(),
+    finishTime: Date.now(),
+  });
+
+  const count = await imageFlowMigration.failInterruptedImageFlowTasks(rawDb);
+  assert.ok(count >= 1);
+
+  const event = await u.db("o_taskEvent").where("legacyTaskId", 19931).orderBy("id", "desc").first();
+  assert.equal(event.status, "failed");
+  assert.equal(event.phase, "failed");
+  assert.equal(event.reason, interruptedReason);
 });

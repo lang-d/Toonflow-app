@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Knex } from "knex";
-import { toTaskStatus, type TaskStatus } from "@/lib/taskStatus";
+import { toLegacyTaskState, toTaskStatus, type TaskStatus } from "@/lib/taskStatus";
 
 const MIGRATION_KEY = "migration:image-flow-contract-v2";
 const ACTIVE_STATUSES = new Set<TaskStatus>(["queued", "submitting", "processing"]);
@@ -41,6 +41,48 @@ async function taskFailurePatch(knex: Knex, reason: string) {
   if (await knex.schema.hasColumn("o_tasks", "updateTime")) update.updateTime = now;
   if (await knex.schema.hasColumn("o_tasks", "leaseOwner")) update.leaseOwner = null;
   if (await knex.schema.hasColumn("o_tasks", "leaseExpiresAt")) update.leaseExpiresAt = null;
+  return update;
+}
+
+async function hasTaskEventTable(knex: Knex) {
+  return knex.schema.hasTable("o_taskEvent");
+}
+
+async function insertTaskEvent(trx: Knex.Transaction, task: any, hasEvents: boolean) {
+  if (!hasEvents || !task?.taskId) return;
+  await trx("o_taskEvent").insert({
+    taskId: task.taskId,
+    legacyTaskId: task.id,
+    version: Number(task.version || 1),
+    taskType: task.taskType || "image",
+    projectId: task.projectId ?? null,
+    scriptId: task.scriptId ?? task.episode ?? null,
+    targetType: task.targetType || null,
+    targetId: task.targetId == null ? null : String(task.targetId),
+    nodeId: task.nodeId || null,
+    status: task.status || toTaskStatus(task.state) || "pending",
+    phase: task.phase || null,
+    progress: task.progress ?? null,
+    resultJson: task.resultJson ?? null,
+    reason: task.reason || null,
+    createdAt: Date.now(),
+  });
+}
+
+async function resumeProviderTaskPatch(knex: Knex, task: any) {
+  const now = Date.now();
+  const update: Record<string, unknown> = {
+    state: toLegacyTaskState("queued"),
+    reason: null,
+  };
+  if (await knex.schema.hasColumn("o_tasks", "status")) update.status = "queued";
+  if (await knex.schema.hasColumn("o_tasks", "phase")) update.phase = "resume-provider-query";
+  if (await knex.schema.hasColumn("o_tasks", "availableAt")) update.availableAt = now;
+  if (await knex.schema.hasColumn("o_tasks", "finishTime")) update.finishTime = null;
+  if (await knex.schema.hasColumn("o_tasks", "updateTime")) update.updateTime = now;
+  if (await knex.schema.hasColumn("o_tasks", "leaseOwner")) update.leaseOwner = null;
+  if (await knex.schema.hasColumn("o_tasks", "leaseExpiresAt")) update.leaseExpiresAt = null;
+  if (await knex.schema.hasColumn("o_tasks", "version")) update.version = Number(task?.version || 1) + 1;
   return update;
 }
 
@@ -291,23 +333,142 @@ export async function migrateImageFlowContractV2(knex: Knex, options: MigrationO
 }
 
 export async function failInterruptedImageFlowTasks(knex: Knex) {
-  const tasks = await knex("o_editImageTask")
-    .whereIn("status", ["queued", "submitting", "processing"])
-    .orWhereIn("state", ["排队中", "提交中", "生成中"]);
-  if (!tasks.length) return 0;
-  const reason = "软件重启导致任务中断";
+  const normalizedReason = "\u8f6f\u4ef6\u91cd\u542f\u5bfc\u81f4\u4efb\u52a1\u4e2d\u65ad";
+  const hasEvents = await hasTaskEventTable(knex);
+  const tasks = await knex("o_editImageTask as task")
+    .leftJoin("o_tasks as unified", "unified.id", "task.taskCenterId")
+    .where((builder) =>
+      builder
+        .whereIn("task.status", ["queued", "submitting", "processing"])
+        .orWhereIn("task.state", [
+          toLegacyTaskState("queued"),
+          toLegacyTaskState("submitting"),
+          toLegacyTaskState("processing"),
+        ]),
+    )
+    .select(
+      "task.*",
+      "unified.id as unifiedId",
+      "unified.taskId as unifiedTaskId",
+      "unified.version as unifiedVersion",
+      "unified.taskType as unifiedTaskType",
+      "unified.projectId as unifiedProjectId",
+      "unified.scriptId as unifiedScriptId",
+      "unified.episode as unifiedEpisode",
+      "unified.targetType as unifiedTargetType",
+      "unified.targetId as unifiedTargetId",
+      "unified.nodeId as unifiedNodeId",
+      "unified.status as unifiedStatus",
+      "unified.phase as unifiedPhase",
+      "unified.progress as unifiedProgress",
+      "unified.resultJson as unifiedResultJson",
+      "unified.reason as unifiedReason",
+      "unified.providerTaskId as unifiedProviderTaskId",
+      "unified.providerSubmittedAt as unifiedProviderSubmittedAt",
+    );
+  const terminalTasksMissingEvents = hasEvents
+    ? await knex("o_tasks as task")
+        .where("task.businessType", "image-flow")
+        .where("task.status", "failed")
+        .where("task.reason", normalizedReason)
+        .whereNotExists(function () {
+          this.select(1)
+            .from("o_taskEvent as event")
+            .whereRaw("event.legacyTaskId = task.id")
+            .where("event.status", "failed");
+        })
+        .select("task.*")
+        .limit(500)
+    : [];
+  if (!tasks.length && !terminalTasksMissingEvents.length) return 0;
 
   await knex.transaction(async (trx) => {
-    const interruptedTaskPatch = await taskFailurePatch(trx, reason);
+    const interruptedTaskPatch = await taskFailurePatch(trx, normalizedReason);
+    const providerResumePatches = new Map<number, Record<string, unknown>>();
+
+    for (const task of terminalTasksMissingEvents) {
+      await insertTaskEvent(trx, task, hasEvents);
+    }
+
     for (const task of tasks) {
+      const unifiedTask =
+        task.unifiedId == null
+          ? null
+          : {
+              id: task.unifiedId,
+              taskId: task.unifiedTaskId,
+              version: task.unifiedVersion,
+              taskType: task.unifiedTaskType,
+              projectId: task.unifiedProjectId,
+              scriptId: task.unifiedScriptId,
+              episode: task.unifiedEpisode,
+              targetType: task.unifiedTargetType,
+              targetId: task.unifiedTargetId,
+              nodeId: task.unifiedNodeId,
+              status: task.unifiedStatus,
+              phase: task.unifiedPhase,
+              progress: task.unifiedProgress,
+              resultJson: task.unifiedResultJson,
+              reason: task.unifiedReason,
+              providerTaskId: task.unifiedProviderTaskId,
+              providerSubmittedAt: task.unifiedProviderSubmittedAt,
+            };
+
+      if (unifiedTask?.providerTaskId) {
+        let resumePatch = providerResumePatches.get(Number(unifiedTask.id));
+        if (!resumePatch) {
+          resumePatch = await resumeProviderTaskPatch(trx, unifiedTask);
+          providerResumePatches.set(Number(unifiedTask.id), resumePatch);
+        }
+        await trx("o_tasks").where("id", unifiedTask.id).update(resumePatch);
+        await insertTaskEvent(trx, { ...unifiedTask, ...resumePatch }, hasEvents);
+
+        if (task.flowId && task.nodeId) {
+          const row = await trx("o_imageFlow").where("id", task.flowId).first();
+          if (row?.flowData) {
+            const flow = parseFlow(row.flowData);
+            const node = flow.nodes.find((item: any) => item.id === task.nodeId && item.type === "generated");
+            if (node) {
+              node.data = {
+                ...(node.data || {}),
+                taskId: task.id,
+                status: "queued",
+                state: "generating",
+                phase: "resume-provider-query",
+                reason: "",
+              };
+              await trx("o_imageFlow").where("id", task.flowId).update({ flowData: JSON.stringify(flow) });
+            }
+          }
+        }
+        continue;
+      }
+
       await trx("o_editImageTask").where("id", task.id).update({
         status: "failed",
-        state: "生成失败",
-        reason,
+        state: toLegacyTaskState("failed"),
+        reason: normalizedReason,
         updateTime: Date.now(),
       });
       if (task.taskCenterId != null) {
         await trx("o_tasks").where("id", task.taskCenterId).update(interruptedTaskPatch);
+        await insertTaskEvent(
+          trx,
+          {
+            ...unifiedTask,
+            ...interruptedTaskPatch,
+            id: task.taskCenterId,
+            taskId: unifiedTask?.taskId,
+            taskType: unifiedTask?.taskType || "image",
+            projectId: unifiedTask?.projectId ?? task.projectId,
+            scriptId: unifiedTask?.scriptId ?? task.scriptId,
+            targetType: unifiedTask?.targetType ?? task.targetType,
+            targetId: unifiedTask?.targetId ?? task.targetId,
+            nodeId: unifiedTask?.nodeId ?? task.nodeId,
+            progress: unifiedTask?.progress ?? null,
+          },
+          hasEvents,
+        );
       }
       if (!task.flowId || !task.nodeId) continue;
       const row = await trx("o_imageFlow").where("id", task.flowId).first();
@@ -320,10 +481,10 @@ export async function failInterruptedImageFlowTasks(knex: Knex) {
         taskId: null,
         status: "failed",
         state: "failed",
-        reason,
+        reason: normalizedReason,
       };
       await trx("o_imageFlow").where("id", task.flowId).update({ flowData: JSON.stringify(flow) });
     }
   });
-  return tasks.length;
+  return tasks.length + terminalTasksMissingEvents.length;
 }

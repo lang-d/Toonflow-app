@@ -44,11 +44,18 @@ export type StoryboardGenerationFailure = {
 };
 
 export type CommitStoryboardGenerationResult =
-  | { status: "committed"; rowCount: number; groupCount: number; revision: number }
-  | { status: "invalid"; issues: StoryboardTableIssue[] }
+  | { status: "committed"; rowCount: number; groupCount: number; revision: number; repairs?: StoryboardGroupKeyRepair[] }
+  | { status: "invalid"; issues: StoryboardTableIssue[]; repairs?: StoryboardGroupKeyRepair[] }
   | { status: "failed"; error: StoryboardGenerationFailure };
 
 const activeStoryboardCommits = new Map<string, Promise<void>>();
+
+export type StoryboardGroupKeyRepair = {
+  index: number;
+  fromGroupKey: string;
+  toGroupKey: string;
+  reason: "index-owner";
+};
 
 type StoredStoryboardGroupPlan = StoryboardGroupPlanV2 & {
   originalGroupKey?: string;
@@ -130,6 +137,46 @@ function normalizeRowsWithStoredGroupPlan(rows: StoryboardTableRowV2[], groups: 
   });
 }
 
+function buildUniqueGroupByStoryboardIndex(groups: StoredStoryboardGroupPlan[]) {
+  const owners = new Map<number, StoredStoryboardGroupPlan[]>();
+  for (const group of groups) {
+    for (const index of group.storyboardIndexes) {
+      const current = owners.get(index) || [];
+      current.push(group);
+      owners.set(index, current);
+    }
+  }
+  const uniqueOwners = new Map<number, StoredStoryboardGroupPlan>();
+  for (const [index, ownedBy] of owners.entries()) {
+    if (ownedBy.length === 1) uniqueOwners.set(index, ownedBy[0]);
+  }
+  return uniqueOwners;
+}
+
+function repairRowsWithStoryboardIndexOwners(rows: StoryboardTableRowV2[], groups: StoredStoryboardGroupPlan[]) {
+  const uniqueOwners = buildUniqueGroupByStoryboardIndex(groups);
+  const repairs: StoryboardGroupKeyRepair[] = [];
+  const repairedRows = rows.map((row) => {
+    const group = uniqueOwners.get(row.index);
+    if (!group) return row;
+    if (row.groupKey !== group.groupKey) {
+      repairs.push({
+        index: row.index,
+        fromGroupKey: row.groupKey,
+        toGroupKey: group.groupKey,
+        reason: "index-owner",
+      });
+    }
+    return {
+      ...row,
+      groupKey: group.groupKey,
+      groupName: group.groupName,
+      groupIntent: group.groupIntent,
+    };
+  });
+  return { rows: repairedRows, repairs };
+}
+
 function serializeGenerationError(error: unknown): StoryboardGenerationFailure {
   const anyError = error as any;
   const message = anyError?.message ? String(anyError.message) : String(error || "unknown storyboard commit error");
@@ -153,8 +200,12 @@ function parseStoredGenerationError(value: unknown, fallback: string): Storyboar
   return { message: fallback };
 }
 
-function validationIssuesJson(issues: StoryboardTableIssue[]) {
-  return JSON.stringify({ message: "storyboard generation validation failed", issues });
+function validationIssuesJson(issues: StoryboardTableIssue[], repairs: StoryboardGroupKeyRepair[] = []) {
+  return JSON.stringify({
+    message: "storyboard generation validation failed",
+    issues,
+    ...(repairs.length ? { repairs } : {}),
+  });
 }
 
 function storedGenerationErrorCode(value: unknown) {
@@ -659,7 +710,9 @@ export async function commitStoryboardGeneration(
       }
 
       const groups = parseStoredStoryboardGroupPlans(generation.groupPlanJson);
-      rows = normalizeRowsWithStoredGroupPlan(rows, groups);
+      const repairResult = repairRowsWithStoryboardIndexOwners(rows, groups);
+      rows = normalizeRowsWithStoredGroupPlan(repairResult.rows, groups);
+      const repairs = repairResult.repairs;
       const normalizedGroupPlanJson = groupPlanJson(groups);
       if (normalizedGroupPlanJson !== generation.groupPlanJson) {
         await knex("o_storyboardGeneration").where({ generationId }).update({
@@ -686,10 +739,10 @@ export async function commitStoryboardGeneration(
       if (issues.length) {
         await knex("o_storyboardGeneration").where({ generationId }).update({
           state: "invalid",
-          errorJson: validationIssuesJson(issues),
+          errorJson: validationIssuesJson(issues, repairs),
           updatedAt: Date.now(),
         });
-        return { status: "invalid" as const, issues };
+        return { status: "invalid" as const, issues, ...(repairs.length ? { repairs } : {}) };
       }
 
       const revisionRow = await knex("o_storyboard")
@@ -789,6 +842,7 @@ export async function commitStoryboardGeneration(
         rowCount: rows.length,
         groupCount: groups.length,
         revision,
+        ...(repairs.length ? { repairs } : {}),
       };
     } catch (error) {
       const serialized = { ...serializeGenerationError(error), retryable: true };

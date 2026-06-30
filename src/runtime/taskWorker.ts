@@ -13,6 +13,10 @@ let shuttingDown = false;
 let stopWorker: undefined | (() => Promise<void>);
 let readDbDiagnostics: undefined | (() => Record<string, unknown>);
 let readExternalProcesses: undefined | (() => Array<{ pid: number; command: string; startedAt: number }>);
+let readActiveTasks: undefined | (() => import("@/services/unifiedTaskWorker").ActiveUnifiedTaskSnapshot[]);
+let lastEventLoopDelayWarningAt = 0;
+const EVENT_LOOP_DELAY_WARNING_MS = 10_000;
+const EVENT_LOOP_DELAY_WARNING_INTERVAL_MS = 30_000;
 
 parentPort?.on("message", (event: any) => {
   const data = event?.data ?? event;
@@ -34,6 +38,22 @@ const stopHeartbeat = startRuntimeHeartbeat("worker", (message) => parentPort?.p
 const stopMetrics = startRuntimeMetrics("worker", (metric) => {
   if (readDbDiagnostics) metric.database = readDbDiagnostics();
   if (readExternalProcesses) metric.externalProcesses = readExternalProcesses();
+  if (readActiveTasks) metric.activeTasks = readActiveTasks();
+  if (
+    metric.eventLoopDelayMaxMs >= EVENT_LOOP_DELAY_WARNING_MS &&
+    Date.now() - lastEventLoopDelayWarningAt >= EVENT_LOOP_DELAY_WARNING_INTERVAL_MS
+  ) {
+    lastEventLoopDelayWarningAt = Date.now();
+    runtimeLog.warn("Worker event loop delay exceeded threshold", {
+      event: "event-loop-delay",
+      eventLoopDelayP95Ms: metric.eventLoopDelayP95Ms,
+      eventLoopDelayMaxMs: metric.eventLoopDelayMaxMs,
+      eventLoopUtilization: metric.eventLoopUtilization,
+      activeTasks: metric.activeTasks,
+      database: metric.database,
+      externalProcesses: metric.externalProcesses,
+    });
+  }
   parentPort?.postMessage({ type: "runtime:metric", metric });
   apiPort?.postMessage({ type: "runtime:metric", metric });
 });
@@ -78,6 +98,7 @@ void (async () => {
   const queue = require("@/utils/videoGenerationQueue") as typeof import("@/utils/videoGenerationQueue");
   readExternalProcesses = (require("@/utils/dreaminaCli") as typeof import("@/utils/dreaminaCli")).getActiveCliProcesses;
   const worker = require("@/services/unifiedTaskWorker") as typeof import("@/services/unifiedTaskWorker");
+  readActiveTasks = worker.getActiveUnifiedTaskSnapshots;
   queue.startVideoGenerationQueue();
   const unified = await worker.startUnifiedTaskWorker({
     onWake: () => {

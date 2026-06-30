@@ -11,6 +11,7 @@
 import path from "path";
 import fs from "fs";
 import { startRuntimeMetrics, type RuntimeMetric } from "../src/runtime/runtimeMetrics";
+import { buildRuntimeWatchdogDiagnostics, evaluateRuntimeWatchdog } from "../src/runtime/runtimeWatchdog";
 import {
   RUNTIME_API_PORT,
   RUNTIME_API_URL,
@@ -543,6 +544,11 @@ type RuntimeRecord = {
   ready: boolean;
   readyAt: number;
   healthKillIssued: boolean;
+  lastStdoutAt: number;
+  lastStderrAt: number;
+  lastMetricAt: number;
+  lastMetric?: RuntimeMetric;
+  lastHealthDiagnosticAt: number;
 };
 
 const runtimeRecords = new Map<RuntimeRole, RuntimeRecord>();
@@ -579,6 +585,11 @@ function forwardRuntimeOutput(role: RuntimeRole, stream: NodeJS.ReadableStream |
   stream?.on("data", (chunk) => {
     const message = String(chunk).trimEnd();
     if (!message) return;
+    const record = runtimeRecords.get(role);
+    if (record) {
+      if (level === "error") record.lastStderrAt = Date.now();
+      else record.lastStdoutAt = Date.now();
+    }
     mainLog[level === "error" ? "error" : "info"](message, {
       event: level === "error" ? "runtime.stderr" : "runtime.stdout",
       role: "main",
@@ -671,6 +682,10 @@ function spawnRuntime(role: RuntimeRole, restartCount = 0): Promise<{ pid: numbe
     ready: false,
     readyAt: 0,
     healthKillIssued: false,
+    lastStdoutAt: 0,
+    lastStderrAt: 0,
+    lastMetricAt: 0,
+    lastHealthDiagnosticAt: 0,
   };
   runtimeRecords.set(role, record);
   updateRuntimeState(role, {
@@ -687,6 +702,8 @@ function spawnRuntime(role: RuntimeRole, restartCount = 0): Promise<{ pid: numbe
   child.on("message", (message: any) => {
     if (Number(message?.pid || 0) !== Number(child.pid || 0) && message?.pid) return;
     if (message?.type === "runtime:metric" && role !== "api") {
+      record.lastMetricAt = Date.now();
+      record.lastMetric = message.metric as RuntimeMetric;
       runtimeRecords.get("api")?.process.postMessage(message);
     }
     if (message?.type === "runtime:heartbeat") {
@@ -806,7 +823,44 @@ function startRuntimeHealthMonitor(): void {
       const heartbeatAge = now - (state?.lastHeartbeatAt || now);
       const killThresholdMs = role === "worker" ? 120_000 : 30_000;
       const degradedThresholdMs = role === "worker" ? 30_000 : 15_000;
+      const watchdog = evaluateRuntimeWatchdog({
+        now,
+        lastHeartbeatAt: state?.lastHeartbeatAt || now,
+        lastStdoutAt: record.lastStdoutAt,
+        lastStderrAt: record.lastStderrAt,
+        lastMetricAt: record.lastMetricAt,
+        killThresholdMs,
+      });
+      const diagnostics = () =>
+        buildRuntimeWatchdogDiagnostics({
+          now,
+          lastHeartbeatAt: state?.lastHeartbeatAt,
+          lastStdoutAt: record.lastStdoutAt,
+          lastStderrAt: record.lastStderrAt,
+          lastMetricAt: record.lastMetricAt,
+          lastMetric: record.lastMetric,
+        });
       if (heartbeatAge > killThresholdMs && !record.healthKillIssued) {
+        if (role === "worker" && !watchdog.kill) {
+          updateRuntimeState(role, {
+            status: "degraded",
+            lastError: `heartbeat delayed ${Math.round(heartbeatAge / 1000)}s; recent ${watchdog.lastActivityKind} activity ${Math.round(watchdog.lastActivityAge / 1000)}s ago`,
+          });
+          if (now - record.lastHealthDiagnosticAt >= 30_000) {
+            record.lastHealthDiagnosticAt = now;
+            mainLog.warn("Runtime heartbeat timeout deferred because child still has recent activity", {
+              event: "runtime.heartbeat-timeout.deferred",
+              childRole: role,
+              childPid: record.process.pid,
+              heartbeatAge,
+              killThresholdMs,
+              lastActivityKind: watchdog.lastActivityKind,
+              lastActivityAge: watchdog.lastActivityAge,
+              diagnostics: diagnostics(),
+            });
+          }
+          continue;
+        }
         record.healthKillIssued = true;
         updateRuntimeState(role, {
           status: "failed",
@@ -818,6 +872,9 @@ function startRuntimeHealthMonitor(): void {
           childPid: record.process.pid,
           heartbeatAge,
           killThresholdMs,
+          lastActivityKind: watchdog.lastActivityKind,
+          lastActivityAge: watchdog.lastActivityAge,
+          diagnostics: diagnostics(),
         });
         record.process.kill();
       } else if (heartbeatAge > degradedThresholdMs && state?.status === "ready") {
@@ -825,6 +882,17 @@ function startRuntimeHealthMonitor(): void {
           status: "degraded",
           lastError: `heartbeat delayed ${Math.round(heartbeatAge / 1000)}s`,
         });
+        if (now - record.lastHealthDiagnosticAt >= 30_000) {
+          record.lastHealthDiagnosticAt = now;
+          mainLog.warn("Runtime heartbeat delayed", {
+            event: "runtime.heartbeat-delayed",
+            childRole: role,
+            childPid: record.process.pid,
+            heartbeatAge,
+            degradedThresholdMs,
+            diagnostics: diagnostics(),
+          });
+        }
       }
     }
   }, 5_000);

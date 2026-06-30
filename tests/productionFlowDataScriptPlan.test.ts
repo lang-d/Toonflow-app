@@ -219,6 +219,39 @@ test("getFlowData prefers latest complete scriptPlan text asset over legacy work
   assert.equal(result.scriptPlan, "persisted director plan v2");
 });
 
+test("getFlowData exposes latest storyboard generation failure diagnostics", async () => {
+  await db("o_storyboardGeneration").insert([
+    {
+      generationId: "00000000-0000-4000-8000-000000000101",
+      projectId: 1,
+      scriptId: 10,
+      expectedRowCount: 2,
+      state: "invalid",
+      errorJson: JSON.stringify({
+        message: "storyboard generation validation failed",
+        issues: [{ index: -1, field: "groups.G02.durationSec", message: "group duration 9s exceeds Short Video max duration 5s" }],
+        repairs: [{ index: 1, fromGroupKey: "G01", toGroupKey: "G02", reason: "index-owner" }],
+      }),
+      updatedAt: 200,
+    },
+    {
+      generationId: "00000000-0000-4000-8000-000000000100",
+      projectId: 1,
+      scriptId: 10,
+      expectedRowCount: 1,
+      state: "failed",
+      errorJson: JSON.stringify({ message: "older failure" }),
+      updatedAt: 100,
+    },
+  ]);
+
+  const result = await flowData.buildProductionFlowData(1, 10);
+
+  assert.equal(result.storyboardGenerationLastFailure.generationId, "00000000-0000-4000-8000-000000000101");
+  assert.equal(result.storyboardGenerationLastFailure.state, "invalid");
+  assert.match(result.storyboardGenerationLastFailure.errorJson, /groups\.G02\.durationSec/);
+});
+
 test("getFlowData keeps bound audio out of visual derive assets", async () => {
   await db("o_image").insert([
     { id: 1001, assetsId: 101, filePath: "/1/role/base.png", type: "role", state: "已完成" },

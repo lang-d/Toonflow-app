@@ -195,6 +195,16 @@ const workbenchDataSchema = z.object({
   cover: z.string().optional().describe("封面图片路径"),
   gradient: z.string().optional().describe("渐变色配置"),
 });
+const storyboardGenerationLastFailureSchema = z
+  .object({
+    generationId: z.string(),
+    state: z.enum(["invalid", "failed"]),
+    expectedRowCount: z.number().nullable().optional(),
+    errorJson: z.string().nullable().optional(),
+    updatedAt: z.number().nullable().optional(),
+  })
+  .nullable()
+  .describe("Latest invalid or failed storyboard-table generation diagnostics");
 const beginStoryboardTableInputSchema = z.object({
   projectId: z.number().optional(),
   scriptId: z.number().optional(),
@@ -245,6 +255,7 @@ export const flowDataSchema = z.object({
   assets: z.array(assetItemSchema).describe("衍生资产"),
   storyboardTable: z.string().describe("分镜表"),
   storyboard: z.array(storyboardSchema).describe("分镜面板"),
+  storyboardGenerationLastFailure: storyboardGenerationLastFailureSchema,
 });
 
 export type FlowData = z.infer<typeof flowDataSchema>;

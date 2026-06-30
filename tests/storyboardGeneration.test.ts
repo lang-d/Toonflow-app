@@ -179,7 +179,7 @@ before(async () => {
     ]),
   });
   await db("o_script").insert(
-    [10, 20, 21, 22, 30, 40, 50, 60, 61, 70, 80].map((id) => ({
+    [10, 20, 21, 22, 23, 24, 30, 40, 50, 60, 61, 70, 80, 90].map((id) => ({
       id,
       projectId: 1,
       name: `script-${id}`,
@@ -432,24 +432,7 @@ test("conflicting retry and incomplete commit never replace formal rows", async 
   assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 10 }), before);
 });
 
-test("unknown group and wrong group indexes are invalid with specific issues", async () => {
-  const unknown = await service.beginStoryboardGeneration({
-    projectId: 1,
-    scriptId: 21,
-    expectedRowCount: 1,
-    groups: [plan("G01", [0])],
-  });
-  await service.appendStoryboardRows({
-    generationId: unknown.generationId,
-    startIndex: 0,
-    rows: [row(0, "G02")],
-  });
-  const unknownResult = await service.commitStoryboardGeneration(unknown.generationId);
-  assert.equal(unknownResult.status, "invalid");
-  if (unknownResult.status === "invalid") {
-    assert.ok(unknownResult.issues.some((issue) => issue.message.includes("unknown groupKey G02")));
-  }
-
+test("commit repairs wrong groupKey from the unique storyboard index owner", async () => {
   const wrongIndex = await service.beginStoryboardGeneration({
     projectId: 1,
     scriptId: 22,
@@ -461,11 +444,62 @@ test("unknown group and wrong group indexes are invalid with specific issues", a
     startIndex: 0,
     rows: [row(0, "G01"), row(1, "G01")],
   });
-  const wrongIndexResult = await service.commitStoryboardGeneration(wrongIndex.generationId);
-  assert.equal(wrongIndexResult.status, "invalid");
-  if (wrongIndexResult.status === "invalid") {
-    assert.ok(wrongIndexResult.issues.some((issue) => issue.message.includes("row index 1 is not listed in group G01")));
+
+  const result = await service.commitStoryboardGeneration(wrongIndex.generationId);
+
+  assert.equal(result.status, "committed");
+  if (result.status === "committed") {
+    assert.deepEqual(result.repairs, [{ index: 1, fromGroupKey: "G01", toGroupKey: "G02", reason: "index-owner" }]);
   }
+  const saved = await db("o_storyboard").where({ projectId: 1, scriptId: 22 }).orderBy("index", "asc");
+  assert.equal(saved[1].groupKey, "G02");
+  assert.equal(saved[1].groupName, "Escalation");
+  assert.equal(saved[1].groupIntent, "Escalate the visible conflict");
+});
+
+test("commit keeps invalid status when storyboard index is not owned by any group", async () => {
+  const unknown = await service.beginStoryboardGeneration({
+    projectId: 1,
+    scriptId: 21,
+    expectedRowCount: 2,
+    groups: [plan("G01", [0])],
+  });
+  await service.appendStoryboardRows({
+    generationId: unknown.generationId,
+    startIndex: 0,
+    rows: [row(0, "G01"), row(1, "G01")],
+  });
+
+  const result = await service.commitStoryboardGeneration(unknown.generationId);
+
+  assert.equal(result.status, "invalid");
+  if (result.status === "invalid") {
+    assert.ok(result.issues.some((issue) => issue.message.includes("row index 1 is not listed in group G01")));
+  }
+  assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 21 }), 0);
+});
+
+test("commit keeps invalid status when storyboard index has multiple group owners", async () => {
+  const ambiguous = await service.beginStoryboardGeneration({
+    projectId: 1,
+    scriptId: 24,
+    expectedRowCount: 1,
+    groups: [plan("G01", [0]), plan("G02", [0])],
+  });
+  await service.appendStoryboardRows({
+    generationId: ambiguous.generationId,
+    startIndex: 0,
+    rows: [row(0, "G01")],
+  });
+
+  const result = await service.commitStoryboardGeneration(ambiguous.generationId);
+
+  assert.equal(result.status, "invalid");
+  if (result.status === "invalid") {
+    assert.equal(result.repairs, undefined);
+    assert.ok(result.issues.some((issue) => issue.field === "groups.G02"));
+  }
+  assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 24 }), 0);
 });
 
 test("commit rejects storyboard groups that exceed the default video model duration", async () => {
@@ -490,6 +524,42 @@ test("commit rejects storyboard groups that exceed the default video model durat
       assert.ok(result.issues.some((issue) => issue.message.includes("exceeds Short Video max duration 5s")));
     }
     assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 80 }), 0);
+  } finally {
+    await db("o_project").where({ id: 1 }).update({ videoModel: "" });
+  }
+});
+
+test("commit repairs wrong groupKey before duration validation", async () => {
+  await db("o_project").where({ id: 1 }).update({ videoModel: "dreamina:short-video" });
+  try {
+    const started = await service.beginStoryboardGeneration({
+      projectId: 1,
+      scriptId: 23,
+      expectedRowCount: 4,
+      groups: [plan("G01", [0]), plan("G02", [1, 2, 3])],
+    });
+    await service.appendStoryboardRows({
+      generationId: started.generationId,
+      startIndex: 0,
+      rows: [row(0, "G01"), row(1, "G01"), row(2, "G01"), row(3, "G01")],
+    });
+
+    const result = await service.commitStoryboardGeneration(started.generationId);
+
+    assert.equal(result.status, "invalid");
+    if (result.status === "invalid") {
+      assert.deepEqual(result.repairs, [
+        { index: 1, fromGroupKey: "G01", toGroupKey: "G02", reason: "index-owner" },
+        { index: 2, fromGroupKey: "G01", toGroupKey: "G02", reason: "index-owner" },
+        { index: 3, fromGroupKey: "G01", toGroupKey: "G02", reason: "index-owner" },
+      ]);
+      assert.ok(result.issues.some((issue) => issue.field === "groups.G02.durationSec"));
+      assert.equal(result.issues.some((issue) => issue.message.includes("row index 1 is not listed in group G01")), false);
+    }
+    const generation = await db("o_storyboardGeneration").where({ generationId: started.generationId }).first();
+    assert.match(generation.errorJson, /"repairs"/);
+    assert.match(generation.errorJson, /groups\.G02\.durationSec/);
+    assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 23 }), 0);
   } finally {
     await db("o_project").where({ id: 1 }).update({ videoModel: "" });
   }

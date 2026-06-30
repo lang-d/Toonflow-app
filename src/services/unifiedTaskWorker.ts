@@ -20,9 +20,28 @@ import {
 } from "@/services/taskCoordinator";
 import { generateProjectSnapshot, importPortableProject } from "@/services/projectPortable";
 import { performStorageMigration } from "@/services/storageMigration";
+import { shouldDeferImageFlowCandidate } from "@/services/unifiedTaskDispatchPolicy";
 
 type TaskHandler = (payload: any, task: any) => Promise<Record<string, unknown> | void>;
 const TASK_PENDING_FLAG = "__taskPending";
+const IMAGE_FLOW_PROVIDER_PHASES = new Set(["provider-processing", "resume-provider-query"]);
+
+export interface ActiveUnifiedTaskSnapshot {
+  taskId: number;
+  taskKey?: string;
+  handler?: string;
+  taskType?: string;
+  businessType?: string;
+  businessId?: number;
+  phase?: string;
+  providerTaskId?: string | null;
+  projectId?: number;
+  scriptId?: number | null;
+  startedAt: number;
+  runningMs: number;
+}
+
+const activeTasks = new Map<number, Omit<ActiveUnifiedTaskSnapshot, "runningMs">>();
 
 const handlers: Record<string, TaskHandler> = {
   "image-flow": async (payload, task) => executeImageFlowTask(payload, task),
@@ -62,6 +81,59 @@ const ACTIVE_STATUSES = ["pending", "queued", "submitting", "processing"] as con
 const PRODUCTION_TASK_TYPES: UnifiedTaskType[] = ["prompt", "image", "asset", "storyboard", "video", "audio", "media"];
 const AUTO_SNAPSHOT_IDLE_MS = 2 * 60 * 1000;
 const MISSING_PROVIDER_TASK_ID_REASON = "\u4f9b\u5e94\u5546\u4efb\u52a1ID\u672a\u4fdd\u5b58\uff0c\u8bf7\u91cd\u65b0\u751f\u6210";
+
+export function isImageFlowProviderPendingTask(task: any): boolean {
+  return (
+    task?.businessType === "image-flow" &&
+    task?.taskType === "image" &&
+    task?.status === "queued" &&
+    Boolean(task?.providerTaskId) &&
+    IMAGE_FLOW_PROVIDER_PHASES.has(String(task?.phase || ""))
+  );
+}
+
+export async function readImageFlowProviderBacklog(
+  database: any = db,
+): Promise<{ count: number; taskIds: Set<number>; projectIds: Set<number> }> {
+  const rows = await database("o_tasks")
+    .where({
+      businessType: "image-flow",
+      taskType: "image",
+      status: "queued",
+    })
+    .whereNotNull("providerTaskId")
+    .whereIn("phase", [...IMAGE_FLOW_PROVIDER_PHASES])
+    .select("id", "projectId", "providerTaskId");
+  const projectIds = rows.map((row: any) => Number(row.projectId || 0)).filter((value: number) => Boolean(value));
+  return {
+    count: rows.length,
+    taskIds: new Set(rows.map((row: any) => Number(row.id))),
+    projectIds: new Set(projectIds),
+  };
+}
+
+export function getActiveUnifiedTaskSnapshots(): ActiveUnifiedTaskSnapshot[] {
+  const now = Date.now();
+  return [...activeTasks.values()].map((task) => ({ ...task, runningMs: now - task.startedAt }));
+}
+
+function getRunningImageFlowProjectIds(): Set<number> {
+  const projectIds = new Set<number>();
+  for (const task of activeTasks.values()) {
+    if (task.businessType === "image-flow" && Number(task.projectId || 0) > 0) {
+      projectIds.add(Number(task.projectId));
+    }
+  }
+  return projectIds;
+}
+
+function getRunningImageFlowSubmitCount(): number {
+  let count = 0;
+  for (const task of activeTasks.values()) {
+    if (task.businessType === "image-flow" && !task.providerTaskId) count += 1;
+  }
+  return count;
+}
 
 export interface UnifiedTaskWorker {
   stop(): Promise<void>;
@@ -151,6 +223,19 @@ export async function startUnifiedTaskWorker(
     const type = (task.taskType || "prompt") as UnifiedTaskType;
     running.set(type, (running.get(type) || 0) + 1);
     runningTaskIds.add(Number(task.id));
+    activeTasks.set(Number(task.id), {
+      taskId: Number(task.id),
+      taskKey: task.taskId,
+      handler: task.handler,
+      taskType: task.taskType,
+      businessType: task.businessType,
+      businessId: task.businessId == null ? undefined : Number(task.businessId),
+      phase: task.phase,
+      providerTaskId: task.providerTaskId || null,
+      projectId: task.projectId == null ? undefined : Number(task.projectId),
+      scriptId: task.scriptId == null ? null : Number(task.scriptId),
+      startedAt: Date.now(),
+    });
     try {
       console.info("[unified-task-worker] executing task", {
         taskId: task.id,
@@ -189,6 +274,7 @@ export async function startUnifiedTaskWorker(
     } finally {
       running.set(type, Math.max(0, (running.get(type) || 1) - 1));
       runningTaskIds.delete(Number(task.id));
+      activeTasks.delete(Number(task.id));
       options.onWake?.();
       schedule(0);
     }
@@ -207,11 +293,25 @@ export async function startUnifiedTaskWorker(
         .orderBy("priority", "desc")
         .orderBy("createdAt", "asc")
         .limit(50);
+      const imageFlowProviderBacklog = await readImageFlowProviderBacklog(db);
+      const runningImageFlowProjectIds = getRunningImageFlowProjectIds();
+      const runningImageFlowSubmitCount = getRunningImageFlowSubmitCount();
       const seenProjects = new Set<number>();
       for (const candidate of candidates) {
         const type = (candidate.taskType || "prompt") as UnifiedTaskType;
         if ((running.get(type) || 0) >= (limits[type] || 1)) continue;
         const projectId = Number(candidate.projectId || 0);
+        if (
+          shouldDeferImageFlowCandidate(candidate, {
+            imageLimit: limits.image || 1,
+            providerBacklogCount: imageFlowProviderBacklog.count,
+            providerBacklogProjectIds: imageFlowProviderBacklog.projectIds,
+            runningImageFlowProjectIds,
+            runningImageFlowSubmitCount,
+          })
+        ) {
+          continue;
+        }
         if (projectId && seenProjects.has(projectId)) continue;
         if (projectId) seenProjects.add(projectId);
         const task = await claimUnifiedTask(workerId, 120_000, db, Number(candidate.id));
