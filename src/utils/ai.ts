@@ -27,6 +27,12 @@ type AiType =
 
 type FnName = "textRequest" | "imageRequest" | "imageSubmit" | "imagePoll" | "videoRequest" | "ttsRequest";
 const IMAGE_PROVIDER_TIMEOUT_MS = 10 * 60 * 1000;
+const IMAGE_PROVIDER_SUBMIT_SOFT_WARN_MS = 90 * 1000;
+const IMAGE_PROVIDER_SUBMIT_HARD_TIMEOUT_MS = 10 * 60 * 1000;
+const IMAGE_PROVIDER_LEASE_RENEW_MS = 30 * 1000;
+const IMAGE_PROVIDER_LEASE_MS = 120 * 1000;
+const IMAGE_PROVIDER_SUBMIT_RETRY_DELAY_MS = 15 * 1000;
+const IMAGE_PROVIDER_POLL_RETRY_DELAY_MS = 15 * 1000;
 
 const AiTypeValues: AiType[] = [
   "scriptAgent",
@@ -259,6 +265,7 @@ interface RecoverableImageTask {
   taskId?: string;
   providerTaskId?: string | null;
   providerSubmittedAt?: number | null;
+  attempt?: number | null;
 }
 
 interface ImageSubmitResult {
@@ -274,6 +281,73 @@ interface ImagePollResult {
   error?: string;
   progress?: number;
   nextPollMs?: number;
+}
+
+function imageProviderErrorMessage(error: unknown): string {
+  return u.error(error).message || String(error);
+}
+
+function isTransientImageProviderError(error: unknown): boolean {
+  const message = imageProviderErrorMessage(error);
+  const code = typeof error === "object" && error ? String((error as any).code || "") : "";
+  return /ECONNRESET|ECONNABORTED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|network timeout|timeout of \d+ms exceeded/i.test(
+    `${code} ${message}`,
+  );
+}
+
+function isImageProviderSubmitTimeout(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as any).code === "IMAGE_PROVIDER_SUBMIT_TIMEOUT";
+}
+
+async function withImageProviderSubmitGuard<T>(
+  task: RecoverableImageTask,
+  promise: Promise<T>,
+  options: { phase: string; progress: number },
+): Promise<T> {
+  if (!task.id) return promise;
+  const startedAt = Date.now();
+  let softWarned = false;
+  let settled = false;
+
+  const renewLease = async () => {
+    if (settled || !task.id) return;
+    const elapsedMs = Date.now() - startedAt;
+    if (!softWarned && elapsedMs >= IMAGE_PROVIDER_SUBMIT_SOFT_WARN_MS) {
+      softWarned = true;
+      console.warn("[image-provider] imageSubmit slow provider-request", {
+        taskId: task.id,
+        taskKey: task.taskId,
+        elapsedMs,
+        softWarnMs: IMAGE_PROVIDER_SUBMIT_SOFT_WARN_MS,
+        hardTimeoutMs: IMAGE_PROVIDER_SUBMIT_HARD_TIMEOUT_MS,
+      });
+    }
+    await updateUnifiedTask(task.id, {
+      status: "processing",
+      phase: options.phase,
+      progress: options.progress,
+      leaseExpiresAt: Date.now() + IMAGE_PROVIDER_LEASE_MS,
+    });
+  };
+
+  const renewTimer = setInterval(() => void renewLease().catch(() => undefined), IMAGE_PROVIDER_LEASE_RENEW_MS);
+  renewTimer.unref();
+  const timeout = new Promise<never>((_, reject) => {
+    const timer = setTimeout(() => {
+      const error = new Error("供应商提交超时，未获得任务 ID");
+      (error as any).code = "IMAGE_PROVIDER_SUBMIT_TIMEOUT";
+      reject(error);
+    }, IMAGE_PROVIDER_SUBMIT_HARD_TIMEOUT_MS);
+    timer.unref();
+  });
+
+  try {
+    await renewLease();
+    return await Promise.race([promise, timeout]);
+  } finally {
+    settled = true;
+    clearInterval(renewTimer);
+  }
 }
 
 interface TaskRecord {
@@ -321,7 +395,35 @@ class AiImage {
     let pollIntervalMs = 3000;
     let providerSubmittedAt = Number(task.providerSubmittedAt || 0);
     if (!providerTaskId) {
-      const submitResult = (await submit(input)) as ImageSubmitResult;
+      let submitResult: ImageSubmitResult;
+      try {
+        submitResult = (await withImageProviderSubmitGuard(task, submit(input) as Promise<ImageSubmitResult>, {
+          phase: "provider-request",
+          progress: 35,
+        })) as ImageSubmitResult;
+      } catch (error) {
+        const message = imageProviderErrorMessage(error);
+        const canRetry = isTransientImageProviderError(error) && !isImageProviderSubmitTimeout(error) && Number(task.attempt || 0) <= 1;
+        console.warn("[image-provider] imageSubmit failed before providerTaskId", {
+          taskId: task.id,
+          taskKey: task.taskId,
+          attempt: task.attempt,
+          canRetry,
+          reason: message,
+        });
+        if (canRetry) {
+          await updateUnifiedTask(task.id, {
+            status: "queued",
+            phase: "provider-submit-retry",
+            progress: 35,
+            reason: `供应商提交网络异常，准备重试：${message}`,
+            availableAt: Date.now() + IMAGE_PROVIDER_SUBMIT_RETRY_DELAY_MS,
+            clearLease: true,
+          });
+          return { pending: true as const };
+        }
+        throw error;
+      }
       providerTaskId = String(submitResult.providerTaskId || submitResult.taskId || submitResult.id || "");
       pollIntervalMs = Number(submitResult.pollIntervalMs || pollIntervalMs);
       if (!providerTaskId) throw new Error("imageSubmit did not return providerTaskId");
@@ -343,7 +445,36 @@ class AiImage {
       await updateUnifiedTask(task.id, { providerSubmittedAt });
     }
 
-    const pollResult = (await poll(providerTaskId)) as ImagePollResult;
+    let pollResult: ImagePollResult;
+    try {
+      pollResult = (await poll(providerTaskId)) as ImagePollResult;
+    } catch (error) {
+      const message = imageProviderErrorMessage(error);
+      if (isTransientImageProviderError(error)) {
+        const elapsedMs = Date.now() - providerSubmittedAt;
+        if (elapsedMs >= IMAGE_PROVIDER_TIMEOUT_MS) {
+          throw new Error(`图片供应商任务超时，${Math.round(elapsedMs / 1000)} 秒内未返回结果`);
+        }
+        console.warn("[image-provider] imagePoll transient failure, keeping providerTaskId", {
+          taskId: task.id,
+          taskKey: task.taskId,
+          providerTaskId,
+          reason: message,
+        });
+        await updateUnifiedTask(task.id, {
+          status: "queued",
+          phase: "provider-processing",
+          progress: 50,
+          reason: `供应商轮询网络异常，稍后重试：${message}`,
+          providerTaskId,
+          providerSubmittedAt,
+          availableAt: Date.now() + IMAGE_PROVIDER_POLL_RETRY_DELAY_MS,
+          clearLease: true,
+        });
+        return { pending: true as const };
+      }
+      throw error;
+    }
     if (pollResult.error) throw new Error(pollResult.error);
     if (pollResult.completed) {
       if (!pollResult.data) throw new Error("imagePoll completed without data");

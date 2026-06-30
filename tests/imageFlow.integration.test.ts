@@ -137,6 +137,7 @@ async function createTestSchema() {
     table.string("reason");
     table.text("resultJson");
     table.integer("availableAt");
+    table.integer("attempt");
     table.integer("finishTime");
     table.string("leaseOwner");
     table.integer("leaseExpiresAt");
@@ -168,6 +169,11 @@ async function createTestSchema() {
     table.string("key").primary();
     table.string("value");
   });
+  await rawDb.schema.createTable("o_vendorConfig", (table: any) => {
+    table.string("id").primary();
+    table.text("inputValues");
+    table.text("models");
+  });
 }
 
 before(async () => {
@@ -180,6 +186,42 @@ before(async () => {
   storyboardMigration = await import("../src/lib/migrations/storyboardEditorContractV1");
   assetImageHistory = await import("../src/services/assetImageHistory");
   await createTestSchema();
+  u.vendor.writeCode(
+    "recoverable-test",
+    `
+const vendor = {
+  id: "recoverable-test",
+  version: "2.0",
+  inputValues: {},
+  models: [{ name: "Mock Image", modelName: "mock-image", type: "image", mode: ["text"] }],
+};
+async function imageSubmit(config) {
+  if (config.prompt === "submit-network") {
+    const error = new Error("socket hang up");
+    error.code = "ECONNRESET";
+    throw error;
+  }
+  return { providerTaskId: "provider-ok", pollIntervalMs: 1000 };
+}
+async function imagePoll(providerTaskId) {
+  if (providerTaskId === "poll-network") {
+    const error = new Error("read ECONNRESET");
+    error.code = "ECONNRESET";
+    throw error;
+  }
+  return { completed: false, nextPollMs: 1000 };
+}
+exports.vendor = vendor;
+exports.imageSubmit = imageSubmit;
+exports.imagePoll = imagePoll;
+export {};
+`,
+  );
+  await rawDb("o_vendorConfig").insert({
+    id: "recoverable-test",
+    inputValues: "{}",
+    models: JSON.stringify([{ name: "Mock Image", modelName: "mock-image", type: "image", mode: ["text"] }]),
+  });
 });
 
 after(async () => {
@@ -1419,6 +1461,102 @@ test("interrupted image-flow task without provider id fails task, node, and stor
   assert.equal(node.data.taskId, null);
   assert.equal(node.data.reason, "missing provider id");
 });
+
+test("imageSubmit transient failure queues one provider-submit retry without failing", async () => {
+  await u.db("o_tasks").insert({
+    id: 19922,
+    taskId: "image-submit-retry",
+    projectId: 906,
+    scriptId: 95,
+    taskType: "image",
+    targetType: "storyboard",
+    targetId: "90601",
+    businessType: "image-flow",
+    businessId: 9931,
+    status: "processing",
+    phase: "provider-request",
+    progress: 35,
+    state: "processing",
+    leaseOwner: "worker",
+    leaseExpiresAt: Date.now() + 60_000,
+    attempt: 1,
+    version: 1,
+    updateTime: Date.now(),
+  });
+
+  const result = await u.Ai.Image("recoverable-test:mock-image").runRecoverable(
+    {
+      prompt: "submit-network",
+      referenceList: [],
+      size: "1K",
+      aspectRatio: "16:9",
+    },
+    { id: 19922, taskId: "image-submit-retry", attempt: 1 },
+  );
+
+  assert.equal(result.pending, true);
+  const unifiedTask = await u.db("o_tasks").where("id", 19922).first();
+  assert.equal(unifiedTask.status, "queued");
+  assert.equal(unifiedTask.phase, "provider-submit-retry");
+  assert.equal(unifiedTask.providerTaskId, null);
+  assert.equal(unifiedTask.leaseOwner, null);
+  assert.equal(unifiedTask.leaseExpiresAt, null);
+  assert.match(unifiedTask.reason, /供应商提交网络异常/);
+  assert.ok(Number(unifiedTask.availableAt) > Date.now());
+  const event = await u.db("o_taskEvent").where("legacyTaskId", 19922).orderBy("id", "desc").first();
+  assert.equal(event.status, "queued");
+  assert.equal(event.phase, "provider-submit-retry");
+});
+
+test("imagePoll transient failure keeps provider id and requeues polling", async () => {
+  const submittedAt = Date.now() - 400_000;
+  await u.db("o_tasks").insert({
+    id: 19923,
+    taskId: "image-poll-retry",
+    projectId: 907,
+    scriptId: 96,
+    taskType: "image",
+    targetType: "storyboard",
+    targetId: "90701",
+    businessType: "image-flow",
+    businessId: 9932,
+    status: "processing",
+    phase: "provider-processing",
+    progress: 50,
+    state: "processing",
+    leaseOwner: "worker",
+    leaseExpiresAt: Date.now() + 60_000,
+    providerTaskId: "poll-network",
+    providerSubmittedAt: submittedAt,
+    attempt: 5,
+    version: 1,
+    updateTime: Date.now(),
+  });
+
+  const result = await u.Ai.Image("recoverable-test:mock-image").runRecoverable(
+    {
+      prompt: "poll",
+      referenceList: [],
+      size: "1K",
+      aspectRatio: "16:9",
+    },
+    { id: 19923, taskId: "image-poll-retry", providerTaskId: "poll-network", providerSubmittedAt: submittedAt, attempt: 5 },
+  );
+
+  assert.equal(result.pending, true);
+  const unifiedTask = await u.db("o_tasks").where("id", 19923).first();
+  assert.equal(unifiedTask.status, "queued");
+  assert.equal(unifiedTask.phase, "provider-processing");
+  assert.equal(unifiedTask.providerTaskId, "poll-network");
+  assert.equal(Number(unifiedTask.providerSubmittedAt), submittedAt);
+  assert.equal(unifiedTask.leaseOwner, null);
+  assert.equal(unifiedTask.leaseExpiresAt, null);
+  assert.match(unifiedTask.reason, /供应商轮询网络异常/);
+  const event = await u.db("o_taskEvent").where("legacyTaskId", 19923).orderBy("id", "desc").first();
+  assert.equal(event.status, "queued");
+  assert.equal(event.phase, "provider-processing");
+});
+
 test("interrupted image tasks fail together with their flow nodes", async () => {
   const failedCount = await imageFlowMigration.failInterruptedImageFlowTasks(rawDb);
   assert.ok(failedCount >= 1);

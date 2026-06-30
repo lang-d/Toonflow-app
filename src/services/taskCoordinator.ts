@@ -238,6 +238,7 @@ export interface UpdateUnifiedTaskInput {
   providerTaskId?: string;
   providerSubmittedAt?: number | null;
   availableAt?: number;
+  leaseExpiresAt?: number | null;
   clearLease?: boolean;
 }
 
@@ -268,6 +269,7 @@ export async function updateUnifiedTask(taskIdOrLegacyId: string | number, patch
     if (patch.providerTaskId !== undefined) update.providerTaskId = patch.providerTaskId;
     if (patch.providerSubmittedAt !== undefined) update.providerSubmittedAt = patch.providerSubmittedAt;
     if (patch.availableAt !== undefined) update.availableAt = patch.availableAt;
+    if (patch.leaseExpiresAt !== undefined) update.leaseExpiresAt = patch.leaseExpiresAt;
     if (terminal) update.finishTime = now;
     if (patch.clearLease || terminal) {
       update.leaseOwner = null;

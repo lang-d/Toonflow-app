@@ -270,7 +270,11 @@ export async function executeImageFlowTask(payload: ExecuteImageFlowPayload, tas
       : await Promise.all(
           (input.referenceMediaPaths || input.references || []).map(async (url) => ({ type: "image" as const, base64: await urlToBase64(url) })),
         );
-    await updateUnifiedTask(taskCenterId, { status: "processing", phase: "provider-request", progress: 35 });
+    await updateUnifiedTask(taskCenterId, {
+      status: "processing",
+      phase: task?.providerTaskId ? "provider-processing" : "provider-request",
+      progress: task?.providerTaskId ? 50 : 35,
+    });
     const imageResult = await u.Ai.Image(model).runRecoverable({
       prompt: input.prompt,
       referenceList,

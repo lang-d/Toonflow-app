@@ -94,7 +94,7 @@ export function isImageFlowProviderPendingTask(task: any): boolean {
 
 export async function readImageFlowProviderBacklog(
   database: any = db,
-): Promise<{ count: number; taskIds: Set<number>; projectIds: Set<number> }> {
+): Promise<{ count: number; taskIds: Set<number>; projectIds: Set<number>; tasks: any[] }> {
   const rows = await database("o_tasks")
     .where({
       businessType: "image-flow",
@@ -103,12 +103,13 @@ export async function readImageFlowProviderBacklog(
     })
     .whereNotNull("providerTaskId")
     .whereIn("phase", [...IMAGE_FLOW_PROVIDER_PHASES])
-    .select("id", "projectId", "providerTaskId");
+    .select("id", "projectId", "providerTaskId", "phase", "availableAt");
   const projectIds = rows.map((row: any) => Number(row.projectId || 0)).filter((value: number) => Boolean(value));
   return {
     count: rows.length,
     taskIds: new Set(rows.map((row: any) => Number(row.id))),
     projectIds: new Set(projectIds),
+    tasks: rows,
   };
 }
 
@@ -133,6 +134,10 @@ function getRunningImageFlowSubmitCount(): number {
     if (task.businessType === "image-flow" && !task.providerTaskId) count += 1;
   }
   return count;
+}
+
+function getRunningImageFlowTasks(): ActiveUnifiedTaskSnapshot[] {
+  return getActiveUnifiedTaskSnapshots().filter((task) => task.businessType === "image-flow");
 }
 
 export interface UnifiedTaskWorker {
@@ -236,6 +241,22 @@ export async function startUnifiedTaskWorker(
       scriptId: task.scriptId == null ? null : Number(task.scriptId),
       startedAt: Date.now(),
     });
+    const refreshActiveTask = async () => {
+      const active = activeTasks.get(Number(task.id));
+      if (!active) return;
+      const latest = await (db as any)("o_tasks")
+        .where("id", task.id)
+        .select("phase", "providerTaskId", "status", "progress")
+        .first();
+      if (!latest) return;
+      activeTasks.set(Number(task.id), {
+        ...active,
+        phase: latest.phase || active.phase,
+        providerTaskId: latest.providerTaskId || null,
+      });
+    };
+    const activeRefreshTimer = setInterval(() => void refreshActiveTask().catch(() => undefined), 5000);
+    activeRefreshTimer.unref();
     try {
       console.info("[unified-task-worker] executing task", {
         taskId: task.id,
@@ -272,6 +293,7 @@ export async function startUnifiedTaskWorker(
         });
       }
     } finally {
+      clearInterval(activeRefreshTimer);
       running.set(type, Math.max(0, (running.get(type) || 1) - 1));
       runningTaskIds.delete(Number(task.id));
       activeTasks.delete(Number(task.id));
@@ -296,6 +318,7 @@ export async function startUnifiedTaskWorker(
       const imageFlowProviderBacklog = await readImageFlowProviderBacklog(db);
       const runningImageFlowProjectIds = getRunningImageFlowProjectIds();
       const runningImageFlowSubmitCount = getRunningImageFlowSubmitCount();
+      const runningImageFlowTasks = getRunningImageFlowTasks();
       const seenProjects = new Set<number>();
       for (const candidate of candidates) {
         const type = (candidate.taskType || "prompt") as UnifiedTaskType;
@@ -310,6 +333,17 @@ export async function startUnifiedTaskWorker(
             runningImageFlowSubmitCount,
           })
         ) {
+          const blockedByProvider = imageFlowProviderBacklog.tasks.find((row: any) => Number(row.projectId || 0) === projectId);
+          const blockedByRunning = runningImageFlowTasks.find((row) => Number(row.projectId || 0) === projectId);
+          console.info("[unified-task-worker] deferred image-flow provider submit", {
+            taskId: candidate.id,
+            projectId,
+            reason: blockedByProvider ? "provider-backlog" : blockedByRunning ? "running-submit" : "image-limit",
+            blockedByTaskId: blockedByProvider?.id ?? blockedByRunning?.taskId,
+            blockedByProviderTaskId: blockedByProvider?.providerTaskId ?? blockedByRunning?.providerTaskId,
+            providerBacklogCount: imageFlowProviderBacklog.count,
+            runningImageFlowSubmitCount,
+          });
           continue;
         }
         if (projectId && seenProjects.has(projectId)) continue;
