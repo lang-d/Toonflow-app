@@ -10,6 +10,8 @@
 } from "electron";
 import path from "path";
 import fs from "fs";
+import { randomUUID } from "crypto";
+import { execFileSync } from "child_process";
 import { startRuntimeMetrics, type RuntimeMetric } from "../src/runtime/runtimeMetrics";
 import { buildRuntimeWatchdogDiagnostics, evaluateRuntimeWatchdog } from "../src/runtime/runtimeWatchdog";
 import {
@@ -31,6 +33,10 @@ const APP_NAME = "ToonFlow";
 const mainLog = createLogger("runtime-main");
 
 app.setName(APP_NAME);
+const electronUserDataOverride = process.env.TOONFLOW_ELECTRON_USER_DATA_DIR?.trim();
+if (electronUserDataOverride) {
+  app.setPath("userData", path.resolve(electronUserDataOverride));
+}
 if (process.platform === "win32") app.setAppUserModelId("net.toonflow.www");
 
 // 加速 Electron 启动：跳过 GPU 信息收集，减少初始化耗时
@@ -260,15 +266,531 @@ function initializeData(): void {
 let mainWindow: BrowserWindow | null = null;
 let loadingWindow: BrowserWindow | null = null;
 let workspaceLockPath: string | null = null;
+let workspaceLockHeartbeatTimer: NodeJS.Timeout | null = null;
+let workspaceLockSessionId: string | null = null;
+let activeStorageConfig: RuntimeStorageConfig | null = null;
+let startupInProgress = false;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
+const WORKSPACE_LOCK_HEARTBEAT_INTERVAL_MS = 10_000;
+const WORKSPACE_LOCK_STALE_MS = 120_000;
+
+type WorkspaceLockFile = {
+  pid?: number;
+  workspacePath?: string;
+  startedAt?: number;
+  heartbeatAt?: number;
+  sessionId?: string;
+  appPath?: string;
+};
+
+type StartupErrorCode =
+  | "workspace_lock_active"
+  | "workspace_lock_legacy_active"
+  | "workspace_lock_repair_failed"
+  | "api_port_unavailable"
+  | "unknown_startup_error";
+
+class ToonflowStartupError extends Error {
+  code: StartupErrorCode;
+  details: Record<string, unknown>;
+  constructor(code: StartupErrorCode, message: string, details: Record<string, unknown> = {}) {
+    super(message);
+    this.name = "ToonflowStartupError";
+    this.code = code;
+    this.details = details;
+  }
+}
 
 function processIsAlive(pid: number) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error: any) {
+    return error?.code !== "ESRCH";
   }
+}
+
+type ProcessInspection = {
+  pid: number;
+  exists: boolean;
+  readable: boolean;
+  name?: string;
+  executablePath?: string;
+  commandLine?: string;
+  parentPid?: number;
+  error?: string;
+};
+
+type LockOwnerClassification = "stale" | "owned" | "toonflow" | "pid-reused" | "unknown";
+
+function inspectProcess(pid: number): ProcessInspection {
+  if (!Number.isInteger(pid) || pid <= 0) return { pid, exists: false, readable: false, error: "invalid pid" };
+  if (!processIsAlive(pid)) return { pid, exists: false, readable: true };
+
+  if (process.platform !== "win32") {
+    return { pid, exists: true, readable: true, name: "", executablePath: "", commandLine: "" };
+  }
+
+  try {
+    const output = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        [
+          `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction Stop`,
+          "if ($null -eq $p) {",
+          "  [pscustomobject]@{ exists = $false } | ConvertTo-Json -Compress",
+          "} else {",
+          "  [pscustomobject]@{",
+          "    exists = $true",
+          "    processId = $p.ProcessId",
+          "    parentProcessId = $p.ParentProcessId",
+          "    name = $p.Name",
+          "    executablePath = $p.ExecutablePath",
+          "    commandLine = $p.CommandLine",
+          "  } | ConvertTo-Json -Compress",
+          "}",
+        ].join("\n"),
+      ],
+      { encoding: "utf8", timeout: 3_000, windowsHide: true },
+    ).trim();
+    const parsed = JSON.parse(output || "{}") as {
+      exists?: boolean;
+      processId?: number;
+      parentProcessId?: number;
+      name?: string;
+      executablePath?: string;
+      commandLine?: string;
+    };
+    if (!parsed.exists) return { pid, exists: false, readable: true };
+    return {
+      pid,
+      exists: true,
+      readable: true,
+      name: parsed.name || "",
+      executablePath: parsed.executablePath || "",
+      commandLine: parsed.commandLine || "",
+      parentPid: Number(parsed.parentProcessId || 0) || undefined,
+    };
+  } catch (error) {
+    try {
+      const tasklist = execFileSync(
+        "tasklist.exe",
+        ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
+        { encoding: "utf8", timeout: 2_000, windowsHide: true },
+      ).trim();
+      if (!tasklist || /^INFO:/i.test(tasklist)) return { pid, exists: false, readable: true };
+      const match = tasklist.match(/^"([^"]+)"/);
+      const name = match?.[1] || "";
+      return {
+        pid,
+        exists: true,
+        readable: true,
+        name,
+        executablePath: "",
+        commandLine: "",
+        error: String((error as Error)?.message || error),
+      };
+    } catch {
+      // Keep the original inspection error; tasklist is only a best-effort fallback.
+    }
+    return {
+      pid,
+      exists: true,
+      readable: false,
+      error: String((error as Error)?.message || error),
+    };
+  }
+}
+
+function lowerText(value: unknown) {
+  return String(value || "").toLowerCase();
+}
+
+function isToonflowProcess(lock: WorkspaceLockFile, info: ProcessInspection): boolean {
+  const name = lowerText(info.name);
+  const executablePath = lowerText(info.executablePath);
+  const commandLine = lowerText(info.commandLine);
+  const normalizedCommandLine = commandLine.replace(/\\/g, "/");
+  const currentExe = lowerText(app.getPath("exe"));
+  const currentAppPath = lowerText(app.getAppPath());
+  const currentCwd = lowerText(process.cwd());
+  const normalizedCurrentAppPath = currentAppPath.replace(/\\/g, "/");
+  const normalizedCurrentCwd = currentCwd.replace(/\\/g, "/");
+  const lockedAppPath = lowerText(lock.appPath);
+  const isElectron = name === "electron.exe" || name === "electron";
+  const isNode = name === "node.exe" || name === "node";
+
+  if (name.includes("toonflow")) return true;
+  if (lockedAppPath && (executablePath === lockedAppPath || commandLine.includes(lockedAppPath))) return true;
+  if (currentExe && (executablePath === currentExe || commandLine.includes(currentExe))) return true;
+  if (isElectron) {
+    if (normalizedCurrentAppPath && normalizedCommandLine.includes(normalizedCurrentAppPath)) return true;
+    if (normalizedCurrentCwd && normalizedCommandLine.includes(normalizedCurrentCwd)) return true;
+    if (normalizedCommandLine.includes("app.asar") || normalizedCommandLine.includes("scripts/main.ts")) return true;
+    if (executablePath.includes("toonflow") || commandLine.includes("toonflow")) return true;
+  }
+  if (isNode) {
+    const looksLikeToonflowNode =
+      commandLine.includes("electronmon") ||
+      normalizedCommandLine.includes("scripts/main.ts") ||
+      normalizedCommandLine.includes("data/serve/app.js") ||
+      normalizedCommandLine.includes("build/runtime-") ||
+      commandLine.includes("runtime-api") ||
+      commandLine.includes("runtime-worker") ||
+      commandLine.includes("runtime-agent");
+    if (looksLikeToonflowNode && normalizedCurrentCwd && normalizedCommandLine.includes(normalizedCurrentCwd)) return true;
+    if (looksLikeToonflowNode && commandLine.includes("toonflow")) return true;
+  }
+  return false;
+}
+
+function isCurrentProcessAncestor(targetPid: number): boolean {
+  let cursor = Number(process.ppid || 0);
+  for (let depth = 0; depth < 12 && cursor > 0; depth += 1) {
+    if (cursor === targetPid) return true;
+    const info = inspectProcess(cursor);
+    const next = Number(info.parentPid || 0);
+    if (!info.exists || !next || next === cursor) return false;
+    cursor = next;
+  }
+  return false;
+}
+
+function classifyLockOwner(lock: WorkspaceLockFile, info: ProcessInspection): LockOwnerClassification {
+  const pid = Number(lock.pid || 0);
+  if (!info.exists) return "stale";
+  if (pid === process.pid) return "owned";
+  if (pid === process.ppid || isCurrentProcessAncestor(pid)) return "pid-reused";
+  if (!info.readable) return "unknown";
+  if (isToonflowProcess(lock, info)) return "toonflow";
+  return "pid-reused";
+}
+
+function waitForProcessExit(pid: number, timeoutMs: number): boolean {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processIsAlive(pid)) return true;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  }
+  return !processIsAlive(pid);
+}
+
+function terminateProcessTree(pid: number): { ok: boolean; error?: string } {
+  if (!Number.isInteger(pid) || pid <= 0) return { ok: true };
+  if (pid === process.pid) return { ok: false, error: "Refuse to terminate current process" };
+  if (!processIsAlive(pid)) return { ok: true };
+
+  try {
+    if (process.platform === "win32") {
+      try {
+        execFileSync("taskkill.exe", ["/PID", String(pid), "/T"], { stdio: "ignore", timeout: 3_000, windowsHide: true });
+      } catch {
+        // Some GUI/background processes only exit with /F; fall through to the bounded forced attempt.
+      }
+      if (waitForProcessExit(pid, 2_000)) return { ok: true };
+      execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", timeout: 4_000, windowsHide: true });
+      return waitForProcessExit(pid, 3_000)
+        ? { ok: true }
+        : { ok: false, error: `Process ${pid} is still running after taskkill` };
+    }
+
+    process.kill(pid, "SIGTERM");
+    if (waitForProcessExit(pid, 2_000)) return { ok: true };
+    process.kill(pid, "SIGKILL");
+    return waitForProcessExit(pid, 3_000)
+      ? { ok: true }
+      : { ok: false, error: `Process ${pid} is still running after SIGKILL` };
+  } catch (error) {
+    if (!processIsAlive(pid)) return { ok: true };
+    return { ok: false, error: String((error as Error)?.message || error) };
+  }
+}
+
+function safeHtml(value: unknown) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+}
+
+function formatTime(value: unknown) {
+  const time = Number(value || 0);
+  if (!Number.isFinite(time) || time <= 0) return "未知";
+  return new Date(time).toLocaleString();
+}
+
+function lockDetails(lock: WorkspaceLockFile | null, lockPath: string) {
+  return {
+    lockPath,
+    pid: lock?.pid || 0,
+    workspacePath: lock?.workspacePath || "",
+    startedAt: lock?.startedAt || 0,
+    heartbeatAt: lock?.heartbeatAt || 0,
+    sessionId: lock?.sessionId || "",
+  };
+}
+
+function writeWorkspaceLock(lockPath: string, config: RuntimeStorageConfig) {
+  workspaceLockSessionId = randomUUID();
+  const now = Date.now();
+  const lock: Required<WorkspaceLockFile> = {
+    pid: process.pid,
+    workspacePath: config.workspacePath,
+    startedAt: now,
+    heartbeatAt: now,
+    sessionId: workspaceLockSessionId,
+    appPath: app.getPath("exe"),
+  };
+  fs.writeFileSync(lockPath, JSON.stringify(lock, null, 2), { encoding: "utf8", flag: "wx" });
+  workspaceLockPath = lockPath;
+}
+
+function refreshWorkspaceLockHeartbeat() {
+  if (!workspaceLockPath || !workspaceLockSessionId) return;
+  try {
+    const current = JSON.parse(fs.readFileSync(workspaceLockPath, "utf8")) as WorkspaceLockFile;
+    if (current.pid !== process.pid || current.sessionId !== workspaceLockSessionId) return;
+    current.heartbeatAt = Date.now();
+    fs.writeFileSync(workspaceLockPath, JSON.stringify(current, null, 2), "utf8");
+  } catch (error) {
+    mainLog.warn("Failed to refresh workspace lock heartbeat", {
+      event: "workspace-lock.heartbeat-failed",
+      error: String((error as Error)?.message || error),
+    });
+  }
+}
+
+function startWorkspaceLockHeartbeat() {
+  if (workspaceLockHeartbeatTimer) clearInterval(workspaceLockHeartbeatTimer);
+  refreshWorkspaceLockHeartbeat();
+  workspaceLockHeartbeatTimer = setInterval(refreshWorkspaceLockHeartbeat, WORKSPACE_LOCK_HEARTBEAT_INTERVAL_MS);
+  workspaceLockHeartbeatTimer.unref();
+}
+
+function removeWorkspaceLock(lockPath: string, reason: string, details: Record<string, unknown> = {}) {
+  mainLog.warn("Removing workspace lock", {
+    event: "workspace-lock.removed",
+    reason,
+    lockPath,
+    ...details,
+  });
+  fs.rmSync(lockPath, { force: true });
+}
+
+function throwWorkspaceRepairFailed(
+  message: string,
+  lockPath: string,
+  lock: WorkspaceLockFile,
+  info: ProcessInspection,
+  extra: Record<string, unknown> = {},
+): never {
+  throw new ToonflowStartupError("workspace_lock_repair_failed", message, {
+    ...lockDetails(lock, lockPath),
+    processName: info.name || "",
+    processPath: info.executablePath || "",
+    processError: info.error || "",
+    ...extra,
+  });
+}
+
+function repairWorkspaceLock(lockPath: string, lock: WorkspaceLockFile) {
+  const pid = Number(lock.pid || 0);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    removeWorkspaceLock(lockPath, "invalid-pid", { pid });
+    return;
+  }
+
+  const info = inspectProcess(pid);
+  const classification = classifyLockOwner(lock, info);
+  const heartbeatAge = lock.heartbeatAt ? Date.now() - Number(lock.heartbeatAt || 0) : Number.POSITIVE_INFINITY;
+  mainLog.warn("Workspace lock owner inspected", {
+    event: "workspace-lock.owner-inspected",
+    lockPath,
+    pid,
+    classification,
+    processName: info.name || "",
+    processPath: info.executablePath || "",
+    readable: info.readable,
+    heartbeatAge,
+    processError: info.error || "",
+  });
+
+  if (classification === "owned" || classification === "stale") {
+    removeWorkspaceLock(lockPath, classification, { pid });
+    return;
+  }
+
+  if (classification === "pid-reused") {
+    removeWorkspaceLock(lockPath, "pid-reused", {
+      pid,
+      processName: info.name || "",
+      processPath: info.executablePath || "",
+    });
+    return;
+  }
+
+  if (classification === "toonflow") {
+    const terminated = terminateProcessTree(pid);
+    if (terminated.ok) {
+      removeWorkspaceLock(lockPath, "old-toonflow-terminated", { pid, processName: info.name || "" });
+      return;
+    }
+    throwWorkspaceRepairFailed(
+      `系统拒绝结束旧 Toonflow 进程 PID ${pid}，请重启电脑或以管理员权限关闭旧 Toonflow。`,
+      lockPath,
+      lock,
+      info,
+      { terminateError: terminated.error || "" },
+    );
+  }
+
+  if (!lock.heartbeatAt || heartbeatAge > WORKSPACE_LOCK_STALE_MS) {
+    const terminated = terminateProcessTree(pid);
+    if (terminated.ok) {
+      removeWorkspaceLock(lockPath, "unknown-stale-owner-terminated", { pid, heartbeatAge });
+      return;
+    }
+    throwWorkspaceRepairFailed(
+      `无法自动处理占用进程 PID ${pid}：${terminated.error || info.error || "系统拒绝结束进程"}。请重启电脑或以管理员权限关闭旧 Toonflow。`,
+      lockPath,
+      lock,
+      info,
+      { heartbeatAge, terminateError: terminated.error || "" },
+    );
+  }
+
+  throwWorkspaceRepairFailed(
+    `无法确认 PID ${pid} 是否为旧 Toonflow，且锁心跳仍然有效。为避免误杀其他程序，本次没有结束该进程。`,
+    lockPath,
+    lock,
+    info,
+    { heartbeatAge },
+  );
+}
+
+function getListeningPortOwner(port: number): number | null {
+  if (!Number.isInteger(port) || port <= 0) return null;
+
+  if (process.platform === "win32") {
+    try {
+      const output = execFileSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          [
+            `$c = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1`,
+            "if ($null -eq $c) { '' } else { [string]$c.OwningProcess }",
+          ].join("\n"),
+        ],
+        { encoding: "utf8", timeout: 3_000, windowsHide: true },
+      ).trim();
+      const pid = Number(output);
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    } catch {
+      // Fall through to netstat; some Windows installs restrict Get-NetTCPConnection.
+    }
+
+    try {
+      const output = execFileSync("netstat.exe", ["-ano", "-p", "TCP"], {
+        encoding: "utf8",
+        timeout: 3_000,
+        windowsHide: true,
+      });
+      const escapedPort = String(port).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const line = output
+        .split(/\r?\n/)
+        .find((entry) => new RegExp(`(?:127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::\\]|::1):${escapedPort}\\s+`, "i").test(entry) && /\sLISTENING\s/i.test(entry));
+      const pid = Number(line?.trim().split(/\s+/).pop());
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  try {
+    const output = execFileSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"], {
+      encoding: "utf8",
+      timeout: 3_000,
+    });
+    const line = output.split(/\r?\n/).find((entry) => entry.includes(`:${port} `));
+    const pid = Number(line?.trim().split(/\s+/)[1]);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function repairRuntimeApiPort(port = RUNTIME_API_PORT) {
+  const pid = getListeningPortOwner(port);
+  if (!pid) return;
+
+  const info = inspectProcess(pid);
+  const classification = classifyLockOwner({ pid, appPath: app.getPath("exe") }, info);
+  mainLog.warn("Runtime API port owner inspected", {
+    event: "runtime-api-port.owner-inspected",
+    port,
+    pid,
+    classification,
+    processName: info.name || "",
+    processPath: info.executablePath || "",
+    readable: info.readable,
+    processError: info.error || "",
+  });
+
+  if (classification === "stale") return;
+  if (classification === "owned") {
+    throw new ToonflowStartupError(
+      "api_port_unavailable",
+      `固定端口 ${port} 已被当前 Toonflow 进程占用，无法重复启动 API。`,
+      { port, pid, processName: info.name || "", processPath: info.executablePath || "" },
+    );
+  }
+
+  if (classification === "toonflow") {
+    const terminated = terminateProcessTree(pid);
+    if (terminated.ok) {
+      mainLog.warn("Runtime API port owner terminated", {
+        event: "runtime-api-port.owner-terminated",
+        port,
+        pid,
+        processName: info.name || "",
+      });
+      return;
+    }
+    throw new ToonflowStartupError(
+      "api_port_unavailable",
+      `固定端口 ${port} 被旧 Toonflow 进程 PID ${pid} 占用，但系统拒绝结束它。`,
+      {
+        port,
+        pid,
+        processName: info.name || "",
+        processPath: info.executablePath || "",
+        processError: info.error || "",
+        terminateError: terminated.error || "",
+      },
+    );
+  }
+
+  throw new ToonflowStartupError(
+    "api_port_unavailable",
+    classification === "unknown"
+      ? `固定端口 ${port} 被 PID ${pid} 占用，但无法确认它是否为 Toonflow。`
+      : `固定端口 ${port} 被其他程序 PID ${pid} 占用。`,
+    {
+      port,
+      pid,
+      processName: info.name || "",
+      processPath: info.executablePath || "",
+      processError: info.error || "",
+    },
+  );
 }
 
 function acquireWorkspaceLock(config: RuntimeStorageConfig) {
@@ -277,10 +799,8 @@ function acquireWorkspaceLock(config: RuntimeStorageConfig) {
   const lockPath = path.join(config.workspacePath, ".toonflow.lock");
   if (fs.existsSync(lockPath)) {
     try {
-      const current = JSON.parse(fs.readFileSync(lockPath, "utf8")) as { pid?: number };
-      if (current.pid && current.pid !== process.pid && processIsAlive(current.pid)) {
-        throw new Error(`Workspace is already in use by process ${current.pid}: ${config.workspacePath}`);
-      }
+      const current = JSON.parse(fs.readFileSync(lockPath, "utf8")) as WorkspaceLockFile;
+      repairWorkspaceLock(lockPath, current);
     } catch (error) {
       if (error instanceof SyntaxError) {
         console.warn("[ToonFlow] replacing an invalid workspace lock");
@@ -288,25 +808,26 @@ function acquireWorkspaceLock(config: RuntimeStorageConfig) {
         throw error;
       }
     }
-    fs.rmSync(lockPath, { force: true });
+    if (fs.existsSync(lockPath)) fs.rmSync(lockPath, { force: true });
   }
-  fs.writeFileSync(
-    lockPath,
-    JSON.stringify({ pid: process.pid, startedAt: Date.now(), workspacePath: config.workspacePath }, null, 2),
-    { encoding: "utf8", flag: "wx" },
-  );
-  workspaceLockPath = lockPath;
+  writeWorkspaceLock(lockPath, config);
+  startWorkspaceLockHeartbeat();
 }
 
 function releaseWorkspaceLock() {
+  if (workspaceLockHeartbeatTimer) {
+    clearInterval(workspaceLockHeartbeatTimer);
+    workspaceLockHeartbeatTimer = null;
+  }
   if (!workspaceLockPath) return;
   try {
-    const current = JSON.parse(fs.readFileSync(workspaceLockPath, "utf8")) as { pid?: number };
-    if (current.pid === process.pid) fs.rmSync(workspaceLockPath, { force: true });
+    const current = JSON.parse(fs.readFileSync(workspaceLockPath, "utf8")) as WorkspaceLockFile;
+    if (current.pid === process.pid && current.sessionId === workspaceLockSessionId) fs.rmSync(workspaceLockPath, { force: true });
   } catch {
     // A missing or replaced lock is no longer owned by this process.
   }
   workspaceLockPath = null;
+  workspaceLockSessionId = null;
 }
 
 if (!hasSingleInstanceLock) {
@@ -334,7 +855,13 @@ body{height:100vh;display:flex;flex-direction:column;align-items:center;justify-
 p{margin-top:20px;font-size:14px;opacity:.6}
 </style></head><body><div class="spinner"></div><p>正在启动服务...</p></body></html>`)}`;
 
-function showLoading(): void {
+function ensureLoadingWindow(): BrowserWindow {
+  if (loadingWindow && !loadingWindow.isDestroyed()) {
+    loadingWindow.show();
+    loadingWindow.focus();
+    return loadingWindow;
+  }
+
   loadingWindow = new BrowserWindow({
     width: 1000,
     height: 700,
@@ -359,7 +886,12 @@ function showLoading(): void {
   loadingWindow.on("closed", () => {
     loadingWindow = null;
   });
-  void loadingWindow.loadURL(loadingHtml);
+  return loadingWindow;
+}
+
+async function showLoading(): Promise<void> {
+  const window = ensureLoadingWindow();
+  await window.loadURL(loadingHtml);
 }
 
 function closeLoading(): void {
@@ -444,27 +976,102 @@ button.addEventListener("click",async()=>{
   catch{button.disabled=false;button.textContent="重新检测";}
 });
 </script></div></body></html>`)}`;
-  if (!loadingWindow || loadingWindow.isDestroyed()) showLoading();
-  void loadingWindow?.loadURL(errorHtml);
+  const window = ensureLoadingWindow();
+  void window.loadURL(errorHtml);
 }
 
 function showStartupError(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
+  const startupError =
+    error instanceof ToonflowStartupError
+      ? error
+      : error instanceof Error && /10588|EADDRINUSE|fixed port|bind/i.test(error.message)
+        ? new ToonflowStartupError(
+            "api_port_unavailable",
+            `固定端口 ${RUNTIME_API_PORT} 被占用，点击重载会自动处理可确认的旧 Toonflow runtime。`,
+            { port: RUNTIME_API_PORT },
+          )
+        : new ToonflowStartupError(
+            "unknown_startup_error",
+            error instanceof Error ? error.message : String(error),
+          );
+  const title =
+    startupError.code === "workspace_lock_active" ||
+    startupError.code === "workspace_lock_legacy_active" ||
+    startupError.code === "workspace_lock_repair_failed"
+      ? "工作区正在被占用"
+      : startupError.code === "api_port_unavailable"
+        ? "Toonflow API 端口不可用"
+        : "Toonflow 启动失败";
+  const detailRows = [
+    startupError.details.workspacePath ? ["工作区", startupError.details.workspacePath] : null,
+    startupError.details.pid ? ["占用进程 PID", startupError.details.pid] : null,
+    startupError.details.processName ? ["进程名称", startupError.details.processName] : null,
+    startupError.details.heartbeatAt ? ["最近心跳", formatTime(startupError.details.heartbeatAt)] : null,
+    startupError.details.port ? ["端口", startupError.details.port] : null,
+  ].filter(Boolean) as Array<[string, unknown]>;
+  const detailsHtml = detailRows.length
+    ? `<div class="details">${detailRows
+        .map(([label, value]) => `<div><span>${safeHtml(label)}</span><strong>${safeHtml(value)}</strong></div>`)
+        .join("")}</div>`
+    : "";
   const errorHtml = `data:text/html;charset=utf-8,${encodeURIComponent(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
 *{box-sizing:border-box}body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
 background:#f5f6f8;color:#202124;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.panel{width:min(640px,calc(100vw - 64px));padding:32px;background:#fff;border:1px solid #ddd;border-radius:8px}
+.panel{width:min(680px,calc(100vw - 64px));padding:32px;background:#fff;border:1px solid #ddd;border-radius:8px}
 h1{font-size:20px;margin:0 0 16px}p{line-height:1.7;margin:8px 0}.address{font-family:Consolas,monospace}
+.details{margin:18px 0;padding:12px;background:#f8f8f8;border-radius:4px}
+.details div{display:flex;gap:16px;margin:6px 0}.details span{width:120px;color:#666}.details strong{font-weight:500;word-break:break-all}
 .error{margin-top:18px;padding:12px;background:#f8f8f8;border-left:3px solid #d93025;white-space:pre-wrap;
 word-break:break-word;font-family:Consolas,monospace;font-size:12px}
-</style></head><body><div class="panel"><h1>Toonflow API 启动失败</h1>
-<p>固定地址 <span class="address">${RUNTIME_API_URL}</span> 当前不可用。</p>
-<p>请关闭旧的 Toonflow，或结束占用端口 ${RUNTIME_API_PORT} 的程序后重新启动。</p>
-<div class="error">${message.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`)}</div>
+button{margin-top:18px;padding:8px 18px;border:0;border-radius:4px;background:#0052d9;color:#fff;cursor:pointer}
+button:disabled{opacity:.6;cursor:not-allowed}
+.retry-message{min-height:20px;color:#d93025;font-size:13px}
+</style></head><body><div class="panel"><h1>${safeHtml(title)}</h1>
+<p>${safeHtml(startupError.message)}</p>
+<p>点击重载将自动处理旧 Toonflow 进程或失效锁。</p>
+<p>固定地址 <span class="address">${RUNTIME_API_URL}</span></p>
+${detailsHtml}
+<div class="error">${safeHtml(error instanceof Error ? error.message : String(error))}</div>
+<button id="reload">重载</button>
+<p id="retry-message" class="retry-message"></p>
+<script>
+const button=document.getElementById("reload");
+button.addEventListener("click",async()=>{
+  button.disabled=true;
+  button.textContent="正在重载...";
+  const message=document.getElementById("retry-message");
+  if(message) message.textContent="";
+  try{
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),8000);
+    const response=await fetch("toonflow://retry-startup",{cache:"no-store",signal:controller.signal});
+    clearTimeout(timer);
+    const result=await response.json().catch(()=>({ok:false,error:"重载请求没有返回有效结果"}));
+    if(!result.ok||!result.started){
+      button.disabled=false;
+      button.textContent="重载";
+      if(message) message.textContent=result.reason||result.error||"本次自动修复未能启动。";
+      return;
+    }
+    if(message) message.textContent=result.repaired ? "已自动处理旧进程或失效锁，正在启动。" : "正在自动处理旧进程或失效锁。";
+    setTimeout(()=>{
+      if(!document.body.contains(button)) return;
+      button.disabled=false;
+      button.textContent="重载";
+      if(message) message.textContent="本次重载未在限定时间内完成启动，请查看当前错误原因。";
+    },8000);
+  }
+  catch(error){
+    button.disabled=false;
+    button.textContent="重载";
+    if(message) message.textContent=String(error&&error.message||error||"重载请求超时或失败");
+  }
+});
+</script>
 </div></body></html>`)}`;
-  if (!loadingWindow || loadingWindow.isDestroyed()) showLoading();
-  void loadingWindow?.loadURL(errorHtml);
+  const window = ensureLoadingWindow();
+  void window.loadURL(errorHtml);
 }
 
 async function createMainWindow(): Promise<void> {
@@ -962,20 +1569,126 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-if (hasSingleInstanceLock) app.whenReady().then(async () => {
-  const migratedUserDataEntries = migrateLegacyElectronUserData();
-  initLogger({ role: "main", logDir: path.join(app.getPath("userData"), "logs"), hijackConsole: true });
-  mainLog.info("Electron main process ready", {
-    event: "ready",
-    appName: APP_NAME,
-    userData: app.getPath("userData"),
-    migratedUserDataEntries,
-  });
-  // 立即显示加载窗口（data URL + backgroundColor，瞬间可见）
-  showLoading();
+let toonflowProtocolRegistered = false;
 
+function registerToonflowProtocolHandlers() {
+  if (toonflowProtocolRegistered) return;
+  toonflowProtocolRegistered = true;
+  protocol.handle("toonflow", async (request) => {
+    const url = new URL(request.url);
+    const pathname = url.hostname.toLowerCase();
+    const handlers: Record<string, () => object | Promise<object>> = {
+      getappurl: () => ({ url: RUNTIME_API_URL }),
+      "retry-startup": () => {
+        if (startupInProgress) {
+          return { ok: false, started: false, status: "failed", reason: "已有一次启动修复正在执行，本次不会重复启动。" };
+        }
+        void bootstrapApplication();
+        return { ok: true, started: true, status: "started", repaired: true };
+      },
+      retryvite: () => {
+        setTimeout(() => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.destroy();
+            mainWindow = null;
+          }
+          void createMainWindow();
+        }, 0);
+        return { ok: true };
+      },
+      windowminimize: () => {
+        mainWindow?.minimize();
+        return { ok: true };
+      },
+      windowmaximize: () => {
+        if (mainWindow?.isMaximized()) {
+          mainWindow.unmaximize();
+        } else {
+          mainWindow?.maximize();
+        }
+        return { ok: true };
+      },
+      windowclose: () => {
+        app.exit(0);
+        return { ok: true };
+      },
+      apprestart: () => {
+        setTimeout(() => {
+          app.relaunch();
+          app.exit(0);
+        }, 500);
+        return { ok: true, message: "应用即将重启" };
+      },
+      windowismaximized: () => ({
+        maximized: mainWindow?.isMaximized() ?? false,
+      }),
+      opendevtool: () => {
+        mainWindow?.webContents.openDevTools();
+        return { ok: true };
+      },
+      openurlwithbrowser: () => {
+        const search = url.searchParams;
+        const targetUrl = search.get("url");
+        if (targetUrl) {
+          const { shell } = require("electron");
+          shell.openExternal(targetUrl);
+          return { ok: true };
+        }
+        return { ok: false, error: "缺少 url 参数" };
+      },
+      selectdirectory: () => {
+        const purpose = url.searchParams.get("purpose");
+        const result = selectDirectory({
+          title: purpose === "projectImport" ? "Select Toonflow project directory" : "Select Toonflow workspace directory",
+          properties: ["openDirectory", "createDirectory"],
+        });
+        return { ok: Boolean(result?.[0]), path: result?.[0] || null, purpose };
+      },
+      opendirectory: async () => {
+        const requestedPath = url.searchParams.get("path");
+        if (!requestedPath) return { ok: false, error: "Missing path" };
+        const storageConfig = activeStorageConfig;
+        if (!storageConfig) return { ok: false, error: "Storage runtime is not ready" };
+        const target = path.resolve(requestedPath);
+        const roots = [path.resolve(storageConfig.workspacePath), path.resolve(app.getPath("userData"))];
+        const allowed = roots.some(
+          (root) => target === root || target.startsWith(`${root}${path.sep}`),
+        );
+        if (!allowed || !fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
+          return { ok: false, error: "Directory is outside Toonflow managed storage" };
+        }
+        const { shell } = require("electron");
+        const openError = await shell.openPath(target);
+        return openError ? { ok: false, error: openError } : { ok: true, path: target };
+      },
+      getlocallanguage: () => {
+        if (process.platform === "darwin") {
+          const systemLocale = systemPreferences.getUserDefault("AppleLocale", "string");
+          return { ok: true, local: systemLocale };
+        }
+        const appLocale = app.getLocale();
+        return { ok: true, local: appLocale };
+      },
+    };
+
+    const handler = handlers[pathname];
+    const responseData = handler ? await handler() : { error: "未知接口" };
+    return new Response(JSON.stringify(responseData), {
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      },
+    });
+  });
+}
+
+async function bootstrapApplication() {
+  if (startupInProgress) return;
+  startupInProgress = true;
+  await showLoading();
   try {
     const storageConfig = resolveStorageRuntime();
+    activeStorageConfig = storageConfig;
     applyStorageEnvironment(storageConfig);
     if (storageConfig.mode === "workspace") {
       fs.mkdirSync(storageConfig.workspacePath, { recursive: true });
@@ -997,124 +1710,35 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       process.env.NODE_ENV = "dev";
       initializeData();
     }
+    repairRuntimeApiPort(RUNTIME_API_PORT);
     await startRuntimeProcesses();
     await new Promise<void>((resolve, reject) => {
       setTimeout(() => {
         resolve();
       }, 2000);
     });
-    // 注册协议处理器
-    protocol.handle("toonflow", async (request) => {
-      const url = new URL(request.url);
-      const pathname = url.hostname.toLowerCase();
-      const handlers: Record<string, () => object | Promise<object>> = {
-        getappurl: () => ({ url: RUNTIME_API_URL }),
-        retryvite: () => {
-          setTimeout(() => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.destroy();
-              mainWindow = null;
-            }
-            void createMainWindow();
-          }, 0);
-          return { ok: true };
-        },
-        windowminimize: () => {
-          mainWindow?.minimize();
-          return { ok: true };
-        },
-        windowmaximize: () => {
-          if (mainWindow?.isMaximized()) {
-            mainWindow.unmaximize();
-          } else {
-            mainWindow?.maximize();
-          }
-          return { ok: true };
-        },
-        windowclose: () => {
-          app.exit(0);
-          return { ok: true };
-        },
-        apprestart: () => {
-          // 延迟执行，让响应先返回给前端
-          setTimeout(() => {
-            app.relaunch();
-            app.exit(0);
-          }, 500);
-          return { ok: true, message: "应用即将重启" };
-        },
-        windowismaximized: () => ({
-          maximized: mainWindow?.isMaximized() ?? false,
-        }),
-        opendevtool: () => {
-          mainWindow?.webContents.openDevTools();
-          return { ok: true };
-        },
-        openurlwithbrowser: () => {
-          const search = url.searchParams;
-          const targetUrl = search.get("url");
-          if (targetUrl) {
-            const { shell } = require("electron");
-            shell.openExternal(targetUrl);
-            return { ok: true };
-          } else {
-            return { ok: false, error: "缺少 url 参数" };
-          }
-        },
-        selectdirectory: () => {
-          const purpose = url.searchParams.get("purpose");
-          const result = selectDirectory({
-            title: purpose === "projectImport" ? "Select Toonflow project directory" : "Select Toonflow workspace directory",
-            properties: ["openDirectory", "createDirectory"],
-          });
-          return { ok: Boolean(result?.[0]), path: result?.[0] || null, purpose };
-        },
-        opendirectory: async () => {
-          const requestedPath = url.searchParams.get("path");
-          if (!requestedPath) return { ok: false, error: "Missing path" };
-          const target = path.resolve(requestedPath);
-          const roots = [path.resolve(storageConfig.workspacePath), path.resolve(app.getPath("userData"))];
-          const allowed = roots.some(
-            (root) => target === root || target.startsWith(`${root}${path.sep}`),
-          );
-          if (!allowed || !fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
-            return { ok: false, error: "Directory is outside Toonflow managed storage" };
-          }
-          const { shell } = require("electron");
-          const openError = await shell.openPath(target);
-          return openError ? { ok: false, error: openError } : { ok: true, path: target };
-        },
-        getlocallanguage: () => {
-          // 获取应用区域设置
-
-          // macOS 系统特定方法
-          if (process.platform === "darwin") {
-            const systemLocale = systemPreferences.getUserDefault("AppleLocale", "string");
-            return { ok: true, local: systemLocale };
-          }
-          const appLocale = app.getLocale();
-          return { ok: true, local: appLocale };
-        },
-      };
-
-      const handler = handlers[pathname];
-
-      const responseData = handler ? await handler() : { error: "未知接口" };
-      return new Response(JSON.stringify(responseData), {
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "no-store",
-        },
-      });
-    });
-
     // 服务启动成功，创建主窗口（主窗口 ready-to-show 时自动关闭 loading）
     await createMainWindow();
   } catch (err) {
     console.error("[runtime startup failed]:", err);
     await stopRuntimeProcesses().catch(() => {});
     showStartupError(err);
+  } finally {
+    startupInProgress = false;
   }
+}
+
+if (hasSingleInstanceLock) app.whenReady().then(async () => {
+  const migratedUserDataEntries = migrateLegacyElectronUserData();
+  initLogger({ role: "main", logDir: path.join(app.getPath("userData"), "logs"), hijackConsole: true });
+  mainLog.info("Electron main process ready", {
+    event: "ready",
+    appName: APP_NAME,
+    userData: app.getPath("userData"),
+    migratedUserDataEntries,
+  });
+  registerToonflowProtocolHandlers();
+  await bootstrapApplication();
 });
 
 app.on("window-all-closed", () => {
