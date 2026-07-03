@@ -8,6 +8,7 @@ import { legacyDataRoot, storageMode, workspaceRoot } from "@/services/storagePa
 export type TextAssetTargetType =
   | "storyboardTable"
   | "scriptPlan"
+  | "projectContextPack"
   | "agentOutput"
   | "videoPromptDraft"
   | "promptDiagnostic"

@@ -11,6 +11,7 @@ import {
   executeStoryboardImageTask,
   executeThumbnailTask,
 } from "@/services/backgroundTaskHandlers";
+import { executeAssetFoundationTask } from "@/services/assetFoundation";
 import {
   claimUnifiedTask,
   createUnifiedTask,
@@ -57,6 +58,7 @@ const handlers: Record<string, TaskHandler> = {
   },
   "asset-image": async (payload, task) => executeAssetImageTask(payload, task),
   "asset-prompt": async (payload) => executeAssetPromptTask(payload),
+  "asset-foundation": async (payload) => executeAssetFoundationTask(payload),
   "storyboard-image": async (payload, task) => executeStoryboardImageTask(payload, task),
   "audio-binding": async (payload) => executeAudioBindingTask(payload),
   "novel-event": async (payload) => executeNovelEventTask(payload),

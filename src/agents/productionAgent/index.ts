@@ -11,6 +11,7 @@ import path from "path";
 import { findBuiltinDataDir, readBuiltinDataFile } from "@/services/builtinData";
 import { createTextAsset, summarizeLongText } from "@/services/textAsset";
 import { getProjectDefaultVideoPolicy } from "@/services/videoModelPolicy";
+import { getProjectContextPack } from "@/services/projectMaterial";
 import {
   consumeFullStream as consumeAgentFullStream,
   createAgentModelStreamScope,
@@ -111,6 +112,20 @@ async function persistDirectorScriptPlan(params: { projectId: number; scriptId: 
     summary: "",
     state: "complete",
   });
+}
+
+async function buildDirectorProjectContextPrompt(projectId: number) {
+  const pack = await getProjectContextPack(projectId).catch(() => null);
+  const content = String(pack?.content || "").trim();
+  if (!content) return "";
+  const clipped = content.length > 4000 ? `${content.slice(0, 4000)}\n...(已截断)` : content;
+  return `
+
+【项目制作参考包（仅供导演规划软参考）】
+用途：用于保持项目连续性、角色关系、世界观、视觉方向、音乐/节奏方向。
+优先级：不得覆盖用户本轮明确要求、剧本文本、已有资产设定；不要把参考包原文整段复述进导演规划。
+
+${clipped}`;
 }
 
 function skillDirCandidates(...parts: string[]) {
@@ -349,6 +364,8 @@ async function createSubAgent(parentCtx: AgentContext) {
       const systemPrompt = await readBuiltinSkill("production_execution_director_plan.md");
 
       const addPrompt = "\n你必须使用如下XML格式写入工作区：\n```\n<scriptPlan>内容</scriptPlan>\n```";
+      const projectContextPrompt = await buildDirectorProjectContextPrompt(Number(resTool.data.projectId));
+      const directorPromptContext = `${projectContextPrompt}${addPrompt}`;
 
       const response = await runAgent({
         key: "productionAgent:directorPlanAgent",
@@ -358,7 +375,7 @@ async function createSubAgent(parentCtx: AgentContext) {
         memoryKey: "assistant:execution",
         messages: [
           { role: "assistant", content: artSkills.prompt + `\n${modelInfo}` },
-          { role: "user", content: prompt + addPrompt },
+          { role: "user", content: prompt + directorPromptContext },
         ],
         tools: { activate_skill: artSkills.tools.activate_skill },
       });

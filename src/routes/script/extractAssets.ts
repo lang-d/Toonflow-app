@@ -173,8 +173,10 @@ export default router.post(
           extractState: 0, // 正在提取
         });
         // 查询当前项目已有的资产列表，提供给 AI 参考
-        const existingAssets = await u.db("o_assets").where("projectId", projectId).select("name", "type");
-        const existingAssetsList = existingAssets.map((a) => `${a.name}(${a.type})`).join("、");
+        const existingAssets = await u.db("o_assets").where("projectId", projectId).select("name", "type", "describe");
+        const existingAssetsList = existingAssets
+          .map((a) => `${a.name}(${a.type})${a.describe ? `: ${String(a.describe).slice(0, 120)}` : ""}`)
+          .join("\n");
 
         // 拼接多集剧本内容，每集用分隔标记
         const scriptsContent = validScripts
@@ -212,14 +214,25 @@ export default router.post(
             scriptAssetExtraction = promptData?.data ?? undefined;
           }
           const existingHint = existingAssetsList
-            ? `\n\n【已有资产列表】：${existingAssetsList}\n对于已有资产，如果在剧本中出现，只需在 existingAssetRefs 中给出资产名称和对应的 scriptIds 数组即可，无需重复生成 desc/type。对于新发现的资产（不在已有列表中），请在 newAssets 中给出完整信息。`
+            ? `\n\n【已有资产列表】\n${existingAssetsList}\n对于已有资产，如果在剧本中出现，只需在 existingAssetRefs 中给出资产名称和对应的 scriptIds 数组即可，无需重复生成 desc/type。对于新发现的资产（不在已有列表中），请在 newAssets 中给出完整信息。`
             : "";
+          const assetFoundationExtractionRules = [
+            "【资产描述质量要求】",
+            "newAssets[].desc 不是润色文案，而是后续塑角造景的基础事实来源；必须短而有设定密度。",
+            "角色 desc 应包含：身份/关系/剧情功能/稳定外貌或气质线索/默认服装状态。资料没有的内容不要编造，可写“未明确”。",
+            "场景 desc 应包含：空间功能/固定布局或关键物件/默认状态事实/与剧情或角色的关系。",
+            "道具 desc 应包含：用途/物理形态/真实材质或标识/与剧情或角色的关系。",
+            "禁止把大段原文、分镜、镜头、构图、风格化光线、渲染质感写入 desc。",
+            "每个 desc 建议 60-180 字，优先写可复用的资产事实和连续性锚点。",
+          ].join("\n");
           const output = await u.Ai.Text("universalAi").invoke({
             messages: [
               {
                 role: "system",
                 content:
                   scriptAssetExtraction +
+                  "\n\n" +
+                  assetFoundationExtractionRules +
                   "\n\n提取剧本中涉及的资产（角色、场景、道具），参考技能 script_assets_extract 规范，结果必须通过 resultTool 工具返回。" +
                   "\n\n注意：本次会同时提供多集剧本，每集剧本以 ===== 【剧本ID: xxx】 ===== 分隔。你需要分析每集剧本使用了哪些资产，并在输出中用 scriptIds 数组标明每个资产在哪些剧本中出现。",
               },

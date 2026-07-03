@@ -4,6 +4,12 @@ import { z } from "zod";
 import _ from "lodash";
 import ResTool from "@/socket/resTool";
 import { emitWithAckTimeout } from "@/agents/shared/socketAck";
+import {
+  PROJECT_MATERIAL_CATEGORIES,
+  getProjectContextPack,
+  listProjectMaterials,
+  readProjectMaterial,
+} from "@/services/projectMaterial";
 
 export const ScriptSchema = z.object({
   name: z.string().describe("剧本名称"),
@@ -18,6 +24,7 @@ export const planData = z.object({
 export type planData = z.infer<typeof planData>;
 
 const keySchema = z.enum(Object.keys(planData.shape) as [keyof planData, ...Array<keyof planData>]);
+const projectMaterialCategorySchema = z.enum(PROJECT_MATERIAL_CATEGORIES);
 const planDataKeyLabels = Object.fromEntries(
   Object.entries(planData.shape).map(([key, schema]) => [key, (schema as z.ZodTypeAny).description ?? key]),
 ) as Record<keyof planData, string>;
@@ -55,6 +62,41 @@ export default (toolCpnfig: ToolConfig) => {
         thinking.updateTitle("查询章节事件完成");
         thinking.complete();
         return eventString ?? "无数据";
+      },
+    }),
+    list_project_materials: tool({
+      description: "List project-level reference material files by category. Returns metadata only, not full text.",
+      inputSchema: jsonSchema<{ category?: string }>(
+        z
+          .object({
+            category: projectMaterialCategorySchema.optional().describe("Optional material category filter"),
+          })
+          .toJSONSchema(),
+      ),
+      execute: async ({ category }) => {
+        return listProjectMaterials({ projectId: Number(resTool.data.projectId), category: category as any });
+      },
+    }),
+    read_project_material: tool({
+      description: "Read text from a project-level reference material using pagination.",
+      inputSchema: jsonSchema<{ id: number; offset?: number; limit?: number }>(
+        z
+          .object({
+            id: z.number().describe("Project material id"),
+            offset: z.number().optional().describe("Character offset"),
+            limit: z.number().optional().describe("Maximum characters to read"),
+          })
+          .toJSONSchema(),
+      ),
+      execute: async ({ id, offset, limit }) => {
+        return readProjectMaterial({ id, projectId: Number(resTool.data.projectId), offset, limit });
+      },
+    }),
+    get_project_context_pack: tool({
+      description: "Get the latest short project context pack for script or production reference. Returns null when not generated.",
+      inputSchema: jsonSchema<Record<string, never>>(z.object({}).toJSONSchema()),
+      execute: async () => {
+        return getProjectContextPack(Number(resTool.data.projectId));
       },
     }),
     get_planData: tool({

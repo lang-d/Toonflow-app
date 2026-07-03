@@ -33,7 +33,11 @@ export function validateFields(
       });
       return res.status(400).send(error("参数错误", { issues }));
     }
-    (req as any)[source] = parseResult.data;
+    if (source === "query") {
+      (req as any).validatedQuery = parseResult.data;
+    } else {
+      (req as any)[source] = parseResult.data;
+    }
     next();
   };
 }

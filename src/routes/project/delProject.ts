@@ -52,6 +52,7 @@ export default router.post(
     //删除项目下的视频轨道和视频
     await u.db("o_videoTrack").where("projectId", id).delete();
     await u.db("o_video").where("projectId", id).delete();
+    await u.db("o_projectMaterial").where("projectId", id).delete();
     //删除项目下的资源
 
     await u.db("memories").where("isolationKey", "like", `${id}:%`).delete();

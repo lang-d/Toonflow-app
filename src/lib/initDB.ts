@@ -66,6 +66,28 @@ export default async (
     },
     //风格表
     {
+      name: "o_projectMaterial",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.string("category").notNullable();
+        table.text("name").notNullable();
+        table.text("filePath").notNullable();
+        table.string("mime");
+        table.string("ext");
+        table.integer("size").notNullable().defaultTo(0);
+        table.text("textPath");
+        table.integer("textSize");
+        table.text("summary");
+        table.string("state").notNullable().defaultTo("ready");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+        table.index(["projectId", "category", "state"], "idx_project_material_scope");
+      },
+    },
+    {
       name: "o_artStyle",
       builder: (table) => {
         table.integer("id").notNullable();
@@ -533,6 +555,9 @@ export default async (
         table.text("remark");
         table.text("type");
         table.text("describe");
+        table.text("foundationText");
+        table.string("foundationStatus");
+        table.text("foundationErrorReason");
         table.integer("scriptId"); //剧本id
         table.integer("imageId").unsigned().references("id").inTable("o_image");
         table.integer("assetsId");

@@ -16,6 +16,12 @@ import { applyStoryboardPanelImageFieldsWithDb, updateDeriveAssetPrompt } from "
 import { emitWithAckTimeout } from "@/agents/shared/socketAck";
 import { buildProductionFlowData } from "@/services/productionFlowData";
 import { VISUAL_ASSET_TYPES, isVisualAssetType } from "@/services/assetTypes";
+import {
+  PROJECT_MATERIAL_CATEGORIES,
+  getProjectContextPack,
+  listProjectMaterials,
+  readProjectMaterial,
+} from "@/services/projectMaterial";
 
 const deriveAssetSchema = z.object({
   id: z.number().describe("衍生资产ID,如果新增则为空"),
@@ -262,6 +268,7 @@ export type FlowData = z.infer<typeof flowDataSchema>;
 
 const flowDataKeys = Object.keys(flowDataSchema.shape) as [keyof FlowData, ...Array<keyof FlowData>];
 const keySchema = z.enum(flowDataKeys);
+const projectMaterialCategorySchema = z.enum(PROJECT_MATERIAL_CATEGORIES);
 const flowDataKeyList = flowDataKeys.join(", ");
 const flowDataKeyLabels = Object.fromEntries(
   Object.entries(flowDataSchema.shape).map(([key, schema]) => [key, (schema as z.ZodTypeAny).description ?? key]),
@@ -353,6 +360,44 @@ export default (toolCpnfig: ToolConfig) => {
           storyboardTableTerminalFailure = true;
           throw error;
         }
+      },
+    }),
+    list_project_materials: tool({
+      description: "List project-level reference material files by category. Returns metadata only, not full text.",
+      inputSchema: jsonSchema<{ category?: string }>(
+        z
+          .object({
+            category: projectMaterialCategorySchema.optional().describe("Optional material category filter"),
+          })
+          .toJSONSchema(),
+      ),
+      execute: async ({ category }) => {
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        return listProjectMaterials({ projectId, category: category as any });
+      },
+    }),
+    read_project_material: tool({
+      description: "Read text from a project-level reference material using pagination.",
+      inputSchema: jsonSchema<{ id: number; offset?: number; limit?: number }>(
+        z
+          .object({
+            id: z.number().describe("Project material id"),
+            offset: z.number().optional().describe("Character offset"),
+            limit: z.number().optional().describe("Maximum characters to read"),
+          })
+          .toJSONSchema(),
+      ),
+      execute: async ({ id, offset, limit }) => {
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        return readProjectMaterial({ id, projectId, offset, limit });
+      },
+    }),
+    get_project_context_pack: tool({
+      description: "Get the latest short project context pack for production reference. Returns null when not generated.",
+      inputSchema: jsonSchema<Record<string, never>>(z.object({}).toJSONSchema()),
+      execute: async () => {
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        return getProjectContextPack(projectId);
       },
     }),
     begin_storyboard_table: tool({

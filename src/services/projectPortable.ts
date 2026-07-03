@@ -26,12 +26,17 @@ export interface PortableProjectSnapshot {
   project: any;
   tables: SnapshotTables;
   media: Array<{ path: string; size: number; sha256: string }>;
+  materials?: Array<{ path: string; size: number; sha256: string }>;
 }
 
 function mediaRoot(projectId: number) {
   return storageMode() === "workspace"
     ? projectMediaDirectory(projectId)
     : path.join(legacyDataRoot(), "oss", String(projectId));
+}
+
+function materialRoot(projectId: number) {
+  return path.join(projectDirectory(projectId), "materials");
 }
 
 async function listFiles(root: string, current = root): Promise<string[]> {
@@ -102,6 +107,7 @@ async function collectProjectTables(database: any, projectId: number): Promise<S
       "o_storyRevisionMap",
       "o_productionReviewSuggestion",
       "o_productionReviewFeedback",
+      "o_projectMaterial",
       "o_textAsset",
       "o_editImageTask",
     ];
@@ -187,6 +193,14 @@ export async function generateProjectSnapshot(
       const stat = await fs.stat(fullPath);
       media.push({ path: relativePath, size: stat.size, sha256: await fileDigest(fullPath) });
     }
+    const materialsRoot = materialRoot(projectId);
+    const materialFiles = await listFiles(materialsRoot);
+    const materials = [];
+    for (const relativePath of materialFiles) {
+      const fullPath = path.join(materialsRoot, ...relativePath.split("/"));
+      const stat = await fs.stat(fullPath);
+      materials.push({ path: relativePath, size: stat.size, sha256: await fileDigest(fullPath) });
+    }
     const snapshot: PortableProjectSnapshot = {
       format: FORMAT,
       version: VERSION,
@@ -196,6 +210,7 @@ export async function generateProjectSnapshot(
       project,
       tables,
       media,
+      materials,
     };
     const directory = options.workspaceRoot
       ? path.join(options.workspaceRoot, "projects", String(storage.storageKey || projectId))
@@ -216,6 +231,8 @@ export async function generateProjectSnapshot(
       exportedAt: snapshot.exportedAt,
       mediaCount: media.length,
       mediaBytes: media.reduce((total, item) => total + item.size, 0),
+      materialCount: materials.length,
+      materialBytes: materials.reduce((total, item) => total + item.size, 0),
     };
     const manifestPath = path.join(directory, "manifest.json");
     await fs.writeFile(`${manifestPath}.tmp`, JSON.stringify(manifest, null, 2), "utf8");
@@ -340,6 +357,13 @@ export async function importPortableProject(sourceDirectory: string, database: a
       throw new Error(`Portable project media validation failed: ${media.path}`);
     }
   }
+  for (const material of snapshot.materials || []) {
+    const filePath = path.join(sourceDirectory, "materials", ...material.path.split("/"));
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile() || stat.size !== Number(material.size) || (await fileDigest(filePath)) !== material.sha256) {
+      throw new Error(`Portable project material validation failed: ${material.path}`);
+    }
+  }
   const oldProjectId = Number(snapshot.projectId);
   let newProjectId = oldProjectId;
   if (await database("o_project").where("id", newProjectId).first()) {
@@ -365,6 +389,7 @@ export async function importPortableProject(sourceDirectory: string, database: a
     "o_storyRevisionMap",
     "o_productionReviewSuggestion",
     "o_productionReviewFeedback",
+    "o_projectMaterial",
     "o_textAsset",
     "o_imageFlow",
     "o_editImageTask",
@@ -493,6 +518,7 @@ export async function importPortableProject(sourceDirectory: string, database: a
     }
     if (row.taskId && taskIds.has(row.taskId)) row.taskId = taskIds.get(row.taskId);
     if (row.filePath) row.filePath = rewritePath(row.filePath, oldProjectId, newProjectId);
+    if (row.textPath) row.textPath = rewritePath(row.textPath, oldProjectId, newProjectId);
     if (row.url) row.url = rewritePath(row.url, oldProjectId, newProjectId);
     for (const jsonField of [
       "flowData",
@@ -552,6 +578,7 @@ export async function importPortableProject(sourceDirectory: string, database: a
     "o_storyRevisionMap",
     "o_productionReviewSuggestion",
     "o_productionReviewFeedback",
+    "o_projectMaterial",
     "o_textAsset",
     "o_videoTrack",
     "o_storyboard",
@@ -627,6 +654,12 @@ export async function importPortableProject(sourceDirectory: string, database: a
   const targetText = path.join(projectDirectory(newProjectId), "text");
   await fs.mkdir(path.dirname(targetText), { recursive: true });
   await fs.cp(sourceText, targetText, { recursive: true, force: false }).catch((error: any) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
+  const sourceMaterials = path.join(sourceDirectory, "materials");
+  const targetMaterials = materialRoot(newProjectId);
+  await fs.mkdir(path.dirname(targetMaterials), { recursive: true });
+  await fs.cp(sourceMaterials, targetMaterials, { recursive: true, force: false }).catch((error: any) => {
     if (error?.code !== "ENOENT") throw error;
   });
   const result = await generateProjectSnapshot(newProjectId, database);

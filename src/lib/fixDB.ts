@@ -145,6 +145,12 @@ export default async (knex: Knex): Promise<void> => {
     promptState: "生成失败",
     promptErrorReason: "软件退出导致失败",
   });
+  if (await knex.schema.hasColumn("o_assets", "foundationStatus")) {
+    await knex("o_assets").where("foundationStatus", "processing").update({
+      foundationStatus: "failed",
+      foundationErrorReason: "软件退出导致失败",
+    });
+  }
   await knex("o_image").where("state", "生成中").update({
     state: "生成失败",
     errorReason: "软件退出导致失败",
@@ -174,6 +180,28 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("o_agentDeploy", "temperature", "integer");
   // 添加新字段
   await addColumn("o_agentDeploy", "maxOutputTokens", "integer");
+  await addColumn("o_assets", "foundationText", "text");
+  await addColumn("o_assets", "foundationStatus", "string");
+  await addColumn("o_assets", "foundationErrorReason", "text");
+  if (await knex.schema.hasColumn("o_assets", "foundationState")) {
+    await knex("o_assets")
+      .whereNull("foundationStatus")
+      .update({
+        foundationStatus: knex.raw(`
+          CASE foundationState
+            WHEN '生成中' THEN 'processing'
+            WHEN '已完成' THEN 'completed'
+            WHEN '生成失败' THEN 'failed'
+            WHEN '未生成' THEN 'pending'
+            ELSE foundationState
+          END
+        `),
+      });
+  }
+  await knex("o_assets").where("foundationStatus", "processing").update({
+    foundationStatus: "failed",
+    foundationErrorReason: "软件退出导致失败",
+  });
   await addColumn("o_assets", "audioBindState", "integer");
   await addColumn("o_modelPrompt", "fileName", "string");
   await addColumn("o_modelPrompt", "path", "string");
@@ -648,6 +676,33 @@ export default async (knex: Knex): Promise<void> => {
   await knex.raw("CREATE INDEX IF NOT EXISTS idx_text_asset_target ON o_textAsset(projectId, scriptId, targetType, targetId)");
   await knex.raw("CREATE INDEX IF NOT EXISTS idx_text_asset_state ON o_textAsset(state, updateTime)");
 
+  if (!(await knex.schema.hasTable("o_projectMaterial"))) {
+    await knex.schema.createTable("o_projectMaterial", (table) => {
+      table.integer("id").notNullable();
+      table.integer("projectId").notNullable();
+      table.string("category").notNullable();
+      table.text("name").notNullable();
+      table.text("filePath").notNullable();
+      table.string("mime");
+      table.string("ext");
+      table.integer("size").notNullable().defaultTo(0);
+      table.text("textPath");
+      table.integer("textSize");
+      table.text("summary");
+      table.string("state").notNullable().defaultTo("ready");
+      table.integer("createTime").notNullable();
+      table.integer("updateTime").notNullable();
+      table.primary(["id"]);
+      table.unique(["id"]);
+    });
+  }
+  await addColumn("o_projectMaterial", "textPath", "text");
+  await addColumn("o_projectMaterial", "textSize", "integer");
+  await addColumn("o_projectMaterial", "summary", "text");
+  await addColumn("o_projectMaterial", "state", "string");
+  await knex("o_projectMaterial").whereNull("state").update({ state: "ready" });
+  await knex.raw("CREATE INDEX IF NOT EXISTS idx_project_material_scope ON o_projectMaterial(projectId, category, state)");
+
   await addColumn("o_storyboard", "groupKey", "text");
   await addColumn("o_storyboard", "groupName", "text");
   await addColumn("o_storyboard", "groupIntent", "text");
@@ -797,6 +852,7 @@ export default async (knex: Knex): Promise<void> => {
     "o_storyRevisionMap",
     "o_productionReviewSuggestion",
     "o_productionReviewFeedback",
+    "o_projectMaterial",
     "o_textAsset",
     "o_agentWorkData",
     "o_video",
@@ -832,6 +888,7 @@ export default async (knex: Knex): Promise<void> => {
     ["o_storyRevisionMap", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_productionReviewSuggestion", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_productionReviewFeedback", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_projectMaterial", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_textAsset", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_video", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_videoTrack", "COALESCE(NEW.projectId, OLD.projectId)"],

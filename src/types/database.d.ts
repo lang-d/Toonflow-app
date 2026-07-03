@@ -1,4 +1,4 @@
-// @db-hash e3069193be55359d9f5804cb7ac89600
+// @db-hash ba5579f4a654d83a0d3e91d7a29f1ae0
 //该文件由脚本自动生成，请勿手动修改
 
 export interface memories {
@@ -47,6 +47,9 @@ export interface o_assets {
   'audioBindState'?: number | null;
   'describe'?: string | null;
   'flowId'?: number | null;
+  'foundationErrorReason'?: string | null;
+  'foundationStatus'?: string | null;
+  'foundationText'?: string | null;
   'id'?: number;
   'imageId'?: number | null;
   'name'?: string | null;
@@ -194,6 +197,22 @@ export interface o_project {
   'userId'?: number | null;
   'videoModel'?: string | null;
   'videoRatio'?: string | null;
+}
+export interface o_projectMaterial {
+  'category': string;
+  'createTime': number;
+  'ext'?: string | null;
+  'filePath': string;
+  'id'?: number;
+  'mime'?: string | null;
+  'name': string;
+  'projectId': number;
+  'size'?: number;
+  'state'?: string;
+  'summary'?: string | null;
+  'textPath'?: string | null;
+  'textSize'?: number | null;
+  'updateTime': number;
 }
 export interface o_projectStorage {
   'errorReason'?: string | null;
@@ -537,6 +556,7 @@ export interface DB {
   "o_productionReviewFeedback": o_productionReviewFeedback;
   "o_productionReviewSuggestion": o_productionReviewSuggestion;
   "o_project": o_project;
+  "o_projectMaterial": o_projectMaterial;
   "o_projectStorage": o_projectStorage;
   "o_prompt": o_prompt;
   "o_script": o_script;
