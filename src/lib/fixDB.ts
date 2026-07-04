@@ -1,9 +1,4 @@
-import path from "path";
-import fs from "fs";
 import { Knex } from "knex";
-import { transform } from "sucrase";
-import { VM } from "vm2";
-import rawVendorData from "./vendor.json";
 import { failInterruptedImageFlowTasks, migrateImageFlowContractV2 } from "@/lib/migrations/imageFlowContractV2";
 import {
   migrateVideoQueueV2,
@@ -19,45 +14,12 @@ import {
   recoverInterruptedEphemeralTasks,
 } from "@/lib/migrations/unifiedTaskV1";
 import { migrateMediaPathContractV1 } from "@/lib/migrations/mediaPathContractV1";
-import getPath from "@/utils/getPath";
+import { fixAssetSchema } from "@/lib/dbFixes/assetSchemaFixes";
+import { cleanupScriptAssetBindings } from "@/lib/dbFixes/scriptAssetBindingFixes";
+import { fixVendorConfigs } from "@/lib/dbFixes/vendorConfigFixes";
+import { truncateLongErrorFields } from "@/lib/dbFixes/maintenanceFixes";
 
-const vendorData = rawVendorData as Record<string, string>;
 const SNAPSHOT_DECOUPLING_KEY = "migration:project-snapshot-decoupling-v1";
-
-function getVendorFile(id: string | number) {
-  return path.join(getPath("vendor"), `${id}.ts`);
-}
-
-function writeVendorCode(id: string | number, tsCode: string) {
-  const rootDir = getPath("vendor");
-  fs.mkdirSync(rootDir, { recursive: true });
-  fs.writeFileSync(getVendorFile(id), tsCode);
-}
-
-function getVendorVersion(id: string) {
-  const file = getVendorFile(id);
-  if (!fs.existsSync(file)) return "0";
-  const code = fs.readFileSync(file, "utf8");
-  return code.match(/\bversion\s*:\s*["']([^"']+)["']/)?.[1] || "0";
-}
-
-function readVendorFromCode(tsCode: string) {
-  const jsCode = transform(tsCode, { transforms: ["typescript"] }).code.replace(/export\s*\{\s*\};?/g, "");
-  const exports: Record<string, any> = {};
-  new VM({
-    sandbox: {
-      exports,
-      logger: () => {},
-      fetch: async () => {
-        throw new Error("fixDB vendor metadata sandbox does not allow fetch");
-      },
-    },
-    timeout: 1000,
-    eval: false,
-    wasm: false,
-  }).run(jsCode);
-  return exports.vendor;
-}
 
 async function migrateProjectSnapshotDecoupling(knex: Knex) {
   if (await knex("o_setting").where("key", SNAPSHOT_DECOUPLING_KEY).first()) {
@@ -132,45 +94,7 @@ export default async (knex: Knex): Promise<void> => {
       });
     }
   };
-  //矫正因软件异常退出导致的状态不一致问题
-  await knex("o_novel").where("eventState", 0).update({
-    eventState: -1,
-    errorReason: "软件退出导致失败",
-  });
-  await knex("o_script").where("extractState", 0).update({
-    extractState: -1,
-    errorReason: "软件退出导致失败",
-  });
-  await knex("o_assets").where("promptState", "生成中").update({
-    promptState: "生成失败",
-    promptErrorReason: "软件退出导致失败",
-  });
-  if (await knex.schema.hasColumn("o_assets", "foundationStatus")) {
-    await knex("o_assets").where("foundationStatus", "processing").update({
-      foundationStatus: "failed",
-      foundationErrorReason: "软件退出导致失败",
-    });
-  }
-  await knex("o_image").where("state", "生成中").update({
-    state: "生成失败",
-    errorReason: "软件退出导致失败",
-  });
-  await knex("o_storyboard").where("state", "生成中").update({
-    state: "生成失败",
-    reason: "软件退出导致失败",
-  });
-  await knex("o_video")
-    .where("state", "生成中")
-    .whereNotExists(function () {
-      this.select(1)
-        .from("o_videoGenerationTask")
-        .whereRaw("o_videoGenerationTask.videoId = o_video.id")
-        .whereIn("o_videoGenerationTask.state", ["排队中", "提交中", "生成中"]);
-    })
-    .update({
-    state: "生成失败",
-    errorReason: "软件退出导致失败",
-  });
+  await fixAssetSchema(knex);
 
   // 添加新字段
   await addColumn("o_prompt", "useData", "text");
@@ -180,29 +104,8 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("o_agentDeploy", "temperature", "integer");
   // 添加新字段
   await addColumn("o_agentDeploy", "maxOutputTokens", "integer");
-  await addColumn("o_assets", "foundationText", "text");
-  await addColumn("o_assets", "foundationStatus", "string");
-  await addColumn("o_assets", "foundationErrorReason", "text");
-  if (await knex.schema.hasColumn("o_assets", "foundationState")) {
-    await knex("o_assets")
-      .whereNull("foundationStatus")
-      .update({
-        foundationStatus: knex.raw(`
-          CASE foundationState
-            WHEN '生成中' THEN 'processing'
-            WHEN '已完成' THEN 'completed'
-            WHEN '生成失败' THEN 'failed'
-            WHEN '未生成' THEN 'pending'
-            ELSE foundationState
-          END
-        `),
-      });
-  }
-  await knex("o_assets").where("foundationStatus", "processing").update({
-    foundationStatus: "failed",
-    foundationErrorReason: "软件退出导致失败",
-  });
   await addColumn("o_assets", "audioBindState", "integer");
+  await cleanupScriptAssetBindings(knex);
   await addColumn("o_modelPrompt", "fileName", "string");
   await addColumn("o_modelPrompt", "path", "string");
   const vendorDataSelect = await knex("o_vendorConfig").whereIn("id", ["deepseek", "atlascloud"]).select("*");
@@ -303,28 +206,7 @@ export default async (knex: Knex): Promise<void> => {
     ].join("\\n"),
   });
 
-  //迁移供应商函数
-  const data = await knex("o_vendorConfig").select("*");
-  for (const item of data) {
-    let { id, code } = item;
-    const filename = `${id}.ts`;
-    const rootDir = getPath("vendor");
-    if (!code && fs.existsSync(path.join(rootDir, filename))) continue;
-    if (!fs.existsSync(rootDir)) fs.mkdirSync(rootDir, { recursive: true });
-    if (!fs.existsSync(path.join(rootDir, filename))) {
-      code = vendorData[filename] || code;
-      code = code ?? "";
-      fs.writeFileSync(path.join(rootDir, filename), code);
-    }
-  }
-  const defList = Object.keys(vendorData).map((filename) => filename.replace(/\.ts$/, ""));
-  const existingIds = data.map((i: any) => i.id);
-  for (const id of defList) {
-    if (!existingIds.includes(id)) {
-      const tsCode = vendorData[`${id}.ts`];
-      if (tsCode) await tempOnsert(knex, tsCode);
-    }
-  }
+  await fixVendorConfigs(knex);
 
   await dropColumn("o_vendorConfig", "author");
   await dropColumn("o_vendorConfig", "description");
@@ -996,42 +878,6 @@ export default async (knex: Knex): Promise<void> => {
   await migrateUnifiedTaskV1(knex);
   await migrateProjectSnapshotDecoupling(knex);
   await recoverInterruptedEphemeralTasks(knex);
-  await knex("o_videoGenerationTask")
-    .whereRaw("length(errorReason) > 4096")
-    .update({ errorReason: knex.raw("substr(errorReason, 1, 4096)") });
-  await knex("o_video").whereRaw("length(errorReason) > 4096").update({
-    errorReason: knex.raw("substr(errorReason, 1, 4096)"),
-  });
-  await knex("o_tasks").whereRaw("length(reason) > 4096").update({
-    reason: knex.raw("substr(reason, 1, 4096)"),
-  });
-  const volcengineVer = getVendorVersion("volcengine");
-  if (Number(volcengineVer) < 2.3) {
-    writeVendorCode("volcengine", vendorData["volcengine.ts"]);
-  }
-  const minimaxVer = getVendorVersion("minimax");
-  if (Number(minimaxVer) < 2.1) {
-    writeVendorCode("minimax", vendorData["minimax.ts"]);
-  }
-  const t8starVer = getVendorVersion("t8star");
-  if (vendorData["t8star.ts"] && Number(t8starVer) < 2.2) {
-    writeVendorCode("t8star", vendorData["t8star.ts"]);
-  }
-  if (vendorData["dreamina.ts"]) {
-    writeVendorCode("dreamina", vendorData["dreamina.ts"]);
-  }
+  await truncateLongErrorFields(knex);
+  await fixVendorConfigs(knex);
 };
-
-async function tempOnsert(knex: Knex, tsCode: string) {
-  const vendor = readVendorFromCode(tsCode);
-  if (!vendor?.id) return;
-  const data = await knex("o_vendorConfig").where("id", vendor.id).first();
-  if (data) return;
-  await knex("o_vendorConfig").insert({
-    id: vendor.id,
-    inputValues: JSON.stringify(vendor.inputValues ?? {}),
-    models: JSON.stringify([]),
-    enable: vendor.id == "toonflow" ? 1 : 0,
-  });
-  writeVendorCode(vendor.id, tsCode);
-}
