@@ -542,6 +542,39 @@ test("workbench data returns video groups in stable id order", async () => {
   assert.ok(ids.includes(response.body.data.trackId));
 });
 
+test("workbench data exposes model reference tokens for media list", async () => {
+  const getGenerateDataRoute = (await import("../src/routes/production/workbench/getGenerateData")).default;
+  const dataResponse = await postRoute(getGenerateDataRoute, { projectId: 1, scriptId: 10 });
+  assert.equal(dataResponse.status, 200);
+  const track = dataResponse.body.data.trackList.find((item: any) => item.id === 100);
+  assert.ok(track);
+  const imageMedias = track.medias.filter((item: any) => item.fileType === "image");
+  assert.ok(imageMedias.length >= 2);
+  assert.equal(imageMedias[0].visualToken, "@Image1");
+  assert.equal(imageMedias[0].referenceToken, "@Image1");
+  assert.equal(imageMedias[1].visualToken, "@Image2");
+});
+
+test("video prompt token block keeps audio outside image numbering", async () => {
+  const { buildReferenceTokenBlock } = await import("../src/services/videoPromptCompiler");
+  const items: any[] = [1, 2, 3, 4, 5, 6]
+    .map((n): any => ({
+      item: { fileType: "image", name: `参考${n}`, sources: n === 6 ? "merged" : "assets", category: n === 2 ? "role" : "image" },
+      meta: { inputOrder: n, visualImageIndex: n },
+    }))
+    .concat(
+      [1, 2, 3].map((n): any => ({
+        item: { fileType: "audio", name: `音频${n}`, sources: "assets" },
+        meta: { inputOrder: 6 + n, audioReferenceIndex: n },
+      })),
+    );
+  const text = buildReferenceTokenBlock(items as any);
+  for (const n of [1, 2, 3, 4, 5, 6]) assert.match(text, new RegExp(`- @Image${n}:`));
+  assert.doesNotMatch(text, /- @Image7:/);
+  assert.match(text, /不得生成 @Image7/);
+  assert.match(text, /参考音频1/);
+});
+
 test("video prompt context keeps audio out of visual @Image numbering", async () => {
   const { compileWorkbenchVideoPrompt } = await import("../src/services/videoPromptCompiler");
   const audioPath = "1/imageFlow/10/media/prompt-private.wav";
@@ -599,6 +632,70 @@ test("video prompt context keeps audio out of visual @Image numbering", async ()
     assert.match(result.promptContext, /visualToken='@Image2'[\s\S]*referenceId='301'/);
     const audioBlock = result.promptContext.match(/<audioReference[\s\S]*?<\/audioReference>/)?.[0] || "";
     assert.doesNotMatch(audioBlock, /visualToken='@Image/);
+  } finally {
+    u.Ai = originalAi;
+  }
+});
+
+test("video prompt retries once when reference definition misses an image token", async () => {
+  const { compileWorkbenchVideoPrompt } = await import("../src/services/videoPromptCompiler");
+  const readyFact = {
+    version: 1,
+    index: 0,
+    durationSec: 3,
+    location: "玄关",
+    timeOfDay: "清晨",
+    picture: "角色站在门口",
+    action: "角色停顿",
+    shotSize: "中景",
+    cameraMove: "固定",
+    characters: [],
+    dialogue: [],
+    soundEffects: [],
+    requiredAssets: [],
+  };
+  await db("o_videoTrack").insert({ id: 310, projectId: 1, scriptId: 10, archived: 0 });
+  await db("o_storyboard").insert({
+    id: 311,
+    projectId: 1,
+    scriptId: 10,
+    trackId: 310,
+    index: 0,
+    filePath: "/1/storyboard/red.png",
+    tableRowJson: JSON.stringify(readyFact),
+    factStatus: "ready",
+  });
+  const originalAi = u.Ai;
+  let calls = 0;
+  u.Ai = {
+    ...u.Ai,
+    Text: () => ({
+      invoke: async () => {
+        calls += 1;
+        return {
+          text:
+            calls === 1
+              ? "参考定义:\n@Image1: P1，用于角色外观。"
+              : "参考定义:\n@Image1: P1，用于角色外观。\n@Image2: P2，用于场景空间。",
+        };
+      },
+    }),
+  };
+  try {
+    const result = await compileWorkbenchVideoPrompt({
+      projectId: 1,
+      scriptId: 10,
+      trackId: 310,
+      references: [
+        { id: 101, sources: "storyboard" },
+        { id: 311, sources: "storyboard" },
+      ],
+      model: "dreamina:seedance",
+      mode: JSON.stringify(["imageReference:2"]),
+    });
+    assert.equal(calls, 2);
+    assert.match(result.text, /@Image2/);
+    assert.equal(result.engineeringIssues.some((issue: any) => issue.severity === "blocking"), false);
   } finally {
     u.Ai = originalAi;
   }

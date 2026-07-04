@@ -6,6 +6,13 @@ import { validateFields } from "@/middleware/middleware";
 import { useSkill } from "@/utils/agent/skillsTools";
 import { tool, jsonSchema } from "ai";
 import { o_script } from "@/types/database";
+import {
+  buildUniqueBaseAssetIndex,
+  listBaseVisualAssets,
+  normalizeScriptAssetName,
+  scriptAssetMatchKey,
+  toVisualAssetType,
+} from "@/services/scriptAssetBinding";
 
 const router = express.Router();
 
@@ -19,6 +26,7 @@ const NewAssetSchema = z.object({
 
 /** 已有资产：数据库中已存在的资产，只需给出名称和关联的剧本 */
 const ExistingAssetRefSchema = z.object({
+  type: z.enum(["role", "tool", "scene"]).describe("existing asset type"),
   name: z.string().describe("已有资产的名称,必须与已有资产列表中的名称完全一致"),
   scriptIds: z.array(z.number()).describe("使用该资产的剧本id数组"),
 });
@@ -64,12 +72,12 @@ export default router.post(
     const { scriptIds, projectId, groupSize = 5 } = req.body;
 
     if (!scriptIds.length) return res.status(400).send(error("请先选择剧本"));
-    const scripts = await u.db("o_script").whereIn("id", scriptIds);
+    const scripts = await u.db("o_script").where("projectId", projectId).whereIn("id", scriptIds);
 
     // 构建 scriptId -> script 内容的映射
     const scriptMap = new Map(scripts.map((s: o_script) => [s.id, s]));
 
-    await u.db("o_script").whereIn("id", scriptIds).update({
+    await u.db("o_script").where("projectId", projectId).whereIn("id", scriptIds).update({
       extractState: 2,
     });
 
@@ -87,11 +95,20 @@ export default router.post(
       if (!newAssets.length && !existingRefs.length) return;
 
       // 查询已有资产
-      const existingAssets = await u.db("o_assets").where("projectId", projectId).select("id", "name");
-      const existingMap = new Map(existingAssets.map((a) => [a.name!, a.id!]));
+      const existingAssets = await listBaseVisualAssets(u.db, projectId);
+      const existingIndex = buildUniqueBaseAssetIndex(existingAssets);
 
       // 插入新资产（不在已有列表中的）
-      const toInsert = newAssets.filter((asset) => !existingMap.has(asset.name));
+      const toInsertByKey = new Map<string, NewAsset>();
+      for (const asset of newAssets) {
+        const type = toVisualAssetType(asset.type);
+        const name = normalizeScriptAssetName(asset.name);
+        if (!type || !name) continue;
+        const key = scriptAssetMatchKey({ name: asset.name, type });
+        if (existingIndex.unique.has(key) || existingIndex.duplicates.has(key) || toInsertByKey.has(key)) continue;
+        toInsertByKey.set(key, asset);
+      }
+      const toInsert = [...toInsertByKey.values()];
       if (toInsert.length) {
         await u.db("o_assets").insert(
           toInsert.map((asset) => ({
@@ -105,17 +122,21 @@ export default router.post(
       }
 
       // 重新查询获取完整的 name -> id 映射
-      const allAssets = await u.db("o_assets").where("projectId", projectId).select("id", "name");
-      const nameToId = new Map(allAssets.map((a) => [a.name, a.id]));
+      const allAssets = await listBaseVisualAssets(u.db, projectId);
+      const assetIndex = buildUniqueBaseAssetIndex(allAssets);
 
       // 收集所有资产与剧本的关联关系
       const scriptAssetRows: { scriptId: number; assetId: number }[] = [];
+      const validScriptIdSet = new Set(batchScriptIds.map(Number));
 
       // 新资产的关联
       for (const asset of newAssets) {
-        const assetId = nameToId.get(asset.name);
+        const key = scriptAssetMatchKey(asset);
+        if (assetIndex.duplicates.has(key)) continue;
+        const assetId = assetIndex.unique.get(key)?.id;
         if (assetId) {
           for (const sid of asset.scriptIds) {
+            if (!validScriptIdSet.has(Number(sid))) continue;
             scriptAssetRows.push({ scriptId: sid, assetId });
           }
         }
@@ -123,9 +144,12 @@ export default router.post(
 
       // 已有资产的关联
       for (const ref of existingRefs) {
-        const assetId = nameToId.get(ref.name);
+        const key = scriptAssetMatchKey(ref);
+        if (assetIndex.duplicates.has(key)) continue;
+        const assetId = assetIndex.unique.get(key)?.id;
         if (assetId) {
           for (const sid of ref.scriptIds) {
+            if (!validScriptIdSet.has(Number(sid))) continue;
             scriptAssetRows.push({ scriptId: sid, assetId });
           }
         }
@@ -173,7 +197,7 @@ export default router.post(
           extractState: 0, // 正在提取
         });
         // 查询当前项目已有的资产列表，提供给 AI 参考
-        const existingAssets = await u.db("o_assets").where("projectId", projectId).select("name", "type", "describe");
+        const existingAssets = await listBaseVisualAssets(u.db, projectId);
         const existingAssetsList = existingAssets
           .map((a) => `${a.name}(${a.type})${a.describe ? `: ${String(a.describe).slice(0, 120)}` : ""}`)
           .join("\n");
@@ -217,6 +241,8 @@ export default router.post(
             ? `\n\n【已有资产列表】\n${existingAssetsList}\n对于已有资产，如果在剧本中出现，只需在 existingAssetRefs 中给出资产名称和对应的 scriptIds 数组即可，无需重复生成 desc/type。对于新发现的资产（不在已有列表中），请在 newAssets 中给出完整信息。`
             : "";
           const assetFoundationExtractionRules = [
+            "Existing asset refs must include name, type and scriptIds. Do not return an existing ref without type.",
+            "Only base visual assets in the provided existing asset list can be reused; derivative, audio, video or director assets must not be referenced.",
             "【资产描述质量要求】",
             "newAssets[].desc 不是润色文案，而是后续塑角造景的基础事实来源；必须短而有设定密度。",
             "角色 desc 应包含：身份/关系/剧情功能/稳定外貌或气质线索/默认服装状态。资料没有的内容不要编造，可写“未明确”。",

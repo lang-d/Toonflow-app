@@ -64,6 +64,14 @@ interface TrackMedia {
   src: string;
   id?: number | string;
   fileType: "image" | "video" | "audio";
+  inputOrder?: number;
+  referenceToken?: string;
+  visualToken?: string;
+  visualImageIndex?: number;
+  audioToken?: string;
+  audioReferenceIndex?: number;
+  videoToken?: string;
+  videoReferenceIndex?: number;
   videoDesc?: string;
   scene?: string;
   picture?: string;
@@ -94,6 +102,32 @@ interface TrackItem {
   musicPlan?: unknown;
   reviewState?: "pending" | "passed" | "hasIssues" | "blocked";
   reviewIssues?: unknown[];
+}
+
+function annotateReferenceTokens(medias: TrackMedia[]): TrackMedia[] {
+  let visualImageIndex = 0;
+  let audioReferenceIndex = 0;
+  let videoReferenceIndex = 0;
+  return medias.map((media, index) => {
+    const next = { ...media, inputOrder: index + 1 };
+    if (media.fileType === "image") {
+      visualImageIndex += 1;
+      next.visualImageIndex = visualImageIndex;
+      next.visualToken = `@Image${visualImageIndex}`;
+      next.referenceToken = next.visualToken;
+    } else if (media.fileType === "audio") {
+      audioReferenceIndex += 1;
+      next.audioReferenceIndex = audioReferenceIndex;
+      next.audioToken = `参考音频${audioReferenceIndex}`;
+      next.referenceToken = next.audioToken;
+    } else if (media.fileType === "video") {
+      videoReferenceIndex += 1;
+      next.videoReferenceIndex = videoReferenceIndex;
+      next.videoToken = `参考视频${videoReferenceIndex}`;
+      next.referenceToken = next.videoToken;
+    }
+    return next;
+  });
 }
 
 export default router.post(
@@ -356,7 +390,7 @@ export default router.post(
             const { position: _, ...media } = merged;
             medias.splice(insertIndex, 0, media);
           }
-          return medias;
+          return annotateReferenceTokens(medias);
         })(),
         videoList: await Promise.all(
           videoList

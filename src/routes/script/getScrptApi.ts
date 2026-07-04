@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { VISUAL_ASSET_TYPES } from "@/services/assetTypes";
 const router = express.Router();
 
 export default router.post(
@@ -26,6 +27,9 @@ export default router.post(
         "o_scriptAssets.scriptId",
         data.map((i) => i.id!),
       )
+      .where("o_assets.projectId", projectId)
+      .whereIn("o_assets.type", VISUAL_ASSET_TYPES as unknown as string[])
+      .whereNull("o_assets.assetsId")
       .select("o_assets.id", "o_assets.name", "o_scriptAssets.scriptId");
     const scriptAssetsMap: Record<number, { id: number; name: string }[]> = {};
     assetsData.forEach((i) => {

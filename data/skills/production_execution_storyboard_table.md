@@ -39,15 +39,21 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 
 1. 调用 `get_flowData` 读取 `script`、`scriptPlan`、`assets`。
 2. 激活本阶段要求的通用技法与风格技法。
-3. 先完成全局规划：
+3. 先从 `scriptPlan` 建立“场次执行映射”：
+   - 表演出口 → `characters[].action` / `characters[].expression/gaze/handAction/posture/movement`；`visibleEmotion` 只写当前画面可见的情绪表现摘要。
+   - 空间关系 → `characters[].spatialPosition`。
+   - 镜头距离策略 → `shotSize` / `cameraMove`。
+   - 连续性锚点 → `location` / `timeOfDay` / `picture` / `requiredAssets`。
+   - 环境声 → `soundEffects`。
+4. 再完成全局规划：
    - 总分镜数。
    - 全部分镜组。
    - 每组 `groupKey/groupName/groupIntent/storyboardIndexes`。
-4. 调用 `begin_storyboard_table` 创建 generation。
-5. 按 `index` 提交 5–10 条一批的 `StoryboardTableRow`。
-6. 如果工具调用中断，可重试完全相同内容；同一 generation 内不得用不同内容覆盖已写入 index。
-7. 全部 index 写满后调用 `commit_storyboard_table`。
-8. 成功后只回复简短结果：`分镜表已完成，共 N 条分镜、M 个分组。`
+5. 调用 `begin_storyboard_table` 创建 generation。
+6. 按 `index` 提交 5–10 条一批的 `StoryboardTableRow`。
+7. 如果工具调用中断，可重试完全相同内容；同一 generation 内不得用不同内容覆盖已写入 index。
+8. 全部 index 写满后调用 `commit_storyboard_table`。
+9. 成功后只回复简短结果：`分镜表已完成，共 N 条分镜、M 个分组。`
 
 ## 提交失败处理
 
@@ -137,6 +143,59 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 | 台词 | `dialogue` |
 | 音效 | `soundEffects` |
 | 关联资产 | `requiredAssets` |
+
+## `visibleEmotion` 字段边界
+
+`visibleEmotion` 不是剧情解读栏，也不是关系变化栏。它只写当前这一帧画面中能直接看见的情绪表现。
+
+必须写：
+
+- 面部：嘴角、眉眼、眼眶、咬唇、绷脸、低头、回避视线等。
+- 身体：肩背、手部、呼吸、站姿、停顿、步伐、僵住、后退等。
+- 语气出口：哽住、压低、急促、停顿、吞字等。
+
+禁止写：
+
+- “从 A 到 B 的情绪转换”“形成反差”“关系破裂”“内心复杂”“沉默但不说”等剧情解释。
+- “安静——累了但不停”“王姨温和——和之前的大嗓门形成反差”这类带破折号的概括句。
+- 台词内容、事件因果、人物心理判断。
+
+示例：
+
+- 不合格：`安静——从嘈杂到空旷的情绪转换`
+- 合格：`脚步放慢，肩背松垮，视线落在空摊位上`
+- 不合格：`王姨认真关心；林若溪沉默——被戳中但不说`
+- 合格：`王姨身体前倾、眉心收紧；林若溪垂眼，嘴唇抿住`
+
+## `scriptPlan` 到分镜字段映射
+
+写入每条分镜前，必须先对齐导演规划：
+
+| 导演规划字段 | 分镜字段 |
+|---|---|
+| 表演出口 | `characters[].action`、`characters[].expression/gaze/handAction/posture/movement`、`visibleEmotion` |
+| 空间关系 | `characters[].spatialPosition`、`characters[].orientation` |
+| 镜头距离策略 | `shotSize`、`cameraMove`、`cameraAngle` |
+| 连续性锚点 | `location`、`timeOfDay`、`sceneContinuityId`、`picture`、`requiredAssets` |
+| 环境声 | `soundEffects` |
+
+不得把导演规划整段复制进 `picture` 或 `action`。分镜表要把导演规划拆成可拍摄的单镜事实。
+
+## `requiredAssets` 口径
+
+`requiredAssets` 不是“镜头主体列表”，而是画面生成需要保持一致的全部可辨识参考资产：
+
+- 主体资产：镜头主要拍摄的角色、场景、道具或片段。
+- 必要场景资产：画面所在空间可辨识时必须引用对应场景资产；有匹配场景衍生状态时优先引用衍生资产。
+- 可辨识背景资产：背景里能看清的角色、场景区域、道具、衍生状态需要引用。
+- 可辨识交互资产：角色手持、佩戴、触碰、遮挡、操作的道具或角色必须引用。
+
+边界：
+
+- 完全不可辨识的远景、模糊人群、抽象背景纹理、临时杂物不强制引用。
+- assets 中不存在的对象不能编造 `assetId`；可以作为剧本事实写入 `picture` 或 `action`，但不能进入 `requiredAssets`。
+- 同一父资产在单条分镜中不要同时引用父资产和匹配衍生资产；画面需要衍生状态时用衍生资产。
+- `requiredAssets.order` 从 0 开始，主体资产优先，其次场景/背景/交互资产；同类镜头尽量保持稳定顺序。
 
 ## 分组硬规则
 

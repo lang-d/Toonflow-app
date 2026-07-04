@@ -16,6 +16,7 @@ import { applyStoryboardPanelImageFieldsWithDb, updateDeriveAssetPrompt } from "
 import { emitWithAckTimeout } from "@/agents/shared/socketAck";
 import { buildProductionFlowData } from "@/services/productionFlowData";
 import { VISUAL_ASSET_TYPES, isVisualAssetType } from "@/services/assetTypes";
+import { cleanupAssetRelations } from "@/services/scriptAssetBinding";
 import {
   PROJECT_MATERIAL_CATEGORIES,
   getProjectContextPack,
@@ -601,7 +602,6 @@ export default (toolCpnfig: ToolConfig) => {
           const data = { ...baseData, prompt: deriveAsset.prompt, scriptId, startTime };
           const [insertedId] = await u.db("o_assets").insert(data);
           notifyData.id = insertedId;
-          await u.db("o_scriptAssets").insert({ scriptId, assetId: insertedId });
           thinking.appendText(`已新增衍生资产，ID: ${insertedId}\n`);
         }
         const res = await emitWithAckTimeout(socket, "addDeriveAsset", notifyData, undefined, {
@@ -632,9 +632,8 @@ export default (toolCpnfig: ToolConfig) => {
       ),
       execute: async ({ assetsId, id }) => {
         const thinking = msg.thinking("正在操作资产...");
-        const { scriptId } = resTool.data;
+        await cleanupAssetRelations(u.db, [id]);
         await u.db("o_assets").where("id", id).del();
-        await u.db("o_scriptAssets").where({ scriptId, assetId: id }).del();
         thinking.appendText(`已删除衍生资产，ID: ${id}\n`);
         const res = await emitWithAckTimeout(socket, "delDeriveAsset", { assetsId, id }, undefined, {
           agentName: "productionAgent",

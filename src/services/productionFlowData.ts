@@ -77,11 +77,11 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
     u.db("o_script").where({ projectId, id: episodesId }).first(),
     u.db("o_scriptAssets").where("scriptId", episodesId),
   ]);
-  const assetIds = scriptAssets.map((item: any) => Number(item.assetId)).filter(Number.isFinite);
+  const assetIds = [...new Set(scriptAssets.map((item: any) => Number(item.assetId)).filter(Number.isFinite))];
   const boundAudioRows = assetIds.length
     ? await u.db("o_assetsRole2Audio").whereIn("assetsRoleId", assetIds).select("assetsRoleId", "assetsAudioId")
     : [];
-  const visualAssetIds = [...new Set(assetIds)];
+  const visualAssetIds = assetIds;
   const boundAudioAssetIds = [
     ...new Set(boundAudioRows.map((item: any) => Number(item.assetsAudioId)).filter(Number.isFinite)),
   ];

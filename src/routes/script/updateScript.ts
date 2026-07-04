@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { validateScriptAssetIds } from "@/services/scriptAssetBinding";
 const router = express.Router();
 
 // 编辑剧本
@@ -16,22 +17,19 @@ export default router.post(
   }),
   async (req, res) => {
     const { id, name, content, assets } = req.body;
+    const script = await u.db("o_script").where({ id }).first("id", "projectId");
+    if (!script) return res.status(404).send(error("Script not found"));
+    const { validAssetIds, invalidAssetIds } = await validateScriptAssetIds(u.db, Number(script.projectId), assets);
+    if (invalidAssetIds.length) {
+      return res.status(400).send(error(`Invalid script asset ids: ${invalidAssetIds.join(", ")}`));
+    }
     await u.db("o_script").where({ id }).update({
       name,
       content,
     });
-    if (assets.length) {
-      const assetsData = await u.db("o_assets").whereIn("id", assets).select();
-      await u.db("o_scriptAssets").where({ scriptId: id }).delete();
-      if (assetsData.length) {
-        const insertData = assetsData.map((item) => {
-          return {
-            scriptId: id,
-            assetId: item.id,
-          };
-        });
-        await u.db("o_scriptAssets").insert(insertData);
-      }
+    await u.db("o_scriptAssets").where({ scriptId: id }).delete();
+    if (validAssetIds.length) {
+      await u.db("o_scriptAssets").insert(validAssetIds.map((assetId) => ({ scriptId: id, assetId })));
     }
 
     res.status(200).send(success({ message: "编辑剧本成功" }));

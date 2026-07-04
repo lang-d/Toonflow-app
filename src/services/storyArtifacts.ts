@@ -1,4 +1,5 @@
 import u from "@/utils";
+import { replaceScriptAssetBindings } from "@/services/scriptAssetBinding";
 
 export const STORY_ARTIFACT_TYPES = ["idea", "bible", "outline", "episodeOutline", "sceneCard", "script", "review", "research"] as const;
 export const STORY_ARTIFACT_STATUSES = ["draft", "active", "archived", "published"] as const;
@@ -241,11 +242,12 @@ export async function publishArtifactToScript(input: {
     scriptId = Number(inserted[0]);
   }
   if (input.assets) {
-    await u.db("o_scriptAssets").where({ scriptId }).delete();
-    if (input.assets.length) {
-      const rows = input.assets.map((assetId) => ({ scriptId, assetId }));
-      await u.db("o_scriptAssets").insert(rows);
-    }
+    await replaceScriptAssetBindings({
+      db: u.db,
+      scriptId,
+      projectId: input.projectId,
+      assetIds: input.assets,
+    });
   }
   await updateArtifact({ id: input.artifactId, projectId: input.projectId, status: "published" });
   return { scriptId, artifactId: input.artifactId };

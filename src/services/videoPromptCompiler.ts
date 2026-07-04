@@ -59,6 +59,18 @@ interface PromptReferenceMeta {
   videoReferenceIndex?: number;
 }
 
+interface AnnotatedPromptReference {
+  item: ResolvedWorkbenchReference;
+  meta: PromptReferenceMeta;
+}
+
+interface ReferenceTokenContractIssue {
+  issueType: "unexpected_image_token" | "missing_image_token";
+  severity: "blocking";
+  message: string;
+  token: string;
+}
+
 function escapeAttribute(value: unknown) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -192,6 +204,89 @@ function referenceLine(item: ResolvedWorkbenchReference, meta: PromptReferenceMe
   fileType='${item.fileType}'
   note='该素材是视觉参考；若使用 @ImageN，只能使用 visualToken 对应的编号'
 ></visualReference>`;
+}
+
+export function buildReferenceTokenBlock(items: AnnotatedPromptReference[]) {
+  const visualLines = items
+    .filter(({ item, meta }) => item.fileType === "image" && meta.visualImageIndex)
+    .map(({ item, meta }) => {
+      const sourceType = item.category || item.sources || item.fileType;
+      return `- @Image${meta.visualImageIndex}: inputOrder=${meta.inputOrder}, name='${escapeAttribute(item.name)}', source='${escapeAttribute(item.sources)}', sourceType='${escapeAttribute(sourceType)}'`;
+    });
+  const audioLines = items
+    .filter(({ item, meta }) => item.fileType === "audio" && meta.audioReferenceIndex)
+    .map(({ item, meta }) => `- 参考音频${meta.audioReferenceIndex}: inputOrder=${meta.inputOrder}, name='${escapeAttribute(item.name)}'`);
+  const videoLines = items
+    .filter(({ item, meta }) => item.fileType === "video" && meta.videoReferenceIndex)
+    .map(({ item, meta }) => `- 参考视频${meta.videoReferenceIndex}: inputOrder=${meta.inputOrder}, name='${escapeAttribute(item.name)}'`);
+  return `
+**可用引用 token（最终提示词必须按此表使用，不得重排或新增）**
+${visualLines.length ? visualLines.join("\n") : "- 无可用 @Image 图片引用。"}
+${audioLines.length ? audioLines.join("\n") : ""}
+${videoLines.length ? videoLines.join("\n") : ""}
+- 只能使用上表列出的 @Image 编号；不得生成 @Image${visualLines.length + 1} 或任何未列出的图片编号。
+- 素材用途可以根据分镜事实说明，但 token 与素材名的绑定不能改变。例如上表中 @Image2 是某个角色图，就不能把 @Image2 写成场景图。
+- inputOrder 只用于追踪原始输入顺序，不是最终 @Image 编号；最终图片编号永远以 @ImageN token 为准。`;
+}
+
+function imageTokenPattern(token: string) {
+  return new RegExp(`${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\d)`);
+}
+
+export function inspectReferenceTokenContract(text: string, items: AnnotatedPromptReference[]) {
+  const value = String(text || "");
+  const visualTokens = items
+    .filter(({ item, meta }) => item.fileType === "image" && meta.visualImageIndex)
+    .map(({ meta }) => `@Image${meta.visualImageIndex}`);
+  const allowed = new Set(visualTokens);
+  const mentioned = [...value.matchAll(/@Image(\d+)/g)].map((match) => `@Image${match[1]}`);
+  const issues: ReferenceTokenContractIssue[] = [];
+
+  for (const token of [...new Set(mentioned)]) {
+    if (!allowed.has(token)) {
+      issues.push({
+        issueType: "unexpected_image_token",
+        severity: "blocking",
+        token,
+        message: `视频提示词引用了未提供的图片编号 ${token}`,
+      });
+    }
+  }
+
+  for (const token of visualTokens) {
+    if (!imageTokenPattern(token).test(value)) {
+      issues.push({
+        issueType: "missing_image_token",
+        severity: "blocking",
+        token,
+        message: `视频提示词参考定义缺少图片编号 ${token}`,
+      });
+    }
+  }
+
+  return { expectedVisualTokens: visualTokens, issues };
+}
+
+function buildReferenceTokenRetryPrompt(
+  previousText: string,
+  tokenBlock: string,
+  issues: ReferenceTokenContractIssue[],
+) {
+  return `
+请只修复视频提示词中的引用编号契约问题，保留原有分镜内容和动作描述。
+
+${tokenBlock}
+
+本次必须修复的问题：
+${issues.map((issue) => `- ${issue.message}`).join("\n")}
+
+上一版提示词：
+${previousText}
+
+请重新输出完整视频提示词正文。要求：
+- “参考定义”必须列出可用引用 token 表中的全部 @ImageN。
+- 不得出现可用引用 token 表之外的 @ImageN。
+- 不要输出解释、审校建议、JSON 或 Markdown。`;
 }
 
 function buildTrackFacts(track: any) {
@@ -393,10 +488,13 @@ export async function compileWorkbenchVideoPrompt(
 
   const annotatedReferences = annotateReferences(references);
   const orderedReferenceText = annotatedReferences.map(({ item, meta }) => referenceLine(item, meta)).join("\n");
+  const referenceTokenBlock = buildReferenceTokenBlock(annotatedReferences);
   const promptContext = `
 **模型名称**：${modelName}
 **模式**：${input.mode}
-**引用顺序**（编号严格对应模型输入顺序，不得按类型重排）：${orderedReferenceText}
+${referenceTokenBlock}
+
+**原始引用清单**（仅供核对 source/referenceId，不用于重排 @Image）：${orderedReferenceText}
 ${buildTrackFacts(track)}
 ${buildStoryboardFacts(trackStoryboards, track)}
 ${constraintBlock(input.promptPrefix, input.promptSuffix)}
@@ -432,15 +530,35 @@ ${buildGenerationConstraints()}
     groupSummary,
   };
   let text = "";
+  let retryReason: ReferenceTokenContractIssue[] = [];
+  let retryOutputSummary = "";
+  const baseMessages = [
+    { role: "assistant" as const, content: buildVideoStyleGuide(project) },
+    { role: "user" as const, content: promptContext },
+  ];
   try {
     const result = await u.Ai.Text("universalAi").invoke({
       system: system.content,
-      messages: [
-        { role: "assistant", content: buildVideoStyleGuide(project) },
-        { role: "user", content: promptContext },
-      ],
+      messages: baseMessages,
     });
-    text = result.text;
+    text = String(result.text || "");
+    const firstContractInspection = inspectReferenceTokenContract(text, annotatedReferences);
+    if (firstContractInspection.issues.length) {
+      retryReason = firstContractInspection.issues;
+      retryOutputSummary = text.slice(0, 4000);
+      const retryResult = await u.Ai.Text("universalAi").invoke({
+        system: system.content,
+        messages: [
+          ...baseMessages,
+          { role: "assistant" as const, content: text },
+          {
+            role: "user" as const,
+            content: buildReferenceTokenRetryPrompt(text, referenceTokenBlock, firstContractInspection.issues),
+          },
+        ],
+      });
+      text = String(retryResult.text || "");
+    }
   } catch (error) {
     const diagnosticFile = writeDiagnosticFile(
       `video-prompt-failed-track-${input.trackId || "unknown"}`,
@@ -460,6 +578,8 @@ ${buildGenerationConstraints()}
     throw error;
   }
   const inspection = inspectVideoPromptEngineering(text);
+  const referenceInspection = inspectReferenceTokenContract(text, annotatedReferences);
+  const engineeringIssues = [...inspection.issues, ...referenceInspection.issues];
   const diagnosticFile = writeDiagnosticFile(
     `video-prompt-track-${input.trackId || "unknown"}`,
     JSON.stringify(
@@ -469,7 +589,13 @@ ${buildGenerationConstraints()}
         systemPrompt: system.content,
         aiOutputSummary: text.slice(0, 4000),
         aiOutputLength: text.length,
-        engineeringIssues: inspection.issues,
+        referenceContract: {
+          expectedVisualTokens: referenceInspection.expectedVisualTokens,
+          retried: retryReason.length > 0,
+          retryReason,
+          firstAiOutputSummary: retryOutputSummary || undefined,
+        },
+        engineeringIssues,
       },
       null,
       2,
@@ -488,15 +614,17 @@ ${buildGenerationConstraints()}
     systemPromptSource: system.source,
     diagnosticFile,
   });
-  if (inspection.issues.some((issue) => issue.severity === "blocking")) {
-    throw new Error(inspection.issues.find((issue) => issue.severity === "blocking")?.message || "视频提示词生成失败");
+  if (engineeringIssues.some((issue) => issue.severity === "blocking")) {
+    const blocking = engineeringIssues.find((issue) => issue.severity === "blocking");
+    const prefix = referenceInspection.issues.length ? "视频提示词引用编号校验失败" : "视频提示词生成失败";
+    throw new Error(`${prefix}：${blocking?.message || "未知错误"}`);
   }
   return {
     text: text.trim(),
     systemPrompt: system.content,
     systemPromptSource: system.source,
     promptContext,
-    engineeringIssues: inspection.issues,
+    engineeringIssues,
     diagnosticFile,
     factSourceSummary,
     groupSummary,
