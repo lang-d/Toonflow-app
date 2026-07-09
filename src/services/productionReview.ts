@@ -9,6 +9,10 @@ export type ProductionReviewTargetType =
   | "storyboardGroup"
   | "storyboardImage"
   | "videoPrompt"
+  | "musicBible"
+  | "musicPlan"
+  | "musicCue"
+  | "musicPrompt"
   | "bgmSuggestion"
   | "videoResult";
 

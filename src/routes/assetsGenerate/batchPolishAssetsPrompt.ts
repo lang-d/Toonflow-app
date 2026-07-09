@@ -3,7 +3,7 @@ import u from "@/utils";
 import * as zod from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { createUnifiedTask } from "@/services/taskCoordinator";
+import { createUnifiedTask, formatUnifiedTaskEnvelope } from "@/services/taskCoordinator";
 const router = express.Router();
 interface OutlineItem {
   description: string;
@@ -82,7 +82,7 @@ export default router.post(
           otherTextPrompt,
         },
       });
-      tasks.push({ assetId: item.assetsId, taskId: task.taskId, legacyTaskId: task.legacyTaskId });
+      tasks.push({ assetId: item.assetsId, ...formatUnifiedTaskEnvelope(task, "asset", item.assetsId) });
     }
     return res.status(200).send(success({ total: tasks.length, tasks }));
   },

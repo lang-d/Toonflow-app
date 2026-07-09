@@ -1,14 +1,9 @@
 import fs from "fs";
 import path from "path";
-import getPath from "./getPath";
-import { findBuiltinDataDir } from "@/services/builtinData";
+import { resolveManualPackage } from "@/services/skillResolver";
 
-function artPromptBaseDirs(source: string, styleName: string) {
-  const dirs = [
-    findBuiltinDataDir("skills", source, styleName),
-    getPath(["skills", source, styleName]),
-  ].filter(Boolean) as string[];
-  return [...new Set(dirs.map((dir) => path.resolve(dir)))];
+function manualKind(source: string) {
+  return source === "story_skills" ? "director" as const : "visual" as const;
 }
 
 /**
@@ -18,20 +13,16 @@ function artPromptBaseDirs(source: string, styleName: string) {
  * @returns 文件内容字符串，未找到时返回空字符串
  */
 export function getArtPrompt(styleName: string, source: string, fileName: string): string {
-  for (const baseDir of artPromptBaseDirs(source, styleName)) {
-    if (!fs.existsSync(baseDir)) continue;
-    const prefixFile = findFileRecursive(baseDir, "prefix.md");
-    const prefixContent = prefixFile ? fs.readFileSync(prefixFile, "utf-8") : "";
-    const target = fileName.endsWith(".md") ? fileName : `${fileName}.md`;
-    const found = findFileRecursive(baseDir, target);
-    if (!found) {
-      if (prefixContent) return prefixContent;
-      continue;
-    }
-    const fileContent = fs.readFileSync(found, "utf-8");
-    return prefixContent ? `${prefixContent}\n${fileContent}` : fileContent;
-  }
-  return "";
+  const baseDir = resolveManualPackage(manualKind(source), styleName);
+  if (!baseDir) return "";
+  const target = fileName.endsWith(".md") ? fileName : `${fileName}.md`;
+  const found = findFileRecursive(baseDir, target);
+  if (!found) return "";
+  const fileContent = fs.readFileSync(found, "utf-8");
+  if (target === "prefix.md") return fileContent;
+  const prefixFile = findFileRecursive(baseDir, "prefix.md");
+  const prefixContent = prefixFile ? fs.readFileSync(prefixFile, "utf-8") : "";
+  return prefixContent ? `${prefixContent}\n${fileContent}` : fileContent;
 }
 /**
  * 传入风格目录名，获取该风格下所有 .md 文件内容，按文件名映射返回
@@ -40,9 +31,8 @@ export function getArtPrompt(styleName: string, source: string, fileName: string
  */
 export function getAllArtPrompts(styleName: string, source: string): Record<string, string> {
   const result: Record<string, string> = {};
-  for (const baseDir of artPromptBaseDirs(source, styleName).reverse()) {
-    if (fs.existsSync(baseDir)) collectMdFiles(baseDir, result);
-  }
+  const baseDir = resolveManualPackage(manualKind(source), styleName);
+  if (baseDir) collectMdFiles(baseDir, result);
   return result;
 }
 

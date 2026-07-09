@@ -3,7 +3,7 @@ import { z } from "zod";
 import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { createUnifiedTask } from "@/services/taskCoordinator";
+import { createUnifiedTask, formatUnifiedTaskEnvelope } from "@/services/taskCoordinator";
 
 const router = express.Router();
 const referenceSchema = z.object({
@@ -67,7 +67,7 @@ export default router.post(
           model,
           describe: "视频工作台批量提示词生成",
         });
-        tasks.push({ trackId: track.trackId, taskId: task.taskId, legacyTaskId: task.legacyTaskId });
+        tasks.push({ trackId: track.trackId, ...formatUnifiedTaskEnvelope(task, "videoTrack", track.trackId) });
       }
       res.status(200).send(success({ message: "开始生成提示词", tasks, requestedConcurrency: concurrentCount }));
     } catch (e) {

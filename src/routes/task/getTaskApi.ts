@@ -2,7 +2,7 @@ import express from "express";
 import u from "@/utils";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { number, z } from "zod";
+import { z } from "zod";
 const router = express.Router();
 export default router.post(
   "/",
@@ -30,7 +30,15 @@ export default router.post(
           qb.andWhere("o_tasks.projectId", projectId);
         }
       })
-      .select("o_tasks.*", "o_project.* ")
+      .select(
+        "o_tasks.*",
+        "o_project.name as name",
+        "o_project.name as projectName",
+        "o_project.type as type",
+        "o_project.type as projectType",
+        "o_project.artStyle as artStyle",
+        "o_project.artStyle as projectArtStyle",
+      )
       .offset(offset)
       .limit(limit)
       .orderBy("o_tasks.id", "desc");

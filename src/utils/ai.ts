@@ -4,10 +4,12 @@ import axios from "axios";
 import crypto from "node:crypto";
 import u from "@/utils";
 import { updateUnifiedTask } from "@/services/taskCoordinator";
+import { createLogger } from "@/logger";
 
 type AiType =
   | "scriptAgent"
   | "productionAgent"
+  | "musicProductionAgent"
   | "storyAgent"
   | "universalAi"
   | "storyAgent:decisionAgent"
@@ -17,6 +19,7 @@ type AiType =
   | "scriptAgent:adaptationStrategyAgent"
   | "scriptAgent:scriptAgent"
   | "productionAgent:decisionAgent"
+  | "musicProductionAgent:decisionAgent"
   | "productionAgent:supervisionAgent"
   | "productionAgent:deriveAssetsAgent"
   | "productionAgent:generateAssetsAgent"
@@ -25,7 +28,7 @@ type AiType =
   | "productionAgent:storyboardPanelAgent"
   | "productionAgent:storyboardTableAgent";
 
-type FnName = "textRequest" | "imageRequest" | "imageSubmit" | "imagePoll" | "videoRequest" | "ttsRequest";
+type FnName = "textRequest" | "imageRequest" | "imageSubmit" | "imagePoll" | "videoRequest" | "ttsRequest" | "musicRequest";
 const IMAGE_PROVIDER_TIMEOUT_MS = 10 * 60 * 1000;
 const IMAGE_PROVIDER_SUBMIT_SOFT_WARN_MS = 90 * 1000;
 const IMAGE_PROVIDER_SUBMIT_HARD_TIMEOUT_MS = 10 * 60 * 1000;
@@ -33,10 +36,12 @@ const IMAGE_PROVIDER_LEASE_RENEW_MS = 30 * 1000;
 const IMAGE_PROVIDER_LEASE_MS = 120 * 1000;
 const IMAGE_PROVIDER_SUBMIT_RETRY_DELAY_MS = 15 * 1000;
 const IMAGE_PROVIDER_POLL_RETRY_DELAY_MS = 15 * 1000;
+const aiLog = createLogger("ai");
 
 const AiTypeValues: AiType[] = [
   "scriptAgent",
   "productionAgent",
+  "musicProductionAgent",
   "storyAgent",
   "universalAi",
   "storyAgent:decisionAgent",
@@ -46,6 +51,7 @@ const AiTypeValues: AiType[] = [
   "scriptAgent:adaptationStrategyAgent",
   "scriptAgent:scriptAgent",
   "productionAgent:decisionAgent",
+  "musicProductionAgent:decisionAgent",
   "productionAgent:supervisionAgent",
   "productionAgent:deriveAssetsAgent",
   "productionAgent:generateAssetsAgent",
@@ -210,6 +216,11 @@ class AiText {
   private async resolveModel(middleware?: any | any[]) {
     const switchAiDevTool = await u.db("o_setting").where("key", "switchAiDevTool").first();
     const modelName = await resolveModelName(this.AiType);
+    aiLog.info("Text model resolved", {
+      event: "text.model.resolved",
+      requestedModel: this.AiType,
+      model: modelName,
+    });
     const sdkFn = await getVendorTemplateFn("textRequest", modelName);
     const baseModel = await sdkFn(this.think, this.thinkLevel);
     const mws = [
@@ -523,6 +534,18 @@ interface VideoConfig {
   mode: VideoMode[];
 }
 
+interface MusicConfig {
+  prompt: string;
+  durationSec?: number;
+  duration?: number;
+  vocalMode?: "instrumental" | "vocal" | "optional" | string;
+  lyrics?: string;
+  referenceList?: Extract<ReferenceList, { type: "audio" }>[];
+  outputFormat?: string;
+  seed?: number;
+  extra?: Record<string, unknown>;
+}
+
 class AiVideo {
   private key: `${string}:${string}`;
   private result: string = "";
@@ -583,10 +606,37 @@ class AiAudio {
     return this;
   }
 }
+class AiMusic {
+  private key: `${string}:${string}`;
+  private result: string = "";
+  constructor(key: `${string}:${string}`) {
+    this.key = key;
+  }
+  async run(input: MusicConfig, taskRecord?: TaskRecord) {
+    const modelName = await resolveModelName(this.key);
+    const exec = async (mn: `${string}:${string}`) => {
+      const fn = await getVendorTemplateFn("musicRequest", mn);
+      await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
+      this.result = await fn(input);
+      if (!this.result) throw new Error("musicRequest did not return audio data");
+      if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
+      return this;
+    };
+    if (taskRecord) {
+      return withTaskRecord(this.key, taskRecord.taskClass, taskRecord.describe, taskRecord.relatedObjects, taskRecord.projectId, exec);
+    }
+    return await exec(modelName);
+  }
+  async save(path: string) {
+    await u.oss.writeFile(path, this.result.replace(/^data:audio\/[^;]+;base64,/, ""));
+    return this;
+  }
+}
 
 export default {
   Text: (AiType: AiType | `${string}:${string}`, think?: boolean, thinkLevel?: 0 | 1 | 2 | 3) => new AiText(AiType, think, thinkLevel),
   Image: (key: `${string}:${string}`) => new AiImage(key),
   Video: (key: `${string}:${string}`) => new AiVideo(key),
   Audio: (key: `${string}:${string}`) => new AiAudio(key),
+  Music: (key: `${string}:${string}`) => new AiMusic(key),
 };

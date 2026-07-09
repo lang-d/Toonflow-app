@@ -1,5 +1,5 @@
 ---
-name: liveaction_urban_storyboard
+name: director_storyboard
 description: 导演分镜提示词技法 · 真人都市
 metaData: director_liveaction_urban_skills
 ---

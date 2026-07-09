@@ -23,12 +23,12 @@ description: >-
 | 操作 | 调用 |
 |------|------|
 | 读取资产列表 | `get_flowData("assets")` |
-| 生成资产图片 | `generate_assets_images({ ids: [资产id列表] })` |
+| 生成资产图片 | `generate_deriveAsset({ ids: [资产id列表] })` |
 
 ### 执行流程
 
 1. 获取 `assets`，收集所有需要生成图片的资产 id
-2. 调用 `generate_assets_images({ ids: [资产id列表] })` 生成图片（异步，发起即返回）
+2. 调用 `generate_deriveAsset({ ids: [资产id列表] })` 生成图片（通过前端确认提交结果）
 
 ### 约束
 

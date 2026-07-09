@@ -7,7 +7,11 @@ import { validateFields } from "@/middleware/middleware";
 import { enqueueVideoGeneration } from "@/utils/videoGenerationQueue";
 import { resolveWorkbenchReferences, validateReferenceLimits } from "@/services/workbenchReference";
 import { inspectVideoPromptEngineering } from "@/services/videoPromptSafetyGuard";
-import { assertVideoDurationSupported, getVideoModelPolicy } from "@/services/videoModelPolicy";
+import {
+  assertVideoDurationSupported,
+  assertVideoModelAvailable,
+  getVideoModelPolicy,
+} from "@/services/videoModelPolicy";
 import { assertTrackStoryboardsReady } from "@/services/storyboardFacts";
 
 const router = express.Router();
@@ -61,6 +65,7 @@ export default router.post(
 
     const durationPolicy = await getVideoModelPolicy(model, { resolution });
     try {
+      assertVideoModelAvailable(durationPolicy);
       assertVideoDurationSupported(durationPolicy, duration);
     } catch (cause) {
       return res.status(400).send(error(u.error(cause).message, { durationPolicy }));

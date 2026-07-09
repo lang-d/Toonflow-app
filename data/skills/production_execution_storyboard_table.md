@@ -5,15 +5,17 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 
 # 阶段4：结构化分镜表写入
 
-本技能只定义执行流程、事实源边界、字段契约和禁止项。分镜设计方法、镜头连续性、资产选择、台词时长等细则放在 `storyboard_table_techniques` 与风格技法中。
+本技能只定义执行流程、事实源边界、字段契约和禁止项。分镜设计方法、镜头连续性、资产选择、台词时长等细则放在 `storyboard_table_techniques` 与当前导演手册的 `director_storyboard_table_narrative` 中。
 
 ## 规则优先级
 
 1. 后端结构化工具和 `StoryboardTableRow` 契约。
 2. 本阶段的事实源边界和禁止项。
-3. `storyboard_table_techniques`、`director_storyboard_table_narrative`、`director_storyboard_table_style` 中的创作方法。
+3. `storyboard_table_techniques` 与当前导演手册 `director_storyboard_table_narrative` 中的创作方法。
 
-如果技法内容与本阶段工具边界冲突，只吸收创作方法，不采用旧输出格式或旧事实源。
+字段、工具、资产、状态、时长、`soundEffects`、分组契约以 `storyboard_table_techniques` 为准；题材拆镜、对话反应、节奏钩子以当前 `director_storyboard_table_narrative` 补充，但不得覆盖工程契约。
+
+如果技法内容与本阶段工具边界冲突，只吸收创作方法，不采用旧输出格式或旧事实源；题材方法只能来自当前加载的导演叙事手册。
 
 ## 必须激活的技法
 
@@ -21,9 +23,9 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 
 - `storyboard_table_techniques`
 - `director_storyboard_table_narrative`
-- `director_storyboard_table_style`
 
 激活后按技法完成拆镜、导演规划对齐、视觉连续性、资产引用、台词时长、转场与分组设计。
+不得激活 `director_storyboard_table_style`；分镜表只继承 `scriptPlan` 中已确定的视觉方案。
 
 ## 唯一写入方式
 
@@ -33,12 +35,14 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 2. `append_storyboard_rows`
 3. `commit_storyboard_table`
 
+续接失败草稿时，先用只读工具 `get_storyboard_generation_draft` 按页读取原 generation；需要用户决定时调用 `await_user_decision`。这两个工具都不是分镜事实写入入口。
+
 不得输出整张表文本、标签化正文、完整结构文本，或要求前端从聊天内容中恢复分镜事实。不得读取或生成旧的视频描述字段作为事实。
 
 ## 执行流程
 
 1. 调用 `get_flowData` 读取 `script`、`scriptPlan`、`assets`。
-2. 激活本阶段要求的通用技法与风格技法。
+2. 激活本阶段要求的通用分镜表技法与当前题材叙事技法。
 3. 先从 `scriptPlan` 建立“场次执行映射”：
    - 表演出口 → `characters[].action` / `characters[].expression/gaze/handAction/posture/movement`；`visibleEmotion` 只写当前画面可见的情绪表现摘要。
    - 空间关系 → `characters[].spatialPosition`。
@@ -58,8 +62,10 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 ## 提交失败处理
 
 - `commit_storyboard_table` 返回 `committed` 时，才视为分镜表完成。
-- `commit_storyboard_table` 返回 `invalid` 或 `failed` 时，必须立刻停止本阶段执行，并向用户报告简短失败原因。
-- `commit_storyboard_table` 返回 `terminal: true`、`GENERATION_SUPERSEDED` 或 `COMMIT_IN_PROGRESS` 时，本轮必须停止；不得自动重新 `begin_storyboard_table`。
+- `commit_storyboard_table` 返回 `invalid` 时，本轮写入立即锁定；不得再次调用 begin/append/commit，也不得新建 generation 绕过失败。
+- `invalid` 后必须解释全部校验问题，给出明确调整方向，并调用 `await_user_decision` 提出一个具体问题；不得只输出工程字段名。
+- 用户下一轮确认调整时，必须先按 `generationId` 调用 `get_storyboard_generation_draft` 读取失败草稿，再创建新 generation；不得把当前正式分镜表误当成失败草稿。
+- `commit_storyboard_table` 返回 `failed`、`GENERATION_SUPERSEDED` 或 `COMMIT_IN_PROGRESS` 时，本轮必须停止并报告工程失败。
 - 所有机器状态字段均使用小写：`writing / invalid / failed / committing / superseded / committed / expired`；`GENERATION_SUPERSEDED`、`COMMIT_IN_PROGRESS` 只作为 `error.code`，不是状态。
 - 不得在同一轮里反复调用 `commit_storyboard_table`。
 - 不得在同一轮里新建 generation 试图绕过失败。

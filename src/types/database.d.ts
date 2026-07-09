@@ -1,4 +1,4 @@
-// @db-hash ba5579f4a654d83a0d3e91d7a29f1ae0
+// @db-hash f3c119b6c2d342791b30005645a92f0d
 //该文件由脚本自动生成，请勿手动修改
 
 export interface memories {
@@ -25,6 +25,33 @@ export interface o_agentDeploy {
   'temperature'?: number | null;
   'type'?: string | null;
   'vendorId'?: string | null;
+}
+export interface o_agentRun {
+  'agentKey': string;
+  'createdAt': number;
+  'currentStage'?: string | null;
+  'currentSubAgent'?: string | null;
+  'errorJson'?: string | null;
+  'finishedAt'?: number | null;
+  'heartbeatAt': number;
+  'id'?: number | null;
+  'isolationKey': string;
+  'messageId'?: string | null;
+  'projectId': number;
+  'reason'?: string | null;
+  'resultJson'?: string | null;
+  'runId': string;
+  'scriptId': number;
+  'startedAt': number;
+  'status': string;
+  'updatedAt': number;
+}
+export interface o_agentRunEvent {
+  'createdAt': number;
+  'eventType': string;
+  'id'?: number | null;
+  'payloadJson'?: string | null;
+  'runId': string;
 }
 export interface o_agentWorkData {
   'createTime'?: number | null;
@@ -89,6 +116,30 @@ export interface o_directorAsset {
   'targetType'?: string | null;
   'updateTime': number;
 }
+export interface o_directorPlanGeneration {
+  'contentHash'?: string | null;
+  'createdAt': number;
+  'errorJson'?: string | null;
+  'expectedSectionCount': number;
+  'generationId': string;
+  'id'?: number | null;
+  'projectId': number;
+  'scriptId': number;
+  'state': string;
+  'textAssetId'?: number | null;
+  'updatedAt': number;
+  'version'?: number | null;
+}
+export interface o_directorPlanGenerationChunk {
+  'chunkIndex': number;
+  'content': string;
+  'contentHash': string;
+  'createdAt': number;
+  'generationId': string;
+  'id'?: number | null;
+  'sectionKey': string;
+  'updatedAt': number;
+}
 export interface o_editImageTask {
   'createTime'?: number | null;
   'deriveAssetId'?: number | null;
@@ -142,6 +193,67 @@ export interface o_modelPrompt {
   'model'?: string | null;
   'path'?: string | null;
   'vendorId'?: string | null;
+}
+export interface o_musicBible {
+  'content': string;
+  'createTime': number;
+  'id'?: number;
+  'projectId': number;
+  'sourceSummaryJson'?: string;
+  'state'?: string;
+  'styleProfileJson'?: string;
+  'title'?: string | null;
+  'updateTime': number;
+  'version': number;
+}
+export interface o_musicCue {
+  'createTime': number;
+  'cueKey': string;
+  'cueType': string;
+  'durationSec'?: number | null;
+  'endRefJson'?: string;
+  'id'?: number;
+  'musicSpecJson'?: string;
+  'narrativePurpose'?: string | null;
+  'planId': number;
+  'planVersion': number;
+  'projectId': number;
+  'promptBrief'?: string | null;
+  'scriptId'?: number | null;
+  'startRefJson'?: string;
+  'state'?: string;
+  'title'?: string | null;
+  'updateTime': number;
+}
+export interface o_musicCueAsset {
+  'assetsId'?: number | null;
+  'childAssetId'?: number | null;
+  'compiledPromptJson'?: string;
+  'createTime': number;
+  'cueId': number;
+  'errorReason'?: string | null;
+  'id'?: number;
+  'model'?: string | null;
+  'projectId': number;
+  'prompt'?: string | null;
+  'selected'?: number;
+  'state'?: string;
+  'updateTime': number;
+  'version': number;
+}
+export interface o_musicPlan {
+  'bibleId': number;
+  'bibleVersion': number;
+  'content': string;
+  'createTime': number;
+  'cueSheetJson'?: string;
+  'id'?: number;
+  'mode': string;
+  'projectId': number;
+  'scriptId'?: number | null;
+  'state'?: string;
+  'updateTime': number;
+  'version': number;
 }
 export interface o_novel {
   'chapter'?: string | null;
@@ -540,18 +652,26 @@ export interface o_workbenchMergedReference {
 export interface DB {
   "memories": memories;
   "o_agentDeploy": o_agentDeploy;
+  "o_agentRun": o_agentRun;
+  "o_agentRunEvent": o_agentRunEvent;
   "o_agentWorkData": o_agentWorkData;
   "o_artStyle": o_artStyle;
   "o_assets": o_assets;
   "o_assets2Storyboard": o_assets2Storyboard;
   "o_assetsRole2Audio": o_assetsRole2Audio;
   "o_directorAsset": o_directorAsset;
+  "o_directorPlanGeneration": o_directorPlanGeneration;
+  "o_directorPlanGenerationChunk": o_directorPlanGenerationChunk;
   "o_editImageTask": o_editImageTask;
   "o_event": o_event;
   "o_eventChapter": o_eventChapter;
   "o_image": o_image;
   "o_imageFlow": o_imageFlow;
   "o_modelPrompt": o_modelPrompt;
+  "o_musicBible": o_musicBible;
+  "o_musicCue": o_musicCue;
+  "o_musicCueAsset": o_musicCueAsset;
+  "o_musicPlan": o_musicPlan;
   "o_novel": o_novel;
   "o_productionReviewFeedback": o_productionReviewFeedback;
   "o_productionReviewSuggestion": o_productionReviewSuggestion;

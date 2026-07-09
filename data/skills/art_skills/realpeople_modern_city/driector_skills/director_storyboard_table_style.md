@@ -1,5 +1,5 @@
 ---
-name: liveaction_urban_storyboard_table
+name: director_storyboard_table_style
 description: 分镜表真人都市约束 — 定义真人都市风格在分镜表中的光影氛围规范、摄影质感、动作节奏、环境动态、运镜与转场禁忌，并针对Seedance 2.0做深度适配。适用于任何都市叙事类型。
 metaData: director_skills, seedance2.0_adapted
 ---

@@ -15,7 +15,7 @@ description: 阶段5执行规则：读取正式结构化分镜，激活图片 Pr
 
 `scriptPlan` 只提供全片视觉原则，不能覆盖或补写 `tableRowJson` 中的镜头事实。
 
-本阶段不决定项目画风。分镜图 Prompt 的空间、可见性和静态画面规则是通用规则；具体媒介、材质、色彩、渲染方式和风格锚词必须来自当前项目已激活的 art skill 或 `scriptPlan`。
+本阶段不决定项目画风。分镜图 Prompt 的空间、可见性和静态画面规则是通用规则；具体媒介、材质、色彩、渲染方式和风格锚点只能来自 `scriptPlan` 明确写出的视觉方案、`tableRowJson` 事实或当前参考资产。不得根据 `artStyle` 名、视觉手册名、导演手册名或题材名自行补风格。
 
 ## 事实源边界
 
@@ -31,6 +31,7 @@ description: 阶段5执行规则：读取正式结构化分镜，激活图片 Pr
 - `storyboard_prompt_techniques`
 
 本阶段不得激活 `director_storyboard`，不得把画风手册中的固定质量词、英文示例、负向词块或示例剧情注入图片 Prompt。
+本阶段也不得激活或读取 `director_storyboard_table_style`；分镜表的视觉原则只能从已落入 `scriptPlan` 和结构化分镜事实的内容继承。
 
 ## 唯一写入范围
 

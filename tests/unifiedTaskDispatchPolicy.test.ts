@@ -4,43 +4,66 @@ import { shouldDeferImageFlowCandidate } from "../src/services/unifiedTaskDispat
 
 test("image-flow provider backlog defers new provider submissions", () => {
   const defer = shouldDeferImageFlowCandidate(
-    { businessType: "image-flow", taskType: "image", projectId: 10, providerTaskId: null },
+    { businessType: "image-flow", taskType: "image", handler: "image-flow", providerTaskId: null },
     {
       imageLimit: 5,
-      providerBacklogCount: 5,
-      providerBacklogProjectIds: new Set([20]),
-      runningImageFlowProjectIds: new Set(),
-      runningImageFlowSubmitCount: 0,
+      occupiedImageCount: 5,
     },
   );
 
   assert.equal(defer, true);
 });
 
-test("image-flow backlog from same project defers new provider submission", () => {
+test("image generation below the global limit allows another provider submission", () => {
   const defer = shouldDeferImageFlowCandidate(
-    { businessType: "image-flow", taskType: "image", projectId: 10, providerTaskId: null },
+    { businessType: "image-flow", taskType: "image", handler: "image-flow", providerTaskId: null },
     {
       imageLimit: 5,
-      providerBacklogCount: 1,
-      providerBacklogProjectIds: new Set([10]),
-      runningImageFlowProjectIds: new Set(),
-      runningImageFlowSubmitCount: 0,
+      occupiedImageCount: 4,
     },
   );
 
-  assert.equal(defer, true);
+  assert.equal(defer, false);
+});
+
+test("asset and storyboard image tasks share the global image limit", () => {
+  const assetDeferred = shouldDeferImageFlowCandidate(
+    { taskType: "asset", handler: "asset-image", providerTaskId: null },
+    {
+      imageLimit: 5,
+      occupiedImageCount: 5,
+    },
+  );
+  const storyboardDeferred = shouldDeferImageFlowCandidate(
+    { taskType: "storyboard", handler: "storyboard-image", providerTaskId: null },
+    {
+      imageLimit: 5,
+      occupiedImageCount: 5,
+    },
+  );
+
+  assert.equal(assetDeferred, true);
+  assert.equal(storyboardDeferred, true);
+});
+
+test("non-image tasks do not use the global image gate", () => {
+  const defer = shouldDeferImageFlowCandidate(
+    { taskType: "prompt", handler: "asset-prompt", providerTaskId: null },
+    {
+      imageLimit: 5,
+      occupiedImageCount: 5,
+    },
+  );
+
+  assert.equal(defer, false);
 });
 
 test("image-flow candidate with provider task id is not deferred by submit backlog policy", () => {
   const defer = shouldDeferImageFlowCandidate(
-    { businessType: "image-flow", taskType: "image", projectId: 10, providerTaskId: "provider-1" },
+    { businessType: "image-flow", taskType: "image", handler: "image-flow", providerTaskId: "provider-1" },
     {
       imageLimit: 5,
-      providerBacklogCount: 5,
-      providerBacklogProjectIds: new Set([10]),
-      runningImageFlowProjectIds: new Set([10]),
-      runningImageFlowSubmitCount: 5,
+      occupiedImageCount: 5,
     },
   );
 

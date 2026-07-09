@@ -28,7 +28,7 @@ import {
   storageMode,
 } from "@/services/storagePaths";
 import { isStorageMaintenanceActive } from "@/services/storageMigration";
-import { builtinDataCandidates } from "@/services/builtinData";
+import { skillRootCandidates } from "@/services/skillResolver";
 import { initLogger, createLogger } from "@/logger";
 
 const app = express();
@@ -216,7 +216,7 @@ async function startServeOnce(options: { startQueue?: boolean; portRetryMs?: num
   );
   // skills 静态资源
   const skillsDir = u.getPath("skills");
-  const skillsDirs = [skillsDir, ...builtinDataCandidates("skills")].filter((dir, index, arr) => arr.indexOf(dir) === index);
+  const skillsDirs = skillRootCandidates();
   if (!fs.existsSync(skillsDir)) {
     fs.mkdirSync(skillsDir, { recursive: true });
   }

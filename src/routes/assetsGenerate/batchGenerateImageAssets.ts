@@ -3,7 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { createUnifiedTask } from "@/services/taskCoordinator";
+import { createUnifiedTask, formatUnifiedTaskEnvelope } from "@/services/taskCoordinator";
 import { extensionFromDataUrl, taskInputPath } from "@/services/backgroundTaskHandlers";
 
 const router = express.Router();
@@ -126,7 +126,7 @@ export default router.post("/", validateFields(requestSchema), async (req, res) 
         referencePath,
       },
     });
-    tasks.push({ assetId: item.id, imageId: Number(imageId), taskId: task.taskId, legacyTaskId: task.legacyTaskId });
+    tasks.push({ assetId: item.id, imageId: Number(imageId), ...formatUnifiedTaskEnvelope(task, "asset", item.id) });
   }
   return res.status(200).send(success({ total: tasks.length, tasks }));
 });

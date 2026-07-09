@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { musicEpisodeIsolationKey, musicProjectIsolationKey } from "@/services/musicStageState";
 const router = express.Router();
 
 export default router.post(
@@ -10,12 +11,17 @@ export default router.post(
   validateFields({
     projectId: z.number(),
     episodesId: z.number().optional(),
-    agentType: z.enum(["scriptAgent", "productionAgent"]),
+    agentType: z.enum(["scriptAgent", "productionAgent", "musicProductionAgent"]),
     type: z.enum(["message", "summary", "all"]).optional(),
   }),
   async (req, res) => {
     const { projectId, episodesId,agentType, type = "all" } = req.body;
-    const isolationKey = `${projectId}:${agentType}${episodesId ? `:${episodesId}` : ""}`;
+    const isolationKey =
+      agentType === "musicProductionAgent"
+        ? episodesId
+          ? musicEpisodeIsolationKey(projectId, episodesId)
+          : musicProjectIsolationKey(projectId)
+        : `${projectId}:${agentType}${episodesId ? `:${episodesId}` : ""}`;
 
     if (type === "all") {
       await u.db("memories").where({ isolationKey }).del();

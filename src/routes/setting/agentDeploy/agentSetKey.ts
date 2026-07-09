@@ -38,6 +38,11 @@ export default router.post(
           modelName: "toonflow:claude-sonnet-4-6",
           vendorId: "toonflow",
         });
+        await u.db("o_agentDeploy").where("key", "musicProductionAgent").update({
+          model: "claude-sonnet-4-6",
+          modelName: "toonflow:claude-sonnet-4-6",
+          vendorId: "toonflow",
+        });
         await u.db("o_agentDeploy").where("key", "universalAi").update({
           model: "claude-haiku-4-5",
           modelName: "toonflow:claude-haiku-4-5-20251001",

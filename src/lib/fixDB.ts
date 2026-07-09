@@ -94,7 +94,131 @@ export default async (knex: Knex): Promise<void> => {
       });
     }
   };
+  const ensureMusicTables = async () => {
+    if (!(await knex.schema.hasTable("o_musicBible"))) {
+      await knex.schema.createTable("o_musicBible", (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("version").notNullable();
+        table.text("title");
+        table.text("content").notNullable();
+        table.text("styleProfileJson").notNullable().defaultTo("{}");
+        table.text("sourceSummaryJson").notNullable().defaultTo("{}");
+        table.string("state").notNullable().defaultTo("complete");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+      });
+    }
+    await addColumn("o_musicBible", "title", "text");
+    await addColumn("o_musicBible", "styleProfileJson", "text");
+    await addColumn("o_musicBible", "sourceSummaryJson", "text");
+    await addColumn("o_musicBible", "state", "string");
+    await knex("o_musicBible").whereNull("styleProfileJson").update({ styleProfileJson: "{}" });
+    await knex("o_musicBible").whereNull("sourceSummaryJson").update({ sourceSummaryJson: "{}" });
+    await knex("o_musicBible").whereNull("state").update({ state: "complete" });
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_bible_version ON o_musicBible(projectId, version)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_bible_project_state ON o_musicBible(projectId, state)");
+
+    if (!(await knex.schema.hasTable("o_musicPlan"))) {
+      await knex.schema.createTable("o_musicPlan", (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId");
+        table.string("mode").notNullable();
+        table.integer("bibleId").notNullable();
+        table.integer("bibleVersion").notNullable();
+        table.integer("version").notNullable();
+        table.text("content").notNullable();
+        table.text("cueSheetJson").notNullable().defaultTo("[]");
+        table.string("state").notNullable().defaultTo("complete");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+      });
+    }
+    await addColumn("o_musicPlan", "cueSheetJson", "text");
+    await addColumn("o_musicPlan", "state", "string");
+    await knex("o_musicPlan").whereNull("cueSheetJson").update({ cueSheetJson: "[]" });
+    await knex("o_musicPlan").whereNull("state").update({ state: "complete" });
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_plan_scope ON o_musicPlan(projectId, scriptId, mode, version)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_plan_bible ON o_musicPlan(bibleId)");
+
+    if (!(await knex.schema.hasTable("o_musicCue"))) {
+      await knex.schema.createTable("o_musicCue", (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId");
+        table.integer("planId").notNullable();
+        table.integer("planVersion").notNullable();
+        table.string("cueKey").notNullable();
+        table.string("cueType").notNullable();
+        table.text("title");
+        table.text("narrativePurpose");
+        table.text("startRefJson").notNullable().defaultTo("{}");
+        table.text("endRefJson").notNullable().defaultTo("{}");
+        table.integer("durationSec");
+        table.text("promptBrief");
+        table.text("musicSpecJson").notNullable().defaultTo("{}");
+        table.string("state").notNullable().defaultTo("ready");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+      });
+    }
+    await addColumn("o_musicCue", "startRefJson", "text");
+    await addColumn("o_musicCue", "endRefJson", "text");
+    await addColumn("o_musicCue", "durationSec", "integer");
+    await addColumn("o_musicCue", "promptBrief", "text");
+    await addColumn("o_musicCue", "musicSpecJson", "text");
+    await addColumn("o_musicCue", "state", "string");
+    await knex("o_musicCue").whereNull("startRefJson").update({ startRefJson: "{}" });
+    await knex("o_musicCue").whereNull("endRefJson").update({ endRefJson: "{}" });
+    await knex("o_musicCue").whereNull("musicSpecJson").update({ musicSpecJson: "{}" });
+    await knex("o_musicCue").whereNull("state").update({ state: "ready" });
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_cue_plan_key ON o_musicCue(planId, cueKey)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_cue_scope ON o_musicCue(projectId, scriptId)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_cue_plan ON o_musicCue(planId)");
+
+    if (!(await knex.schema.hasTable("o_musicCueAsset"))) {
+      await knex.schema.createTable("o_musicCueAsset", (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("cueId").notNullable();
+        table.integer("version").notNullable();
+        table.integer("assetsId");
+        table.integer("childAssetId");
+        table.text("prompt");
+        table.text("compiledPromptJson").notNullable().defaultTo("{}");
+        table.text("model");
+        table.string("state").notNullable().defaultTo("complete");
+        table.text("errorReason");
+        table.integer("selected").notNullable().defaultTo(0);
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+      });
+    }
+    await addColumn("o_musicCueAsset", "assetsId", "integer");
+    await addColumn("o_musicCueAsset", "childAssetId", "integer");
+    await addColumn("o_musicCueAsset", "compiledPromptJson", "text");
+    await addColumn("o_musicCueAsset", "model", "text");
+    await addColumn("o_musicCueAsset", "state", "string");
+    await addColumn("o_musicCueAsset", "errorReason", "text");
+    await addColumn("o_musicCueAsset", "selected", "integer");
+    await knex("o_musicCueAsset").whereNull("compiledPromptJson").update({ compiledPromptJson: "{}" });
+    await knex("o_musicCueAsset").whereNull("state").update({ state: "complete" });
+    await knex("o_musicCueAsset").whereNull("selected").update({ selected: 0 });
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_cue_asset_version ON o_musicCueAsset(cueId, version)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_cue_asset_scope ON o_musicCueAsset(projectId, cueId)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_cue_asset_selected ON o_musicCueAsset(cueId, selected)");
+  };
   await fixAssetSchema(knex);
+  await ensureMusicTables();
 
   // 添加新字段
   await addColumn("o_prompt", "useData", "text");
@@ -159,8 +283,30 @@ export default async (knex: Knex): Promise<void> => {
       disabled: false,
     });
   }
+  if (!(await knex("o_agentDeploy").where("key", "musicProductionAgent").first())) {
+    await knex("o_agentDeploy").insert({
+      model: "",
+      modelName: "",
+      vendorId: null,
+      key: "musicProductionAgent",
+      name: "配乐生产Agent",
+      desc: "独立配乐生产阶段，用于音乐创作讨论和配乐任务调度",
+      disabled: false,
+    });
+  }
+  const copyAgentDeployModelIfEmpty = async (targetKey: string, sourceKey: string) => {
+    const target = await knex("o_agentDeploy").where("key", targetKey).first();
+    const source = await knex("o_agentDeploy").where("key", sourceKey).first();
+    if (!target || !source?.modelName || target.modelName) return;
+    await knex("o_agentDeploy").where("key", targetKey).update({
+      model: source.model || "",
+      modelName: source.modelName,
+      vendorId: source.vendorId ?? null,
+    });
+  };
   const advancedAgentList = [
     { key: "storyAgent:decisionAgent", name: "Story Agent: Decision", desc: "Story creation and annotation revision" },
+    { key: "musicProductionAgent:decisionAgent", name: "配乐生产Agent:决策层", desc: "配乐创作讨论和任务调度" },
     { key: "scriptAgent:decisionAgent", name: "剧本Agent:决策层", desc: "决策层" },
     { key: "scriptAgent:supervisionAgent", name: "剧本Agent:监督层", desc: "监督层" },
     { key: "scriptAgent:storySkeletonAgent", name: "剧本Agent:故事骨架", desc: "故事骨架生成" },
@@ -191,6 +337,9 @@ export default async (knex: Knex): Promise<void> => {
       });
     }
   }
+  await copyAgentDeployModelIfEmpty("musicProductionAgent", "productionAgent");
+  await copyAgentDeployModelIfEmpty("musicProductionAgent:decisionAgent", "productionAgent:decisionAgent");
+  await copyAgentDeployModelIfEmpty("musicProductionAgent:decisionAgent", "productionAgent");
   //矫正提示词
   await knex("o_prompt").where("type", "scriptAssetExtraction").update({
     data: `---\nname: universal_agent\ndescription: 专注于从剧本内容中提取所使用的资产（角色、场景、道具）并生成结构化资产列表的助手。\n---\n\n# Script Assets Extract\n\n你是一个专业的剧本内容分析助手，专注于从剧本文本中识别和提取所有涉及的资产（角色、场景、道具），并为每项资产生成可供下游制作流程使用的结构化描述和提示词。\n\n## 何时使用\n\n用户提供剧本内容，你需要逐段阅读并提取其中涉及的所有资产（人物角色、场景地点、道具物件），输出为结构化的资产列表。产出的资产描述将用于后续 AI 图片生成和制作流程。\n\n## 与系统的对应关系\n\n- 资产类型：\n  - \`role\` — 角色（对应 \`o_assets.type = "role"\`）\n  - \`scene\` — 场景（对应 \`o_assets.type = "scene"\`）\n  - \`tool\` — 道具（对应 \`o_assets.type = "tool"\`）\n- 下游用途：资产提示词生成 → AI 资产图生成 → 分镜制作\n\n## 输出要求\n\n**必须通过调用 \`resultTool\` 工具返回结果**，禁止以纯文本、Markdown 表格或 JSON 代码块等形式直接输出资产列表。\n\`resultTool\` 的 schema 会对字段类型和枚举值做强校验，调用时请严格按照下方字段定义填写，确保数据结构正确、字段完整、类型匹配。\n\n每个资产对象包含以下字段：\n\n| 字段 | 类型 | 必填 | 说明 |\n| ---- | ---- | ---- | ---- |\n| \`name\` | string | 是 | 资产名称，使用剧本中的原始称呼,不做其他多余描述 |\n| \`desc\` | string | 是 | 资产描述，30-80 字的视觉化描述 |\n| \`prompt\` | string | 是 | 生成提示词，英文，用于 AI 图片生成 |\n| \`type\` | enum | 是 | 资产类型：\`role\` / \`scene\` / \`tool\`  |\n\n## 提取规则\n\n### 角色（role）\n\n- 提取剧本中出现的所有有名字的角色\n- \`desc\`：包含性别、外貌特征、服饰风格、体态气质等视觉要素，需在描述开头明确标注角色性别（如"男性，……"或"女性，……"）\n- \`prompt\`：英文提示词，描述角色的外观特征，需以性别词开头（如 \`a young man, ...\` 或 \`a young woman, ...\`），适用于 AI 角色图生成\n- 同一角色有多个称呼时，取最常用的作为 \`name\`\n- 无名龙套（如"路人甲"、"士兵"）可跳过，除非其造型对剧情有重要视觉意义\n\n### 场景（scene）\n\n- 提取剧本中出现的所有场景/地点\n- \`desc\`：包含空间结构、光照氛围、关键陈设、色调基调等视觉要素\n- \`prompt\`：英文提示词，描述场景的整体视觉风格，适用于 AI 场景图生成\n- 同一场景的不同状态（如白天/夜晚）不重复提取，在 \`desc\` 中注明即可\n\n### 道具（tool）\n\n- 提取剧本中出现的重要道具/物品\n- \`desc\`：包含外观形状、颜色材质、尺寸参考、特殊效果等视觉要素\n- \`prompt\`：英文提示词，描述道具的外观细节，适用于 AI 道具图生成\n- 仅提取有独立视觉意义或剧情功能的道具，通用物品可跳过\n\n\n## 提示词（prompt）生成规范\n\n- 采用逗号分隔的关键词/短语格式\n- 优先描述**视觉特征**，避免抽象概念\n- 包含风格关键词（如 anime style, manga style 等，根据项目风格决定）\n- 角色 prompt 示例：\`a young man, sharp eyebrows, black hair, pale skin, wearing a gray Taoist robe, slender build, cold expression\`\n- 场景 prompt 示例：\`dark cave interior, glowing crystals on walls, misty atmosphere, dim blue lighting, stone altar in center\`\n- 道具 prompt 示例：\`ancient jade pendant, oval shape, translucent green, carved dragon pattern, glowing faintly\`\n\n## 提取流程\n\n1. 通读剧本全文，识别所有出现的角色、场景、道具\n2. 对每个资产生成结构化的 \`name\`、\`desc\`、\`prompt\`、\`type\`\n3. 去重：同一资产不重复提取\n4. **必须通过调用 \`resultTool\` 工具输出完整资产列表**，不要分多次调用，一次性将所有资产放入 \`assetsList\` 数组中提交\n\n## 提取原则\n\n1. **忠于剧本**：所有提取基于剧本中的实际内容，不臆造未出现的资产\n2. **视觉优先**：描述和提示词聚焦视觉特征，便于 AI 图片生成\n3. **精简实用**：只提取对制作有实际意义的资产，避免过度提取\n4. **分类准确**：严格按照 role/scene/tool 分类，不混淆\n5. **提示词质量**：英文提示词应具体、可执行，能直接用于 AI 图片生成\n\n## 注意事项\n\n- 资产列表中**不要包含剧本内容本身**，仅提取所使用到的资产\n- 角色的随身物品如果有独立剧情功能，应单独作为道具提取\n- 场景中的固定陈设不需要单独提取为道具，除非该物件有独立剧情作用`,
@@ -666,6 +815,99 @@ export default async (knex: Knex): Promise<void> => {
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_storyboard_generation_row ON o_storyboardGenerationRow(generationId, rowIndex)",
   );
 
+  if (!(await knex.schema.hasTable("o_directorPlanGeneration"))) {
+    await knex.schema.createTable("o_directorPlanGeneration", (table) => {
+      table.string("generationId").primary();
+      table.integer("projectId").notNullable();
+      table.integer("scriptId").notNullable();
+      table.integer("expectedSectionCount").notNullable().defaultTo(9);
+      table.string("state").notNullable().defaultTo("writing");
+      table.integer("textAssetId");
+      table.integer("version");
+      table.string("contentHash");
+      table.text("errorJson");
+      table.integer("createdAt").notNullable();
+      table.integer("updatedAt").notNullable();
+    });
+  }
+  await knex.raw(
+    "CREATE INDEX IF NOT EXISTS idx_director_plan_generation_scope ON o_directorPlanGeneration(projectId, scriptId, state)",
+  );
+  await knex.raw(
+    "CREATE INDEX IF NOT EXISTS idx_director_plan_generation_expiry ON o_directorPlanGeneration(state, updatedAt)",
+  );
+
+  if (!(await knex.schema.hasTable("o_agentRun"))) {
+    await knex.schema.createTable("o_agentRun", (table) => {
+      table.increments("id").primary();
+      table.string("runId").notNullable().unique();
+      table.string("agentKey").notNullable();
+      table.integer("projectId").notNullable();
+      table.integer("scriptId").notNullable();
+      table.string("isolationKey").notNullable();
+      table.string("messageId");
+      table.string("status").notNullable().defaultTo("running");
+      table.string("currentStage");
+      table.string("currentSubAgent");
+      table.text("reason");
+      table.text("errorJson");
+      table.text("resultJson");
+      table.integer("heartbeatAt").notNullable();
+      table.integer("startedAt").notNullable();
+      table.integer("finishedAt");
+      table.integer("createdAt").notNullable();
+      table.integer("updatedAt").notNullable();
+    });
+  }
+  await addColumn("o_agentRun", "messageId", "string");
+  await addColumn("o_agentRun", "currentStage", "string");
+  await addColumn("o_agentRun", "currentSubAgent", "string");
+  await addColumn("o_agentRun", "reason", "text");
+  await addColumn("o_agentRun", "errorJson", "text");
+  await addColumn("o_agentRun", "resultJson", "text");
+  await addColumn("o_agentRun", "finishedAt", "integer");
+  await knex.raw(
+    "CREATE INDEX IF NOT EXISTS idx_agent_run_scope_status ON o_agentRun(agentKey, projectId, scriptId, status)",
+  );
+  await knex.raw("CREATE INDEX IF NOT EXISTS idx_agent_run_run_id ON o_agentRun(runId)");
+  await knex.raw("CREATE INDEX IF NOT EXISTS idx_agent_run_heartbeat ON o_agentRun(status, heartbeatAt)");
+  await knex.raw(
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_run_running_scope ON o_agentRun(agentKey, projectId, scriptId) WHERE status = 'running'",
+  );
+
+  if (!(await knex.schema.hasTable("o_agentRunEvent"))) {
+    await knex.schema.createTable("o_agentRunEvent", (table) => {
+      table.increments("id").primary();
+      table.string("runId").notNullable();
+      table.string("eventType").notNullable();
+      table.text("payloadJson");
+      table.integer("createdAt").notNullable();
+    });
+  }
+  await knex.raw("CREATE INDEX IF NOT EXISTS idx_agent_run_event_run_id ON o_agentRunEvent(runId, id)");
+
+  if (!(await knex.schema.hasTable("o_directorPlanGenerationChunk"))) {
+    await knex.schema.createTable("o_directorPlanGenerationChunk", (table) => {
+      table.increments("id").primary();
+      table.string("generationId").notNullable();
+      table.string("sectionKey").notNullable();
+      table.integer("chunkIndex").notNullable();
+      table.text("content").notNullable();
+      table.string("contentHash").notNullable();
+      table.integer("createdAt").notNullable();
+      table.integer("updatedAt").notNullable();
+      table.unique(["generationId", "sectionKey", "chunkIndex"], {
+        indexName: "uq_director_plan_generation_chunk",
+      });
+    });
+  }
+  await knex.raw(
+    "CREATE INDEX IF NOT EXISTS idx_director_plan_generation_chunk_order ON o_directorPlanGenerationChunk(generationId, sectionKey, chunkIndex)",
+  );
+  await knex.raw(
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_director_plan_generation_chunk ON o_directorPlanGenerationChunk(generationId, sectionKey, chunkIndex)",
+  );
+
   if (!(await knex.schema.hasTable("o_productionReviewSuggestion"))) {
     await knex.schema.createTable("o_productionReviewSuggestion", (table) => {
       table.increments("id").primary();
@@ -739,6 +981,10 @@ export default async (knex: Knex): Promise<void> => {
     "o_agentWorkData",
     "o_video",
     "o_videoTrack",
+    "o_musicBible",
+    "o_musicPlan",
+    "o_musicCue",
+    "o_musicCueAsset",
     "o_workbenchMergedReference",
     "o_directorAsset",
     "o_editImageTask",
@@ -774,6 +1020,10 @@ export default async (knex: Knex): Promise<void> => {
     ["o_textAsset", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_video", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_videoTrack", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_musicBible", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_musicPlan", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_musicCue", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_musicCueAsset", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_workbenchMergedReference", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_directorAsset", "COALESCE(NEW.projectId, OLD.projectId)"],
   ] as const;

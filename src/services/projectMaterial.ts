@@ -6,7 +6,7 @@ import { v4 as uuid } from "uuid";
 import u from "@/utils";
 import { projectDirectory } from "@/services/storagePaths";
 import { createTextAsset, getTextAssetContent, latestTextAsset } from "@/services/textAsset";
-import { readBuiltinDataFile } from "@/services/builtinData";
+import { readConfiguredSkill } from "@/services/skillResolver";
 
 export const PROJECT_MATERIAL_CATEGORIES = [
   "outline",
@@ -284,8 +284,7 @@ async function readMaterialSnippet(id: number, projectId: number) {
 }
 
 async function readContextPackSkill(fileName: string, fallback: string) {
-  const skill = await readBuiltinDataFile("skills", fileName);
-  return skill?.content || fallback;
+  return (await readConfiguredSkill(fileName, fallback)).content;
 }
 
 function extractXmlContent(text: string, tag: string) {

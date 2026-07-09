@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { builtinDataCandidates } from "@/services/builtinData";
-import { userDataPath } from "@/services/storagePaths";
+import getPath from "@/utils/getPath";
 import { RUNTIME_API_HOST, RUNTIME_API_PORT } from "@/runtime/runtimeProtocol";
+import { manualRootCandidates, manualRootName as resolvedManualRootName } from "@/services/skillResolver";
 
 export type ProjectManualKind = "visual" | "director";
 
@@ -23,20 +23,15 @@ function readMd(filePath: string): string {
 }
 
 export function manualRootName(kind: ProjectManualKind) {
-  return kind === "visual" ? "art_skills" : "story_skills";
+  return resolvedManualRootName(kind);
 }
 
 export function userManualRoot(kind: ProjectManualKind) {
-  return userDataPath("skills", manualRootName(kind));
+  return getPath(["skills", manualRootName(kind)]);
 }
 
 export function projectManualRoots(kind: ProjectManualKind) {
-  const rootName = manualRootName(kind);
-  const roots = [
-    ...builtinDataCandidates("skills", rootName),
-    userManualRoot(kind),
-  ].map((item) => path.resolve(item));
-  return [...new Set(roots)];
+  return manualRootCandidates(kind);
 }
 
 export function manualExistsInAnyRoot(kind: ProjectManualKind, key: string) {
@@ -58,15 +53,13 @@ async function readImages(kind: ProjectManualKind, key: string, manualDir: strin
 
 export async function listProjectManuals(kind: ProjectManualKind, dataMap: ManualDataField[]) {
   const entries = new Map<string, string>();
-  const userRoot = path.resolve(userManualRoot(kind));
   for (const root of projectManualRoots(kind)) {
     if (!fs.existsSync(root)) continue;
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const manualDir = path.join(root, entry.name);
       if (!fs.existsSync(path.join(manualDir, "README.md"))) continue;
-      if (root === userRoot) entries.set(entry.name, manualDir);
-      else if (!entries.has(entry.name)) entries.set(entry.name, manualDir);
+      if (!entries.has(entry.name)) entries.set(entry.name, manualDir);
     }
   }
 

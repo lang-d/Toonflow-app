@@ -100,6 +100,10 @@ async function collectProjectTables(database: any, projectId: number): Promise<S
       "o_storyboard",
       "o_video",
       "o_videoTrack",
+      "o_musicBible",
+      "o_musicPlan",
+      "o_musicCue",
+      "o_musicCueAsset",
       "o_workbenchMergedReference",
       "o_directorAsset",
       "o_storyArtifact",
@@ -382,6 +386,10 @@ export async function importPortableProject(sourceDirectory: string, database: a
     "o_agentWorkData",
     "o_video",
     "o_videoTrack",
+    "o_musicBible",
+    "o_musicPlan",
+    "o_musicCue",
+    "o_musicCueAsset",
     "o_workbenchMergedReference",
     "o_directorAsset",
     "o_storyArtifact",
@@ -435,6 +443,10 @@ export async function importPortableProject(sourceDirectory: string, database: a
       trackId: "o_videoTrack",
       videoTrackId: "o_videoTrack",
       videoId: "o_video",
+      bibleId: "o_musicBible",
+      planId: "o_musicPlan",
+      cueId: "o_musicCue",
+      childAssetId: "o_assets",
       taskCenterId: "o_tasks",
       legacyTaskId: "o_tasks",
     };
@@ -485,6 +497,10 @@ export async function importPortableProject(sourceDirectory: string, database: a
       ["videoTrackId", "o_videoTrack"],
       ["videoId", "o_video"],
       ["selectVideoId", "o_video"],
+      ["bibleId", "o_musicBible"],
+      ["planId", "o_musicPlan"],
+      ["cueId", "o_musicCue"],
+      ["childAssetId", "o_assets"],
       ["taskCenterId", "o_tasks"],
       ["legacyTaskId", "o_tasks"],
     ];
@@ -509,6 +525,12 @@ export async function importPortableProject(sourceDirectory: string, database: a
           row.targetId = Number.isFinite(numeric) ? mapId("o_videoTrack", numeric) : row.targetId;
         } else if (targetType === "videoResult") {
           row.targetId = mapId("o_video", row.targetId);
+        } else if (targetType === "musicBible") {
+          row.targetId = mapId("o_musicBible", row.targetId);
+        } else if (targetType === "musicPlan") {
+          row.targetId = mapId("o_musicPlan", row.targetId);
+        } else if (targetType === "musicCue" || targetType === "musicPrompt") {
+          row.targetId = mapId("o_musicCue", row.targetId);
         }
       } else {
         row.targetId = /storyboard/i.test(String(row.targetType))
@@ -581,6 +603,10 @@ export async function importPortableProject(sourceDirectory: string, database: a
     "o_projectMaterial",
     "o_textAsset",
     "o_videoTrack",
+    "o_musicBible",
+    "o_musicPlan",
+    "o_musicCue",
+    "o_musicCueAsset",
     "o_storyboard",
     "o_video",
     "o_workbenchMergedReference",

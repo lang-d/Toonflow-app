@@ -71,6 +71,8 @@ export interface StoryboardTableIssue {
   index: number;
   field: string;
   message: string;
+  code?: string;
+  details?: Record<string, unknown>;
 }
 
 function text(value: unknown) {

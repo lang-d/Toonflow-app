@@ -457,13 +457,13 @@ function buildGenerationConstraints() {
 - 生成阶段只输出视频提示词正文，不输出审校建议、分析过程或修订说明；审校建议由后续 reviewer 负责。`;
 }
 
-function buildVideoStyleGuide(project: any) {
-  const style = String(project?.artStyle || "").trim();
+function buildVideoStyleGuide() {
   return `
 **视频视觉风格约束**
-- 项目风格标识：${style || "未指定"}。
-- 用一句短语描述媒介和类型即可，优先写“都市写实摄影 / 真人实拍质感 / 现代都市纪实”等必要风格。
-- 视觉细节以参考图为准，不要复制图片提示词里的画质堆叠词。`;
+- 不单独读取视觉手册，不根据项目 artStyle 名称自行扩写媒介、画风或视觉标签。
+- 视觉风格只能来自分镜表/导演规划已经沉淀的短视觉原则，或来自参考图中的人物外观、环境、构图、光线和色彩。
+- 参考图中的人物外观、环境、构图、光线和色彩优先于文字描述。
+- 不得覆盖分镜表中的动作、台词、场景和人物关系事实。`;
 }
 
 export async function compileWorkbenchVideoPrompt(
@@ -533,7 +533,7 @@ ${buildGenerationConstraints()}
   let retryReason: ReferenceTokenContractIssue[] = [];
   let retryOutputSummary = "";
   const baseMessages = [
-    { role: "assistant" as const, content: buildVideoStyleGuide(project) },
+    { role: "assistant" as const, content: buildVideoStyleGuide() },
     { role: "user" as const, content: promptContext },
   ];
   try {

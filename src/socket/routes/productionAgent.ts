@@ -3,6 +3,18 @@ import u from "@/utils";
 import { Namespace, Socket } from "socket.io";
 import * as agent from "@/agents/productionAgent/index";
 import ResTool from "@/socket/resTool";
+import {
+  AGENT_RUN_HEARTBEAT_INTERVAL_MS,
+  createAgentRun,
+  createAgentRunContext,
+  finishAgentRun,
+  getActiveAgentRun,
+  getUnresolvedAgentDecision,
+  interruptExpiredAgentRuns,
+  updateAgentRunHeartbeat,
+  type AgentRunContext,
+  type AgentRunStatus,
+} from "@/services/agentRun";
 
 async function verifyToken(rawToken: string): Promise<Boolean> {
   const setting = await u.db("o_setting").where("key", "tokenKey").select("value").first();
@@ -43,6 +55,10 @@ async function validateProductionAgentContext(input: any): Promise<ProductionAge
 }
 
 export default (nsp: Namespace) => {
+  void interruptExpiredAgentRuns().catch((error) => {
+    console.warn("[productionAgent] failed to recover expired runs:", u.error(error).message);
+  });
+
   nsp.on("connection", async (socket: Socket) => {
     const token = socket.handshake.auth.token;
     if (!token || !(await verifyToken(token))) {
@@ -67,6 +83,8 @@ export default (nsp: Namespace) => {
       scriptId: context.scriptId,
     });
     let abortController: AbortController | null = null;
+    let currentRunContext: AgentRunContext | null = null;
+    let heartbeatTimer: NodeJS.Timeout | null = null;
 
     const thinkConfig: agent.AgentContext["thinkConfig"] = {
       think: false,
@@ -89,13 +107,72 @@ export default (nsp: Namespace) => {
       }
     });
 
+    const emitRunUpdate = (payload: Record<string, unknown>) => {
+      socket.emit("agent:run:update", {
+        agentKey: "productionAgent",
+        projectId: context.projectId,
+        scriptId: context.scriptId,
+        serverTime: Date.now(),
+        ...payload,
+      });
+    };
+
+    const clearHeartbeat = () => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    };
+
     socket.on("chat", async (data: { content: string }) => {
       const { content } = data;
-      abortController?.abort();
+      const activeRun = await getActiveAgentRun({
+        agentKey: "productionAgent",
+        projectId: context.projectId,
+        scriptId: context.scriptId,
+      });
+      if (activeRun) {
+        emitRunUpdate({
+          status: activeRun.status,
+          activeRun,
+          rejected: true,
+          reason: "同一剧集 Production Agent 已有运行中的 chat，请等待完成或手动停止后再提交。",
+        });
+        return;
+      }
+      const continuation = await getUnresolvedAgentDecision({
+        agentKey: "productionAgent",
+        projectId: context.projectId,
+        scriptId: context.scriptId,
+      });
       abortController = new AbortController();
       const currentController = abortController;
 
       const msg = resTool.newMessage("assistant", "视频策划");
+      const createdRun = await createAgentRun({
+        agentKey: "productionAgent",
+        projectId: context.projectId,
+        scriptId: context.scriptId,
+        isolationKey: context.isolationKey,
+        messageId: msg.id,
+      });
+      if (!createdRun.created) {
+        emitRunUpdate({
+          status: createdRun.activeRun.status,
+          activeRun: createdRun.activeRun,
+          rejected: true,
+          reason: "同一剧集 Production Agent 已有运行中的 chat，请等待完成或手动停止后再提交。",
+        });
+        abortController = null;
+        return;
+      }
+      const runContext = createAgentRunContext(createdRun.run.runId);
+      currentRunContext = runContext;
+      emitRunUpdate({ status: "running", run: createdRun.run });
+      heartbeatTimer = setInterval(() => {
+        void updateAgentRunHeartbeat(createdRun.run.runId).catch((error) => {
+          console.warn("[productionAgent] heartbeat failed:", u.error(error).message);
+        });
+      }, AGENT_RUN_HEARTBEAT_INTERVAL_MS);
+
       const ctx: agent.AgentContext = {
         socket,
         isolationKey: context.isolationKey,
@@ -105,18 +182,53 @@ export default (nsp: Namespace) => {
         resTool,
         msg,
         thinkConfig,
+        runContext,
+        continuation,
       };
 
+      let finalStatus: AgentRunStatus = "completed";
+      let finalReason: string | null = null;
+      let finalError: unknown = null;
       try {
         await agent.runDecisionAI(ctx);
+        if (runContext.terminalIntent) {
+          finalStatus = runContext.terminalIntent.status;
+          finalReason = runContext.terminalIntent.reason;
+          finalError = runContext.terminalIntent.errorJson;
+        }
       } catch (err: any) {
-        if (err.name !== "AbortError" && !currentController.signal.aborted) {
+        if (runContext.terminalIntent) {
+          finalStatus = runContext.terminalIntent.status;
+          finalReason = runContext.terminalIntent.reason;
+          finalError = runContext.terminalIntent.errorJson;
+        } else if (runContext.abortReason === "user_stop") {
+          finalStatus = "cancelled";
+          finalReason = "用户已停止当前 Production Agent chat。";
+        } else if (runContext.abortReason === "socket_disconnect") {
+          finalStatus = "interrupted";
+          finalReason = "Socket disconnected before the Production Agent chat completed.";
+        } else if (err.name === "AbortError" || currentController.signal.aborted) {
+          finalStatus = "cancelled";
+          finalReason = "Production Agent chat was cancelled.";
+        } else {
+          finalStatus = "failed";
+          finalReason = u.error(err).message;
+          finalError = { name: err?.name, message: u.error(err).message };
           console.error("[productionAgent] chat error:", u.error(err).message);
         }
       } finally {
+        clearHeartbeat();
+        const finished = await finishAgentRun(createdRun.run.runId, {
+          status: finalStatus,
+          reason: finalReason,
+          errorJson: finalError,
+          resultJson: runContext.terminalIntent?.resultJson,
+        });
+        emitRunUpdate({ status: finished?.status || finalStatus, run: finished });
         if (abortController === currentController) {
           abortController = null;
         }
+        if (currentRunContext === runContext) currentRunContext = null;
       }
     });
 
@@ -127,11 +239,16 @@ export default (nsp: Namespace) => {
     });
 
     socket.on("stop", () => {
+      currentRunContext && (currentRunContext.abortReason = "user_stop");
       abortController?.abort();
       abortController = null;
     });
-  });
-  nsp.on("disconnect", (socket: Socket) => {
-    console.log("[productionAgent] disconnected:", socket.id);
+
+    socket.on("disconnect", () => {
+      console.log("[productionAgent] disconnected:", socket.id);
+      currentRunContext && (currentRunContext.abortReason = "socket_disconnect");
+      abortController?.abort();
+      clearHeartbeat();
+    });
   });
 };

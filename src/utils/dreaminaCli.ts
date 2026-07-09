@@ -57,15 +57,35 @@ interface VideoConfig {
   mode: any;
 }
 
+interface MusicConfig {
+  prompt: string;
+  durationSec?: number;
+  duration?: number;
+  vocalMode?: string;
+  lyrics?: string;
+  negativePrompt?: string;
+  referenceList?: Extract<ReferenceItem, { type: "audio" }>[];
+  outputFormat?: string;
+  seed?: number;
+  extra?: Record<string, unknown>;
+}
+
 interface ToonflowModel {
   name: string;
   modelName: string;
-  type: "image" | "video";
+  type: "image" | "video" | "music";
   mode?: any;
   associationSkills?: string;
   audio?: "optional" | boolean;
   durationResolutionMap?: { duration: number[]; resolution: string[] }[];
   queueConfig?: QueueConfig;
+  durationRange?: { min?: number; max?: number };
+  outputFormats?: string[];
+  vocal?: "optional" | boolean;
+  lyrics?: "optional" | boolean;
+  referenceAudio?: "optional" | boolean;
+  loop?: "optional" | boolean;
+  supportedFlags?: string[];
 }
 
 interface ModelMeta {
@@ -130,7 +150,9 @@ export interface DreaminaPollResult {
 const DOWNLOAD_URL =
   "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/dreamina_cli_beta/dreamina_cli_windows_amd64.exe";
 const VERSION_URL = "https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/dreamina_cli_beta/version.json";
-const COMMANDS = ["text2image", "image2image", "text2video", "image2video", "multiframe2video", "multimodal2video"] as const;
+const MEDIA_COMMANDS = ["text2image", "image2image", "text2video", "image2video", "multiframe2video", "multimodal2video"] as const;
+const MUSIC_COMMAND_CANDIDATES = ["text2music", "music_generation", "text2song", "generate_music", "music"] as const;
+const COMMANDS = [...MEDIA_COMMANDS, ...MUSIC_COMMAND_CANDIDATES] as const;
 const ALLOWED_COMMANDS = new Set<string>(["-h", "--help", "login", "relogin", "logout", "user_credit", "query_result", "list_task", ...COMMANDS]);
 
 let currentLogin: LoginSession | null = null;
@@ -593,8 +615,15 @@ function isQuerying(output: string) {
   return /gen_status["'\s:=]+querying/i.test(output) || /"gen_status"\s*:\s*"querying"/i.test(output);
 }
 
-function findNewestFile(dir: string, type: "image" | "video") {
-  const allowed = type === "image" ? new Set([".png", ".jpg", ".jpeg", ".webp"]) : new Set([".mp4", ".mov", ".webm"]);
+type DreaminaMediaType = "image" | "video" | "music";
+
+function findNewestFile(dir: string, type: DreaminaMediaType) {
+  const allowed =
+    type === "image"
+      ? new Set([".png", ".jpg", ".jpeg", ".webp"])
+      : type === "video"
+        ? new Set([".mp4", ".mov", ".webm"])
+        : new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"]);
   const files: string[] = [];
   const walk = (current: string) => {
     if (!fs.existsSync(current)) return;
@@ -608,9 +637,10 @@ function findNewestFile(dir: string, type: "image" | "video") {
   return files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
 }
 
-function extractUrl(output: string, type: "image" | "video") {
+function extractUrl(output: string, type: DreaminaMediaType) {
   const urls = output.match(/https?:\/\/[^\s"'<>]+/g) || [];
-  const preferred = type === "image" ? /\.(png|jpe?g|webp)(\?|$)/i : /\.(mp4|mov|webm)(\?|$)/i;
+  const preferred =
+    type === "image" ? /\.(png|jpe?g|webp)(\?|$)/i : type === "video" ? /\.(mp4|mov|webm)(\?|$)/i : /\.(mp3|wav|m4a|aac|flac|ogg)(\?|$)/i;
   return urls.find((url) => preferred.test(url)) || urls[0];
 }
 
@@ -832,13 +862,16 @@ export interface DreaminaTaskOutput {
   providerCode?: string;
   imageUrl?: string;
   videoUrl?: string;
+  audioUrl?: string;
   failureReason?: string;
 }
 
-function extractStructuredMediaUrl(records: JsonRecord[], type: "image" | "video") {
+function extractStructuredMediaUrl(records: JsonRecord[], type: DreaminaMediaType) {
   let result: string | undefined;
-  const extension = type === "image" ? /\.(png|jpe?g|webp)(\?|$)/i : /\.(mp4|mov|webm)(\?|$)/i;
+  const extension =
+    type === "image" ? /\.(png|jpe?g|webp)(\?|$)/i : type === "video" ? /\.(mp4|mov|webm)(\?|$)/i : /\.(mp3|wav|m4a|aac|flac|ogg)(\?|$)/i;
   const typeText = type.toLowerCase();
+  const musicKeyPattern = /^(audio|music|song|track)_?url$/i;
   const visit = (value: unknown, pathParts: string[] = []) => {
     if (result) return;
     if (Array.isArray(value)) {
@@ -852,8 +885,9 @@ function extractStructuredMediaUrl(records: JsonRecord[], type: "image" | "video
         typeof child === "string" &&
         /^https?:\/\//i.test(child) &&
         (new RegExp(`^${typeText}_?url$`, "i").test(key) ||
+          (type === "music" && musicKeyPattern.test(key)) ||
           /^download_?url$/i.test(key) ||
-          (key.toLowerCase() === "url" && (pathText.includes(typeText) || extension.test(child))))
+          (key.toLowerCase() === "url" && (pathText.includes(typeText) || (type === "music" && /audio|music|song|track/.test(pathText)) || extension.test(child))))
       ) {
         result = child;
         return;
@@ -912,6 +946,7 @@ export function parseDreaminaTaskOutput(output: string, submitId: string): Dream
     providerCode: parseDreaminaProviderCode(records.map((record) => JSON.stringify(record)).join("\n")),
     imageUrl: extractStructuredMediaUrl(records, "image"),
     videoUrl: extractStructuredMediaUrl(records, "video") || extractStructuredVideoUrl(records),
+    audioUrl: extractStructuredMediaUrl(records, "music"),
     failureReason: failureReason === undefined ? undefined : normalizeError(String(failureReason)),
   };
 }
@@ -1209,6 +1244,191 @@ async function videoPoll(submitId: string) {
   return queryVideoTask(submitId);
 }
 
+function hasSupportedFlag(model: ToonflowModel, flagName: string) {
+  const flags = model.supportedFlags;
+  if (!Array.isArray(flags) || flags.length === 0) return true;
+  return flags.includes(flagName);
+}
+
+function firstSupportedFlag(model: ToonflowModel, candidates: string[]) {
+  return candidates.find((name) => hasSupportedFlag(model, name));
+}
+
+export function buildMusicArgs(config: MusicConfig, model: ToonflowModel) {
+  const { command, modelVersion } = parseModelName(model.modelName);
+  if (!MUSIC_COMMAND_CANDIDATES.includes(command as any)) throw new Error(`Unsupported Dreamina music command: ${command}`);
+  const refs = writeReferenceFileItems(config.referenceList || [], "music");
+  const args = [...flag("prompt", config.prompt)];
+  if (modelVersion && hasSupportedFlag(model, "model_version")) args.push(...flag("model_version", modelVersion));
+
+  const duration = Number(config.durationSec ?? config.duration ?? 0);
+  const durationFlag = firstSupportedFlag(model, ["duration", "duration_sec", "seconds"]);
+  if (duration > 0 && durationFlag) args.push(...flag(durationFlag, Math.round(duration)));
+
+  if (config.lyrics && hasSupportedFlag(model, "lyrics")) args.push(...flag("lyrics", config.lyrics));
+  if (config.vocalMode && hasSupportedFlag(model, "vocal_mode")) args.push(...flag("vocal_mode", config.vocalMode));
+  if (config.negativePrompt && hasSupportedFlag(model, "negative_prompt")) args.push(...flag("negative_prompt", config.negativePrompt));
+  if (config.outputFormat && hasSupportedFlag(model, "output_format")) args.push(...flag("output_format", config.outputFormat));
+  if (config.seed != null && hasSupportedFlag(model, "seed")) args.push(...flag("seed", config.seed));
+
+  const audioFlag = firstSupportedFlag(model, ["audio", "reference_audio", "ref_audio"]);
+  if (audioFlag) {
+    for (const ref of refs.filter((item) => item.type === "audio").slice(0, 3)) args.push(...flag(audioFlag, ref.filePath));
+  }
+  return { command, args };
+}
+
+async function musicSubmit(config: MusicConfig, model: ToonflowModel): Promise<DreaminaSubmitResult> {
+  const { command, args } = buildMusicArgs(config, model);
+  const submit = await runRawWithLogs([command, ...args, "--poll=0"], 180000);
+  const submitOutput = outputText(submit.result);
+  const rawSubmit = `${submitOutput}\n----- cli logs (diagnostic only) -----\n${submit.logs}`.trim();
+  const providerCode = parseDreaminaProviderCode(submitOutput);
+  const providerAccountId =
+    submitOutput.match(/\buser_id[=:]\s*([A-Za-z0-9_-]+)/i)?.[1] ||
+    submitOutput.match(/\buid[=:]\s*([A-Za-z0-9_-]+)/i)?.[1];
+  if (isDreaminaCapacityLimit(submitOutput)) {
+    return {
+      state: "capacity_wait",
+      rawOutput: rawSubmit,
+      providerAccountId,
+      providerCode: providerCode || "1310",
+    };
+  }
+  const submitId = extractSubmitId(submitOutput);
+  if (!submitId) {
+    const message = submit.code === 0 ? "Dreamina CLI did not return submit_id for music generation." : cliFailureMessage(submit, `Dreamina CLI exited with code ${submit.code}`);
+    throw new Error(`${message}\n${rawSubmit}`.trim());
+  }
+  const evidence = parseDreaminaRemoteEvidence(submitOutput, submitId);
+  return {
+    state: "submitted",
+    submitId,
+    confirmed: evidence.confirmed,
+    rawOutput: rawSubmit,
+    officialTaskId: evidence.officialTaskId,
+    historyRecordId: evidence.historyRecordId,
+    providerAccountId: evidence.providerAccountId || providerAccountId,
+    providerCode,
+  };
+}
+
+async function queryMusicTask(submitId: string): Promise<DreaminaPollResult> {
+  const query = await runRawWithLogs(["query_result", `--submit_id=${submitId}`], 90000);
+  const queryOutput = outputText(query.result);
+  const queryTask = parseDreaminaTaskOutput(queryOutput, submitId);
+  let rawOutput = `${queryOutput}\n----- query_result cli logs (diagnostic only) -----\n${query.logs}`.trim();
+  let listOutput = "";
+  let listTask: DreaminaTaskOutput | undefined;
+
+  if (queryTask.status !== "success" && queryTask.status !== "failed") {
+    const list = await runRawWithLogs(["list_task", `--submit_id=${submitId}`], 60000);
+    listOutput = outputText(list.result);
+    listTask = parseDreaminaTaskOutput(listOutput, submitId);
+    rawOutput =
+      `${rawOutput}\n----- list_task stdout/stderr -----\n${listOutput}\n----- list_task cli logs (diagnostic only) -----\n${list.logs}`.trim();
+  }
+  const evidence: DreaminaRemoteEvidence = {
+    confirmed: queryTask.evidence.confirmed || Boolean(listTask?.evidence.confirmed),
+    officialTaskId: queryTask.evidence.officialTaskId || listTask?.evidence.officialTaskId,
+    historyRecordId: queryTask.evidence.historyRecordId || listTask?.evidence.historyRecordId,
+    providerAccountId: queryTask.evidence.providerAccountId || listTask?.evidence.providerAccountId,
+  };
+  const queueInfo =
+    listTask?.queueInfo.status !== undefined || listTask?.queueInfo.index !== undefined
+      ? listTask.queueInfo
+      : queryTask.queueInfo;
+  const providerCode = queryTask.providerCode || listTask?.providerCode;
+  const status =
+    queryTask.status === "failed" || listTask?.status === "failed"
+      ? "failed"
+      : queryTask.status === "success" || listTask?.status === "success"
+        ? "success"
+        : "generating";
+  const semanticOutput = `${queryOutput}\n${listOutput}`.trim();
+
+  if (status === "failed") {
+    return {
+      state: "failed",
+      rawOutput,
+      errorReason: extractFailureReason(semanticOutput),
+      providerAccountId: evidence.providerAccountId,
+      providerCode,
+      evidence,
+      queueInfo,
+    };
+  }
+  if (status !== "success") {
+    return {
+      state: "generating",
+      rawOutput,
+      providerAccountId: evidence.providerAccountId,
+      providerCode,
+      evidence,
+      queueInfo,
+    };
+  }
+
+  const downloadDir = tempDir("downloads", `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const download = await queryResult(submitId, downloadDir, 120);
+  const downloadOutput = outputText(download);
+  rawOutput = `${rawOutput}\n----- query_result download stdout/stderr -----\n${downloadOutput}`.trim();
+  const file = findNewestFile(downloadDir, "music");
+  if (file) {
+    return {
+      state: "success",
+      data: file,
+      dataType: "file",
+      rawOutput,
+      providerAccountId: evidence.providerAccountId,
+      providerCode,
+      evidence,
+      queueInfo,
+    };
+  }
+  const parsedDownload = parseDreaminaTaskOutput(downloadOutput, submitId);
+  const url = parsedDownload.audioUrl || queryTask.audioUrl || listTask?.audioUrl || extractUrl(`${queryOutput}\n${listOutput}\n${downloadOutput}`, "music");
+  if (url) {
+    return {
+      state: "success",
+      data: url,
+      dataType: "url",
+      rawOutput,
+      providerAccountId: evidence.providerAccountId,
+      providerCode,
+      evidence,
+      queueInfo,
+    };
+  }
+  return {
+    state: "failed",
+    rawOutput,
+    errorReason: "Dreamina music task succeeded, but no downloadable audio file was found.",
+    providerCode,
+    evidence,
+    queueInfo,
+  };
+}
+
+async function musicRequest(config: MusicConfig, model: ToonflowModel) {
+  const queueConfig = normalizeQueueConfig(model.queueConfig, 1);
+  const submit = await musicSubmit(config, model);
+  if (submit.state === "capacity_wait") throw new Error("Dreamina music capacity is currently full; please retry later.");
+  if (!submit.submitId) throw new Error("Dreamina CLI did not return submit_id.");
+  const startedAt = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, queueConfig.pollInitialDelaySec * 1000));
+  while (Date.now() - startedAt < queueConfig.maxWorkHours * 60 * 60 * 1000) {
+    const poll = await queryMusicTask(submit.submitId);
+    if (poll.state === "failed") throw new Error(poll.errorReason || poll.rawOutput || "Dreamina music generation failed");
+    if (poll.state === "success" && poll.data) {
+      return poll.dataType === "file" ? fileToDataUrl(poll.data) : poll.data;
+    }
+    const interval = Math.max(queueConfig.pollMinIntervalSec, Math.min(queueConfig.pollMaxIntervalSec, queueConfig.pollMinIntervalSec));
+    await new Promise((resolve) => setTimeout(resolve, interval * 1000));
+  }
+  throw new Error(`Dreamina music task timed out, submit_id=${submit.submitId}`);
+}
+
 function getQueueKey(command: string, args: string[]) {
   const modelArg = args.find((arg) => arg.startsWith("--model_version="))?.slice("--model_version=".length) || "default";
   return `${command}:${modelArg || "default"}`;
@@ -1438,6 +1658,51 @@ function extractFlagValues(help: string, flagName: string) {
   return [...values];
 }
 
+export function extractSupportedFlags(help: string) {
+  const flags = new Set<string>();
+  for (const match of help.matchAll(/--([A-Za-z][A-Za-z0-9_-]*)/g)) {
+    flags.add(match[1]);
+  }
+  return [...flags];
+}
+
+export function discoverMusicCommandsFromHelp(help: string) {
+  const available = new Set<string>();
+  for (const candidate of MUSIC_COMMAND_CANDIDATES) {
+    const pattern = new RegExp(`(^|\\s)${candidate}(\\s|$)`, "m");
+    if (pattern.test(help)) available.add(candidate);
+  }
+  return [...available];
+}
+
+export function extractMusicDurationRange(help: string) {
+  const durations = new Set<number>();
+  const durationLines = help
+    .split(/\r?\n/)
+    .filter((line) => /duration|duration_sec|seconds|\u65f6\u957f|\u79d2/i.test(line));
+  for (const line of durationLines) {
+    for (const match of line.matchAll(/(\d+)\s*(?:-|~|to|\u81f3)\s*(\d+)\s*(?:s|sec|secs|second|seconds|\u79d2)?/gi)) {
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      if (Number.isFinite(start) && start > 0 && start <= 600) durations.add(start);
+      if (Number.isFinite(end) && end > 0 && end <= 600) durations.add(end);
+    }
+    const supported = line.match(/supported values(?: by model)?\s*:\s*([^;\n]+)/i)?.[1];
+    if (supported) {
+      for (const value of supported.matchAll(/\d+/g)) {
+        const parsed = Number(value[0]);
+        if (Number.isFinite(parsed) && parsed > 0 && parsed <= 600) durations.add(parsed);
+      }
+    }
+  }
+  if (!durations.size) return undefined;
+  const values = [...durations];
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values),
+  };
+}
+
 function canonicalModelVersion(value: string) {
   return cleanModelToken(value).toLowerCase().replace(/^(\d+(?:\.\d+)?)_(fast|pro)$/i, "$1$2");
 }
@@ -1452,7 +1717,7 @@ function extractModelVersions(help: string) {
     if (!raw) continue;
     for (const value of splitSupportedValues(raw)) {
       const canonical = canonicalModelVersion(value);
-      if (/^\d+(?:\.\d+)?(?:fast|pro)?$/i.test(canonical) || /^seedance[\w.-]+$/i.test(canonical)) values.add(canonical);
+      if (/^\d+(?:\.\d+)?(?:fast|pro)?$/i.test(canonical) || /^seed(?:ance|music)[\w.-]+$/i.test(canonical)) values.add(canonical);
     }
   }
   return [...values];
@@ -1461,6 +1726,12 @@ function extractModelVersions(help: string) {
 function inferDisplayName(id: string) {
   if (id === "default") return "默认模型（由 CLI 决定）";
   if (/^\d/.test(id)) return `即梦 ${id}`;
+  if (id.startsWith("seedmusic")) {
+    return id
+      .replace(/^seedmusic/i, "SeedMusic ")
+      .replace(/1\.0/i, "1.0")
+      .replace(/preview/i, "Preview");
+  }
   if (id.startsWith("seedance")) {
     return id
       .replace(/^seedance/i, "Seedance ")
@@ -1563,7 +1834,12 @@ export function getDreaminaVideoResolutions(help: string, modelName: string) {
 async function discoverModels() {
   ensureInstalled();
   const models: ToonflowModel[] = [];
-  for (const command of COMMANDS) {
+  let rootHelp = "";
+  try {
+    const root = await run(["-h"], 30000);
+    rootHelp = `${root.stdout}\n${root.stderr}`;
+  } catch {}
+  for (const command of MEDIA_COMMANDS) {
     let help = "";
     try {
       const result = await run([command, "-h"], 30000);
@@ -1607,6 +1883,38 @@ async function discoverModels() {
       }
     }
   }
+  const musicCommands = discoverMusicCommandsFromHelp(rootHelp);
+  for (const command of musicCommands) {
+    let help = "";
+    try {
+      const result = await run([command, "-h"], 30000);
+      if (result.code !== 0) continue;
+      help = `${result.stdout}\n${result.stderr}`;
+    } catch {
+      continue;
+    }
+    const supportedFlags = extractSupportedFlags(help);
+    const commandModels = extractModelMetas(help);
+    const modelValues = commandModels.length ? commandModels : [{ id: "default", displayName: "SeedMusic" }];
+    for (const modelMeta of modelValues) {
+      const modelValue = modelMeta.id;
+      const label = modelMeta.displayName;
+      models.push({
+        name: `Dreamina ${command} - ${label}`,
+        modelName: `${command}:${modelValue}`,
+        type: "music",
+        associationSkills: `${describeMeta(command, modelMeta, false)}; type: music`,
+        durationRange: extractMusicDurationRange(help),
+        outputFormats: [...new Set([...extractFlagValues(help, "output_format"), ...extractFlagValues(help, "format")])],
+        vocal: supportedFlags.includes("vocal_mode") || supportedFlags.includes("lyrics") ? "optional" : "optional",
+        lyrics: supportedFlags.includes("lyrics") ? "optional" : false,
+        referenceAudio: supportedFlags.some((flagName) => ["audio", "reference_audio", "ref_audio"].includes(flagName)) ? "optional" : false,
+        loop: supportedFlags.includes("loop") ? "optional" : false,
+        supportedFlags,
+        queueConfig: defaultVideoQueueConfig(modelMeta.concurrency || 1),
+      });
+    }
+  }
   return models;
 }
 
@@ -1620,12 +1928,14 @@ async function status() {
   const latest = installed ? await fetchLatestVersion() : null;
   let helpOk = false;
   let help = "";
+  let musicCommands: string[] = [];
   let login = currentLogin ? { ...currentLogin } : null;
   if (installed) {
     try {
       const result = await run(["-h"], 30000);
       helpOk = result.code === 0;
       help = result.stdout || result.stderr;
+      musicCommands = discoverMusicCommandsFromHelp(help);
     } catch (err) {
       help = normalizeError((err as Error).message);
     }
@@ -1662,6 +1972,12 @@ async function status() {
     latest,
     helpOk,
     help,
+    musicAvailable: musicCommands.length > 0,
+    musicCommands,
+    musicUnavailableReason:
+      installed && musicCommands.length === 0
+        ? "\u5f53\u524d\u5373\u68a6 CLI \u672a\u66b4\u9732\u97f3\u4e50\u751f\u6210\u547d\u4ee4\uff0c\u8bf7\u66f4\u65b0\u5373\u68a6 CLI \u540e\u5237\u65b0\u6a21\u578b\u3002"
+        : undefined,
     login,
     queue: getQueueStatus(),
   };
@@ -1719,6 +2035,7 @@ export default {
   videoSubmit,
   videoConfirm,
   videoPoll,
+  musicRequest,
   getDreaminaProviderModelKey,
   normalizeQueueConfig,
   getActiveCliProcesses,

@@ -3,47 +3,15 @@ import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import u from "@/utils";
 import { z } from "zod";
-import { normalizeQueueConfigForStorage, queueConfigSchema } from "@/lib/videoQueueConfig";
+import { normalizeQueueConfigForStorage } from "@/lib/videoQueueConfig";
+import { vendorModelSchema } from "@/lib/vendorModelSchema";
 const router = express.Router();
 
 export default router.post(
   "/",
   validateFields({
     id: z.string(),
-    model: z.discriminatedUnion("type", [
-      z.object({
-        name: z.string(),
-        modelName: z.string(),
-        type: z.literal("text"),
-        think: z.boolean(),
-      }),
-      z.object({
-        name: z.string(),
-        modelName: z.string(),
-        type: z.literal("image"),
-        mode: z.array(z.enum(["text", "singleImage", "multiReference"])),
-        queueConfig: queueConfigSchema,
-      }),
-      z.object({
-        name: z.string(),
-        modelName: z.string(),
-        type: z.literal("video"),
-        mode: z.array(
-          z.union([
-            z.enum(["singleImage", "startEndRequired", "endFrameOptional", "startFrameOptional", "text", "audioReference", "videoReference"]),
-            z.array(z.string().regex(/^(videoReference|imageReference|audioReference):\d+$/)),
-          ]),
-        ),
-        audio: z.union([z.literal("optional"), z.boolean()]),
-        durationResolutionMap: z.array(
-          z.object({
-            duration: z.array(z.number()),
-            resolution: z.array(z.string()),
-          }),
-        ),
-        queueConfig: queueConfigSchema,
-      }),
-    ]),
+    model: vendorModelSchema,
   }),
   async (req, res) => {
     const { id, model } = req.body;

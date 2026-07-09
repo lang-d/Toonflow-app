@@ -2,7 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { createUnifiedTask } from "@/services/taskCoordinator";
+import { createUnifiedTask, formatUnifiedTaskEnvelope } from "@/services/taskCoordinator";
 import {
   selectAssetFoundationTargets,
   type AssetFoundationMode,
@@ -82,7 +82,7 @@ export default router.post(
           generatePrompt,
         },
       });
-      tasks.push({ assetId: Number(asset.id), taskId: task.taskId, legacyTaskId: task.legacyTaskId });
+      tasks.push({ assetId: Number(asset.id), ...formatUnifiedTaskEnvelope(task, "asset", asset.id) });
     }
     return res.status(200).send(success({ total: tasks.length, tasks, skipped }));
   },

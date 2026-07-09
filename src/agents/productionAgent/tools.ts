@@ -11,7 +11,17 @@ import {
   appendStoryboardRows,
   beginStoryboardGeneration,
   commitStoryboardGeneration,
+  readStoryboardGenerationDraft,
+  storyboardValidationDecisionSummary,
 } from "@/services/storyboardGeneration";
+import {
+  DIRECTOR_PLAN_SECTION_KEYS,
+  appendDirectorPlanSection,
+  assertDirectorPlanGenerationScope,
+  beginDirectorPlanGeneration,
+  commitDirectorPlanGeneration,
+  readDirectorPlanAsset,
+} from "@/services/directorPlanGeneration";
 import { applyStoryboardPanelImageFieldsWithDb, updateDeriveAssetPrompt } from "@/services/imageFlow";
 import { emitWithAckTimeout } from "@/agents/shared/socketAck";
 import { buildProductionFlowData } from "@/services/productionFlowData";
@@ -23,6 +33,7 @@ import {
   listProjectMaterials,
   readProjectMaterial,
 } from "@/services/projectMaterial";
+import type { AgentRunContext } from "@/services/agentRun";
 
 const deriveAssetSchema = z.object({
   id: z.number().describe("衍生资产ID,如果新增则为空"),
@@ -228,6 +239,58 @@ const appendStoryboardRowsInputSchema = z.object({
 const commitStoryboardTableInputSchema = z.object({
   generationId: z.string().uuid(),
 });
+const getStoryboardGenerationDraftInputSchema = z.object({
+  generationId: z.string().uuid(),
+  offset: z.number().int().nonnegative().optional().default(0),
+  limit: z.number().int().min(1).max(10).optional().default(10),
+});
+const awaitUserDecisionInputSchema = z.object({
+  stage: z.string().trim().min(1).max(100),
+  question: z.string().trim().min(1).max(2000),
+  options: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1).max(100),
+        label: z.string().trim().min(1).max(200),
+        description: z.string().trim().max(500).optional(),
+      }),
+    )
+    .max(5)
+    .optional()
+    .default([]),
+  context: z.record(z.string(), z.unknown()).optional().default({}),
+});
+const directorPlanGenerationStateSchema = z.object({
+  current: z
+    .object({
+      generationId: z.string(),
+      state: z.string(),
+      textAssetId: z.number().nullable().optional(),
+      version: z.number().nullable().optional(),
+      updatedAt: z.number(),
+    })
+    .nullable(),
+  lastFailure: z
+    .object({
+      generationId: z.string(),
+      state: z.string(),
+      errorJson: z.string().nullable().optional(),
+      updatedAt: z.number(),
+    })
+    .nullable(),
+});
+const beginDirectorPlanInputSchema = z.object({
+  projectId: z.number().optional(),
+  scriptId: z.number().optional(),
+});
+const appendDirectorPlanSectionInputSchema = z.object({
+  generationId: z.string().uuid(),
+  sectionKey: z.enum(DIRECTOR_PLAN_SECTION_KEYS),
+  chunkIndex: z.number().int().nonnegative(),
+  content: z.string().min(1),
+});
+const commitDirectorPlanInputSchema = z.object({ generationId: z.string().uuid() });
+const getDirectorPlanAssetInputSchema = z.object({ textAssetId: z.number().int().positive() });
 const updateStoryboardPanelV2InputSchema = z.object({
   projectId: z.number().optional(),
   scriptId: z.number().optional(),
@@ -256,9 +319,25 @@ const posterItemSchema = z.object({
   image: z.string().describe("海报图片路径"),
 });
 export const flowDataSchema = z.object({
+  project: z
+    .object({
+      id: z.union([z.number(), z.string()]),
+      name: z.string(),
+      projectType: z.string(),
+      type: z.string(),
+      artStyle: z.string(),
+      directorManual: z.string(),
+      imageModel: z.string(),
+      videoModel: z.string(),
+      videoRatio: z.string(),
+      mode: z.string(),
+    })
+    .nullable()
+    .describe("当前项目配置"),
   assetAudioBindings: z.array(assetAudioBindingSchema).describe("Visual asset audio bindings"),
   script: z.string().describe("剧本内容"),
   scriptPlan: z.string().describe("拍摄计划"),
+  directorPlanGeneration: directorPlanGenerationStateSchema.describe("Director-plan generation state and diagnostics"),
   assets: z.array(assetItemSchema).describe("衍生资产"),
   storyboardTable: z.string().describe("分镜表"),
   storyboard: z.array(storyboardSchema).describe("分镜面板"),
@@ -279,6 +358,7 @@ interface ToolConfig {
   resTool: ResTool;
   toolsNames?: string[];
   msg: ReturnType<ResTool["newMessage"]>;
+  runContext?: AgentRunContext;
 }
 
 function scopedNumber(value: unknown, field: string) {
@@ -321,7 +401,7 @@ function shortStoryboardCommitMessage(result: any) {
 }
 
 export default (toolCpnfig: ToolConfig) => {
-  const { resTool, toolsNames, msg } = toolCpnfig;
+  const { resTool, toolsNames, msg, runContext } = toolCpnfig;
   const { socket } = resTool;
   let storyboardTableTerminalFailure = false;
   const tools: Record<string, Tool> = {
@@ -363,6 +443,40 @@ export default (toolCpnfig: ToolConfig) => {
         }
       },
     }),
+    await_user_decision: tool({
+      description:
+        "Stop the current Agent Run and ask the user one explicit decision. Use this only when a concrete question is ready.",
+      inputSchema: jsonSchema<z.infer<typeof awaitUserDecisionInputSchema>>(awaitUserDecisionInputSchema.toJSONSchema()),
+      execute: async (raw) => {
+        const input = awaitUserDecisionInputSchema.parse(raw);
+        if (!runContext) throw new Error("Agent Run context is required to await a user decision");
+        const pendingDecision = runContext.pendingDecision;
+        const pending = pendingDecision?.resultJson;
+        const stage = pendingDecision?.stage || input.stage;
+        const subAgent =
+          pendingDecision?.subAgent || (stage === "storyboardTable" ? "storyboardTableAgent" : undefined);
+        const generationId =
+          pending && typeof pending === "object" && "generationId" in pending
+            ? String((pending as { generationId?: unknown }).generationId || "") || undefined
+            : undefined;
+        runContext.setAwaitingUser({
+          stage,
+          subAgent,
+          reason: input.question,
+          resultJson: {
+            kind: "user_decision",
+            stage,
+            generationId,
+            question: input.question,
+            options: input.options,
+            context: input.context,
+            source: pending ?? null,
+          },
+        });
+        runContext.stopForTerminal();
+        return { status: "awaiting_user", terminal: true, question: input.question, options: input.options };
+      },
+    }),
     list_project_materials: tool({
       description: "List project-level reference material files by category. Returns metadata only, not full text.",
       inputSchema: jsonSchema<{ category?: string }>(
@@ -401,6 +515,59 @@ export default (toolCpnfig: ToolConfig) => {
         return getProjectContextPack(projectId);
       },
     }),
+    begin_director_plan: tool({
+      description: "Start a director-plan generation for the current project and script.",
+      inputSchema: jsonSchema<z.infer<typeof beginDirectorPlanInputSchema>>(beginDirectorPlanInputSchema.toJSONSchema()),
+      execute: async (raw) => {
+        const input = beginDirectorPlanInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        assertOptionalScopeMatches(input, projectId, scriptId);
+        return beginDirectorPlanGeneration({ projectId, scriptId });
+      },
+    }),
+    append_director_plan_section: tool({
+      description: "Append one ordered chunk to a required director-plan section. Identical retries are idempotent.",
+      inputSchema: jsonSchema<z.infer<typeof appendDirectorPlanSectionInputSchema>>(
+        appendDirectorPlanSectionInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = appendDirectorPlanSectionInputSchema.parse(raw);
+        await assertDirectorPlanGenerationScope({
+          generationId: input.generationId,
+          projectId: scopedNumber(resTool.data.projectId, "projectId"),
+          scriptId: scopedNumber(resTool.data.scriptId, "scriptId"),
+        });
+        return appendDirectorPlanSection(input);
+      },
+    }),
+    commit_director_plan: tool({
+      description: "Validate all nine director-plan sections and persist a new formal scriptPlan version atomically.",
+      inputSchema: jsonSchema<z.infer<typeof commitDirectorPlanInputSchema>>(commitDirectorPlanInputSchema.toJSONSchema()),
+      execute: async (raw) => {
+        const input = commitDirectorPlanInputSchema.parse(raw);
+        await assertDirectorPlanGenerationScope({
+          generationId: input.generationId,
+          projectId: scopedNumber(resTool.data.projectId, "projectId"),
+          scriptId: scopedNumber(resTool.data.scriptId, "scriptId"),
+        });
+        return commitDirectorPlanGeneration(input.generationId);
+      },
+    }),
+    get_director_plan_asset: tool({
+      description: "Read one exact committed director-plan version by textAssetId for supervision.",
+      inputSchema: jsonSchema<z.infer<typeof getDirectorPlanAssetInputSchema>>(
+        getDirectorPlanAssetInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = getDirectorPlanAssetInputSchema.parse(raw);
+        return readDirectorPlanAsset({
+          projectId: scopedNumber(resTool.data.projectId, "projectId"),
+          scriptId: scopedNumber(resTool.data.scriptId, "scriptId"),
+          textAssetId: input.textAssetId,
+        });
+      },
+    }),
     begin_storyboard_table: tool({
       description: "Start an atomic storyboard-table generation and submit the complete group plan before writing rows.",
       inputSchema: jsonSchema<z.infer<typeof beginStoryboardTableInputSchema>>(beginStoryboardTableInputSchema.toJSONSchema()),
@@ -431,10 +598,30 @@ export default (toolCpnfig: ToolConfig) => {
         }
       },
     }),
+    get_storyboard_generation_draft: tool({
+      description:
+        "Read one failed storyboard generation draft in pages. This is the authoritative source when revising an awaiting_user validation result.",
+      inputSchema: jsonSchema<z.infer<typeof getStoryboardGenerationDraftInputSchema>>(
+        getStoryboardGenerationDraftInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = getStoryboardGenerationDraftInputSchema.parse(raw);
+        return readStoryboardGenerationDraft({
+          generationId: input.generationId,
+          projectId: scopedNumber(resTool.data.projectId, "projectId"),
+          scriptId: scopedNumber(resTool.data.scriptId, "scriptId"),
+          offset: input.offset,
+          limit: input.limit,
+        });
+      },
+    }),
     append_storyboard_rows: tool({
       description: "Append 1-10 authoritative structured storyboard rows. Retry identical rows safely after interruption.",
       inputSchema: jsonSchema<z.infer<typeof appendStoryboardRowsInputSchema>>(appendStoryboardRowsInputSchema.toJSONSchema()),
       execute: async (raw) => {
+        if (storyboardTableTerminalFailure) {
+          throw new Error("This run is write-locked after storyboard validation failed; await a user decision instead.");
+        }
         const input = appendStoryboardRowsInputSchema.parse(raw);
         const thinking = msg.thinking(`正在写入分镜 ${input.startIndex + 1}-${input.startIndex + input.rows.length}...`);
         try {
@@ -454,6 +641,9 @@ export default (toolCpnfig: ToolConfig) => {
       description: "Validate all submitted rows and atomically replace the formal storyboard table.",
       inputSchema: jsonSchema<z.infer<typeof commitStoryboardTableInputSchema>>(commitStoryboardTableInputSchema.toJSONSchema()),
       execute: async (raw) => {
+        if (storyboardTableTerminalFailure) {
+          throw new Error("This run is write-locked after storyboard validation failed; await a user decision instead.");
+        }
         const input = commitStoryboardTableInputSchema.parse(raw);
         const thinking = msg.thinking("正在校验并提交完整分镜表...");
         try {
@@ -472,20 +662,40 @@ export default (toolCpnfig: ToolConfig) => {
             thinking.appendText(message);
             thinking.updateTitle?.("storyboard table commit failed");
           }
-          if (result.status !== "committed") {
+          if (result.status === "invalid") {
             storyboardTableTerminalFailure = true;
+            const decision = storyboardValidationDecisionSummary(input.generationId, result);
+            runContext?.setPendingDecision({
+              stage: "storyboardTable",
+              subAgent: "storyboardTableAgent",
+              reason: decision.question,
+              resultJson: decision.resultJson,
+            });
+            return {
+              ...result,
+              writeLocked: true,
+              requiresUserDecision: true,
+              humanSummary: decision.summary,
+              instruction:
+                "Do not call begin_storyboard_table, append_storyboard_rows, or commit_storyboard_table again in this run. Explain all issues and call await_user_decision with one concrete question.",
+            };
+          }
+          if (result.status === "failed") {
+            storyboardTableTerminalFailure = true;
+            const message = shortStoryboardCommitMessage(result);
+            runContext?.setFailed({
+              stage: "storyboardTable",
+              subAgent: "storyboardTableAgent",
+              reason: message || "Storyboard table commit failed.",
+              errorJson: result.error,
+            });
+            runContext?.stopForTerminal();
             return {
               ...result,
               status: result.status,
               terminal: true,
-              error:
-                result.status === "failed"
-                  ? normalizeToolError(result.error)
-                  : {
-                      code: "VALIDATION_FAILED",
-                      message: shortStoryboardCommitMessage(result),
-                    },
-              message: shortStoryboardCommitMessage(result),
+              error: normalizeToolError(result.error),
+              message,
               instruction: "Stop this execution turn. Do not retry commit and do not begin a new storyboard generation.",
             };
           }

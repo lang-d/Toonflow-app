@@ -1,11 +1,10 @@
 import { Socket } from "socket.io";
-import fs from "fs";
-import path from "path";
 import u from "@/utils";
 import Memory from "@/utils/agent/memory";
 import ResTool from "@/socket/resTool";
 import useStoryTools from "@/agents/storyAgent/tools";
 import { useStorySkills } from "@/agents/storyAgent/skills";
+import { readConfiguredSkill } from "@/services/skillResolver";
 import {
   consumeFullStream as consumeAgentFullStream,
   createAgentModelStreamScope,
@@ -37,15 +36,7 @@ Respond in the user's language.`;
 }
 
 async function readDecisionPrompt() {
-  const candidates = [path.join(u.getPath("skills"), "story_agent_decision.md"), path.resolve("data", "skills", "story_agent_decision.md")];
-  for (const filePath of candidates) {
-    try {
-      return await fs.promises.readFile(filePath, "utf8");
-    } catch {
-      // Try the next bundled/runtime location before falling back to the built-in prompt.
-    }
-  }
-  return fallbackPrompt();
+  return (await readConfiguredSkill("story_agent_decision.md", fallbackPrompt())).content;
 }
 
 function buildMemPrompt(mem: Awaited<ReturnType<Memory["get"]>>): string {

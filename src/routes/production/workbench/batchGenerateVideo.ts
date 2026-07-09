@@ -6,7 +6,11 @@ import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { enqueueVideoGeneration } from "@/utils/videoGenerationQueue";
 import { resolveWorkbenchReferences, validateReferenceLimits } from "@/services/workbenchReference";
-import { assertVideoDurationSupported, getVideoModelPolicy } from "@/services/videoModelPolicy";
+import {
+  assertVideoDurationSupported,
+  assertVideoModelAvailable,
+  getVideoModelPolicy,
+} from "@/services/videoModelPolicy";
 import { assertTrackStoryboardsReady } from "@/services/storyboardFacts";
 
 const router = express.Router();
@@ -69,6 +73,11 @@ export default router.post(
       await assertTrackStoryboardsReady({ projectId, scriptId, trackIds });
     } catch (cause) {
       return res.status(400).send(error(u.error(cause).message));
+    }
+    try {
+      assertVideoModelAvailable(durationPolicy);
+    } catch (cause) {
+      return res.status(400).send(error(u.error(cause).message, { durationPolicy }));
     }
 
     const tasks = await Promise.all(

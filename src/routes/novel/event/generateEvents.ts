@@ -3,7 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { createUnifiedTask } from "@/services/taskCoordinator";
+import { createUnifiedTask, formatUnifiedTaskEnvelope } from "@/services/taskCoordinator";
 
 const router = express.Router();
 
@@ -38,7 +38,7 @@ export default router.post(
         describe: `提取章节事件：${chapter.chapter || chapter.id}`,
         payload: { projectId, novelId: chapter.id },
       });
-      tasks.push({ novelId: chapter.id, taskId: task.taskId, legacyTaskId: task.legacyTaskId });
+      tasks.push({ novelId: chapter.id, ...formatUnifiedTaskEnvelope(task, "novel", chapter.id) });
     }
     return res.status(200).send(success({ total: tasks.length, tasks }));
   },

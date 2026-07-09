@@ -60,6 +60,15 @@ export interface CreateUnifiedTaskInput {
   describe?: string;
   relatedObjects?: unknown;
 }
+
+export interface UnifiedTaskEnvelope {
+  taskId: string;
+  legacyTaskId: number;
+  status: string;
+  targetType: string;
+  targetId: string | number | null;
+}
+
 const taskLog = createLogger("task");
 
 function compactJson(value: unknown, maxBytes = 64 * 1024): string | null {
@@ -165,6 +174,23 @@ export async function createUnifiedTask(input: CreateUnifiedTaskInput, database:
     });
     return { id, legacyTaskId: id, taskId, eventId: Number(eventId), status };
   });
+}
+
+export function formatUnifiedTaskEnvelope(
+  task: { taskId: string; legacyTaskId?: number; id?: number; status: string },
+  targetType: string,
+  targetId?: string | number | null,
+): UnifiedTaskEnvelope {
+  const legacyTaskId = Number(task.legacyTaskId ?? task.id);
+  if (!task.taskId) throw new Error("Unified task envelope requires taskId");
+  if (!Number.isFinite(legacyTaskId)) throw new Error("Unified task envelope requires legacyTaskId");
+  return {
+    taskId: task.taskId,
+    legacyTaskId,
+    status: task.status,
+    targetType,
+    targetId: targetId ?? null,
+  };
 }
 
 export async function adoptLegacyTask(
@@ -332,6 +358,25 @@ export async function claimUnifiedTask(workerId: string, leaseMs = 120_000, data
   return task;
 }
 
+export async function renewUnifiedTaskLease(taskIdOrLegacyId: string | number, leaseMs = 120_000, database: any = db) {
+  const now = Date.now();
+  const query = database("o_tasks");
+  const current =
+    typeof taskIdOrLegacyId === "number"
+      ? await query.where("id", taskIdOrLegacyId).first()
+      : await query.where("taskId", taskIdOrLegacyId).first();
+  if (!current || !["pending", "queued", "submitting", "processing"].includes(String(current.status || ""))) return null;
+  await database("o_tasks").where("id", current.id).update({
+    leaseExpiresAt: now + leaseMs,
+    updateTime: now,
+  });
+  return {
+    taskId: current.taskId,
+    legacyTaskId: Number(current.id),
+    leaseExpiresAt: now + leaseMs,
+  };
+}
+
 export async function cancelUnifiedTask(taskId: string, database: any = db) {
   const task = await database("o_tasks").where({ taskId }).first();
   if (!task) return { ok: false as const, statusCode: 404, message: "任务不存在" };
@@ -344,6 +389,22 @@ export async function cancelUnifiedTask(taskId: string, database: any = db) {
     .update({ status: "cancelled" });
   if (!changed) return { ok: false as const, statusCode: 409, message: "任务状态已发生变化" };
   await updateUnifiedTask(task.id, { status: "cancelled", phase: "cancelled", reason: "用户取消", clearLease: true }, database);
+  if (task.handler === "script-asset-extract") {
+    try {
+      const payload = parseJsonObject(task.payloadJson);
+      const scriptIds = Array.isArray(payload?.scriptIds)
+        ? payload.scriptIds.map(Number).filter(Number.isFinite)
+        : [];
+      if (scriptIds.length) {
+        await database("o_script").where("projectId", task.projectId).whereIn("id", scriptIds).update({
+          extractState: -1,
+          errorReason: "用户取消",
+        });
+      }
+    } catch {
+      // Best-effort compatibility update only; task cancellation has already succeeded.
+    }
+  }
   taskLog.info("Unified task cancelled", {
     event: "task.cancelled",
     taskId,

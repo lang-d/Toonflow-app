@@ -43,6 +43,21 @@ interface TTSModel {
   voices: { title: string; voice: string }[];
 }
 
+interface MusicModel {
+  name: string;
+  modelName: string;
+  type: "music";
+  durationRange?: { min?: number; max?: number };
+  outputFormats?: string[];
+  vocal?: "optional" | boolean;
+  lyrics?: "optional" | boolean;
+  referenceAudio?: "optional" | boolean;
+  loop?: "optional" | boolean;
+  associationSkills?: string;
+  supportedFlags?: string[];
+  queueConfig?: any;
+}
+
 interface VendorConfig {
   id: string;
   version: string;
@@ -52,7 +67,7 @@ interface VendorConfig {
   icon?: string;
   inputs: { key: string; label: string; type: "text" | "password" | "url"; required: boolean; placeholder?: string; disabled?: boolean }[];
   inputValues: Record<string, string>;
-  models: (TextModel | ImageModel | VideoModel | TTSModel)[];
+  models: (TextModel | ImageModel | VideoModel | TTSModel | MusicModel)[];
 }
 
 type ReferenceList =
@@ -77,6 +92,19 @@ interface VideoConfig {
   mode: VideoMode[];
 }
 
+interface MusicConfig {
+  prompt: string;
+  durationSec?: number;
+  duration?: number;
+  vocalMode?: string;
+  lyrics?: string;
+  negativePrompt?: string;
+  referenceList?: Extract<ReferenceList, { type: "audio" }>[];
+  outputFormat?: string;
+  seed?: number;
+  extra?: Record<string, unknown>;
+}
+
 interface ImageSubmitResult {
   providerTaskId: string;
   taskId?: string;
@@ -97,6 +125,7 @@ declare const dreaminaCli: {
   imageSubmit: (config: ImageConfig, model: ImageModel) => Promise<ImageSubmitResult>;
   imagePoll: (providerTaskId: string, model: ImageModel) => Promise<ImagePollResult>;
   videoRequest: (config: VideoConfig, model: VideoModel) => Promise<string>;
+  musicRequest: (config: MusicConfig, model: MusicModel) => Promise<string>;
 };
 
 declare const exports: {
@@ -106,6 +135,7 @@ declare const exports: {
   imageSubmit: (c: ImageConfig, m: ImageModel) => Promise<ImageSubmitResult>;
   imagePoll: (providerTaskId: string, m: ImageModel) => Promise<ImagePollResult>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>;
+  musicRequest: (c: MusicConfig, m: MusicModel) => Promise<string>;
   ttsRequest: (c: any, m: TTSModel) => Promise<string>;
 };
 
@@ -141,6 +171,10 @@ const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<str
   return dreaminaCli.videoRequest(config, model);
 };
 
+const musicRequest = async (config: MusicConfig, model: MusicModel): Promise<string> => {
+  return dreaminaCli.musicRequest(config, model);
+};
+
 const ttsRequest = async (): Promise<string> => {
   throw new Error("即梦官方 CLI 供应商暂不提供 TTS 模型。");
 };
@@ -151,6 +185,7 @@ exports.imageRequest = imageRequest;
 exports.imageSubmit = imageSubmit;
 exports.imagePoll = imagePoll;
 exports.videoRequest = videoRequest;
+exports.musicRequest = musicRequest;
 exports.ttsRequest = ttsRequest;
 
 export {};

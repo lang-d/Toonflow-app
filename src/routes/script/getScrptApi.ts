@@ -6,6 +6,17 @@ import { validateFields } from "@/middleware/middleware";
 import { VISUAL_ASSET_TYPES } from "@/services/assetTypes";
 const router = express.Router();
 
+function parseTaskPayloadScriptIds(payloadJson: unknown) {
+  try {
+    const payload = JSON.parse(String(payloadJson || "{}"));
+    return Array.isArray(payload.scriptIds)
+      ? payload.scriptIds.map(Number).filter(Number.isFinite)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 export default router.post(
   "/",
   validateFields({
@@ -48,6 +59,31 @@ export default router.post(
       createTime: i.createTime,
       relatedAssets: scriptAssetsMap[i.id!] || [],
     }));
+    const activeTasks = await u
+      .db("o_tasks")
+      .where({ projectId, handler: "script-asset-extract" })
+      .whereIn("status", ["pending", "queued", "submitting", "processing"])
+      .orderBy("updateTime", "desc")
+      .select("id", "taskId", "status", "reason", "payloadJson");
+    const taskByScriptId = new Map<number, any>();
+    for (const task of activeTasks) {
+      for (const scriptId of parseTaskPayloadScriptIds(task.payloadJson)) {
+        if (!taskByScriptId.has(scriptId)) taskByScriptId.set(scriptId, task);
+      }
+    }
+    for (const item of returnData) {
+      const task = taskByScriptId.get(Number(item.id));
+      if (task) {
+        (item as any).assetExtraction = {
+          status: task.status,
+          taskId: task.taskId,
+          legacyTaskId: Number(task.id),
+          reason: task.reason || "",
+        };
+      } else {
+        (item as any).assetExtraction = null;
+      }
+    }
     res.status(200).send(success(returnData));
   },
 );

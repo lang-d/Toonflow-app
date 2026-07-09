@@ -1,5 +1,6 @@
 import { Server } from "socket.io";
 import productionAgent from "./routes/productionAgent";
+import musicProductionAgent from "./routes/musicProductionAgent";
 import scriptAgent from "./routes/scriptAgent";
 import storyAgent from "./routes/storyAgent";
 import taskStatus from "./routes/taskStatus";
@@ -9,6 +10,7 @@ export default (io: Server) => {
   const isolatedAgent = process.env.TOONFLOW_RUNTIME_ROLE === "api";
   const routes: Record<string, (nsp: ReturnType<Server["of"]>) => void> = {
     productionAgent: isolatedAgent ? agentProxy("productionAgent") : productionAgent,
+    musicProductionAgent: isolatedAgent ? agentProxy("musicProductionAgent") : musicProductionAgent,
     scriptAgent: isolatedAgent ? agentProxy("scriptAgent") : scriptAgent,
     storyAgent: isolatedAgent ? agentProxy("storyAgent") : storyAgent,
     task: taskStatus,

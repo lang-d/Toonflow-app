@@ -11,7 +11,7 @@ export default router.post(
   "/",
   validateFields({
     modelName: z.string(),
-    type: z.enum(["text", "video", "image"]),
+    type: z.enum(["text", "video", "image", "music"]),
     id: z.string(),
   }),
   async (req, res) => {
@@ -31,6 +31,16 @@ export default router.post(
           },
         },
         video: { fnName: "videoRequest", modelData: {} },
+        music: {
+          fnName: "musicRequest",
+          modelData: {
+            prompt: "A 20 second cinematic underscore cue with a clear emotional arc, gentle piano, warm strings, no vocals.",
+            durationSec: 20,
+            vocalMode: "instrumental",
+            lyrics: "",
+            referenceList: [],
+          },
+        },
       } as const;
       const vendorConfigData = await u.db("o_vendorConfig").where("id", id).first();
 
@@ -53,7 +63,7 @@ export default router.post(
           mode: "text",
         };
       }
-      const reqConfig = requestFn[type as "text" | "video" | "image"];
+      const reqConfig = requestFn[type as "text" | "video" | "image" | "music"];
 
       const getWeatherTool = tool({
         description: "Get the weather in a location",
@@ -87,12 +97,13 @@ export default router.post(
         const aiTypeFn = {
           image: "Image",
           video: "Video",
+          music: "Music",
         } as const;
-        const reqFn = await u.Ai[aiTypeFn[type as "image" | "video"]](`${id}:${modelName}`).run({
+        const reqFn = await u.Ai[aiTypeFn[type as "image" | "video" | "music"]](`${id}:${modelName}`).run({
           ...reqConfig.modelData,
         });
-        await reqFn.save(type == "video" ? "test.mp4" : "testImage.jpg");
-        const outputPath = type == "video" ? "test.mp4" : "testImage.jpg";
+        await reqFn.save(type == "video" ? "test.mp4" : type == "music" ? "testMusic.mp3" : "testImage.jpg");
+        const outputPath = type == "video" ? "test.mp4" : type == "music" ? "testMusic.mp3" : "testImage.jpg";
         res.status(200).send(success({ media: await u.mediaRef.toMediaRef(outputPath) }));
       }
     } catch (err) {

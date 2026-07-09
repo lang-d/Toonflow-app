@@ -63,8 +63,10 @@ export async function syncDefaultVendorConfigs(knex: Knex) {
     const id = vendor?.id || filename.replace(/\.ts$/, "");
     const currentVersion = getVendorVersion(id);
     const existing = await knex("o_vendorConfig").where("id", id).first();
-    const defaultModels = JSON.stringify(vendor?.models ?? []);
-    const shouldUpdate = compareVersion(vendor?.version, currentVersion) > 0 || existing?.models !== defaultModels;
+    const defaultModelList = Array.isArray(vendor?.models) ? vendor.models : [];
+    const defaultModels = JSON.stringify(defaultModelList);
+    const shouldUpdateCode = compareVersion(vendor?.version, currentVersion) > 0;
+    const shouldUpdateModels = defaultModelList.length > 0 && existing?.models !== defaultModels;
 
     if (!existing) {
       await knex("o_vendorConfig").insert({
@@ -77,9 +79,11 @@ export async function syncDefaultVendorConfigs(knex: Knex) {
       continue;
     }
 
-    if (!shouldUpdate) continue;
+    if (!shouldUpdateCode && !shouldUpdateModels) continue;
     writeVendorCode(id, tsCode);
-    await knex("o_vendorConfig").where("id", id).update({ models: defaultModels });
+    if (shouldUpdateModels) {
+      await knex("o_vendorConfig").where("id", id).update({ models: defaultModels });
+    }
   }
 }
 

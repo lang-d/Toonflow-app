@@ -12,15 +12,15 @@ import {
 } from "@/services/storyboardTableContract";
 import { fallbackGroupKey, syncVideoTracksForStoryboards } from "@/services/storyboardGroupPlanner";
 import { getProjectDefaultVideoPolicy, VideoDurationPolicy } from "@/services/videoModelPolicy";
+import { GENERATION_CONTENT_TTL_MS, runLazyRetentionCleanup } from "@/services/retention";
 
 export const STORYBOARD_BATCH_SIZE = 10;
 export const STORYBOARD_ROW_MAX_BYTES = 32 * 1024;
 export const STORYBOARD_BATCH_MAX_BYTES = 256 * 1024;
-export const STORYBOARD_GENERATION_TTL_MS = 24 * 60 * 60 * 1000;
+export const STORYBOARD_GENERATION_TTL_MS = GENERATION_CONTENT_TTL_MS;
 export const STORYBOARD_FAILED_RETRY_COOLDOWN_MS = 30 * 1000;
 export const STORYBOARD_COMMIT_STALE_MS = 5 * 60 * 1000;
 const STORYBOARD_ACTIVE_GENERATION_STATES = ["writing", "invalid", "failed"] as const;
-const STORYBOARD_EXPIRE_GENERATION_STATES = ["writing", "invalid", "failed", "committing", "superseded"] as const;
 
 export interface BeginStoryboardGenerationInput {
   projectId: number;
@@ -33,6 +33,14 @@ export interface AppendStoryboardRowsInput {
   generationId: string;
   startIndex: number;
   rows: StoryboardTableRowV2[];
+}
+
+export interface ReadStoryboardGenerationDraftInput {
+  generationId: string;
+  projectId: number;
+  scriptId: number;
+  offset?: number;
+  limit?: number;
 }
 
 export type StoryboardGenerationFailure = {
@@ -324,21 +332,8 @@ async function assertStoryboardGenerationScope(knex: any, projectId: number, scr
 }
 
 export async function cleanupExpiredStoryboardGenerations(knex: any = u.db) {
-  const cutoff = Date.now() - STORYBOARD_GENERATION_TTL_MS;
-  const expired = await knex("o_storyboardGeneration")
-    .whereIn("state", STORYBOARD_EXPIRE_GENERATION_STATES)
-    .andWhere("updatedAt", "<", cutoff)
-    .select("generationId");
-  const ids = expired.map((item: any) => String(item.generationId));
-  if (!ids.length) return 0;
-  await knex.transaction(async (trx: any) => {
-    await trx("o_storyboardGenerationRow").whereIn("generationId", ids).del();
-    await trx("o_storyboardGeneration").whereIn("generationId", ids).update({
-      state: "expired",
-      updatedAt: Date.now(),
-    });
-  });
-  return ids.length;
+  const result = await runLazyRetentionCleanup({ database: knex, force: true });
+  return result.storyboardDraftRows;
 }
 
 export async function beginStoryboardGeneration(input: BeginStoryboardGenerationInput, knex: any = u.db) {
@@ -357,7 +352,7 @@ export async function beginStoryboardGeneration(input: BeginStoryboardGeneration
   }
 
   await assertStoryboardGenerationScope(knex, Number(input.projectId), Number(input.scriptId));
-  await cleanupExpiredStoryboardGenerations(knex);
+  await runLazyRetentionCleanup({ database: knex });
   await recoverStaleCommittingGenerationsForScope(knex, Number(input.projectId), Number(input.scriptId));
   const now = Date.now();
   const generationId = crypto.randomUUID();
@@ -591,14 +586,108 @@ function validateGroups(
       totalDuration > Number(durationPolicy.maxDuration)
     ) {
       issues.push(
-        generationIssue(
-          `groups.${group.groupKey}.durationSec`,
-          `group duration ${totalDuration}s exceeds ${durationPolicy.modelLabel} max duration ${durationPolicy.maxDuration}s`,
-        ),
+        {
+          ...generationIssue(
+            `groups.${group.groupKey}.durationSec`,
+            `group duration ${totalDuration}s exceeds ${durationPolicy.modelLabel} max duration ${durationPolicy.maxDuration}s`,
+          ),
+          code: "GROUP_DURATION_EXCEEDS_MODEL",
+          details: {
+            groupKey: group.groupKey,
+            storyboardIndexes: group.storyboardIndexes,
+            totalDuration,
+            modelLabel: durationPolicy.modelLabel,
+            maxDuration: durationPolicy.maxDuration,
+            exceededBy: Number((totalDuration - Number(durationPolicy.maxDuration)).toFixed(3)),
+          },
+        },
       );
     }
   }
   return issues;
+}
+
+function parseGenerationErrorJson(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return { message: value };
+  }
+}
+
+export async function readStoryboardGenerationDraft(
+  input: ReadStoryboardGenerationDraftInput,
+  knex: any = u.db,
+) {
+  const generation = await knex("o_storyboardGeneration").where({ generationId: input.generationId }).first();
+  if (!generation) throw new Error("storyboard generation does not exist");
+  if (Number(generation.projectId) !== Number(input.projectId) || Number(generation.scriptId) !== Number(input.scriptId)) {
+    throw new Error("storyboard generation does not belong to the current project and script");
+  }
+  if (generation.state === "committed") {
+    throw new Error("committed storyboard generations are available from the formal storyboard data");
+  }
+
+  const offset = Math.max(0, Math.floor(Number(input.offset) || 0));
+  const limit = Math.min(10, Math.max(1, Math.floor(Number(input.limit) || STORYBOARD_BATCH_SIZE)));
+  const rows = await knex("o_storyboardGenerationRow")
+    .where({ generationId: input.generationId })
+    .orderBy("rowIndex", "asc")
+    .offset(offset)
+    .limit(limit);
+  const totalRow = await knex("o_storyboardGenerationRow")
+    .where({ generationId: input.generationId })
+    .count({ count: "*" })
+    .first();
+  const total = Number(totalRow?.count || 0);
+  const parsedRows = rows.map((row: any) => ({
+    index: Number(row.rowIndex),
+    row: JSON.parse(row.rowJson),
+  }));
+  const error = parseGenerationErrorJson(generation.errorJson);
+
+  return {
+    generationId: generation.generationId,
+    projectId: Number(generation.projectId),
+    scriptId: Number(generation.scriptId),
+    state: generation.state,
+    expectedRowCount: Number(generation.expectedRowCount),
+    groups: parseStoredStoryboardGroupPlans(generation.groupPlanJson),
+    issues: Array.isArray(error?.issues) ? error.issues : [],
+    offset,
+    limit,
+    total,
+    nextOffset: offset + parsedRows.length < total ? offset + parsedRows.length : null,
+    eof: offset + parsedRows.length >= total,
+    rows: parsedRows,
+  };
+}
+
+export function storyboardValidationDecisionSummary(generationId: string, result: any) {
+  const issues = Array.isArray(result?.issues) ? result.issues : [];
+  const durationIssues = issues.filter((issue: any) => issue?.code === "GROUP_DURATION_EXCEEDS_MODEL");
+  const details = durationIssues.map((issue: any) => {
+    const value = issue.details || {};
+    const indexes = Array.isArray(value.storyboardIndexes) ? value.storyboardIndexes.map(Number) : [];
+    const range = indexes.length
+      ? `第${Math.min(...indexes) + 1}${indexes.length > 1 ? `-${Math.max(...indexes) + 1}` : ""}镜`
+      : "对应镜头";
+    return `草稿分组 ${value.groupKey || "未知分组"}（${range}）总时长 ${value.totalDuration} 秒，超过 ${value.modelLabel || "当前视频模型"} 上限 ${value.maxDuration} 秒 ${value.exceededBy} 秒`;
+  });
+  const otherCount = Math.max(0, issues.length - durationIssues.length);
+  const issueText = [...details, ...(otherCount ? [`另有 ${otherCount} 项校验问题`] : [])].join("；");
+  const summary = `本次新生成的分镜草稿未通过提交校验，当前正式分镜表未被覆盖。${issueText || `共发现 ${issues.length || 1} 项校验问题`}。`;
+  return {
+    summary,
+    question: `${summary} 是否根据这些问题调整失败草稿并重新提交？`,
+    resultJson: {
+      kind: "storyboard_validation_decision",
+      generationId,
+      issues,
+      summary,
+    },
+  };
 }
 
 export async function commitStoryboardGeneration(
@@ -834,7 +923,6 @@ export async function commitStoryboardGeneration(
             }),
             updatedAt: Date.now(),
           });
-        await trx("o_storyboardGenerationRow").where({ generationId }).del();
       });
 
       return {
@@ -972,7 +1060,6 @@ async function commitStoryboardGenerationUnsafe(generationId: string, knex: any 
       revision,
       updatedAt: Date.now(),
     });
-    await trx("o_storyboardGenerationRow").where({ generationId }).del();
   });
 
   return {

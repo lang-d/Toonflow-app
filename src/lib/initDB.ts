@@ -141,6 +141,15 @@ export default async (
             model: "",
             modelName: "",
             vendorId: null,
+            key: "musicProductionAgent",
+            name: "配乐生产Agent",
+            desc: "独立配乐生产阶段，用于音乐创作讨论和配乐任务调度",
+            disabled: false,
+          },
+          {
+            model: "",
+            modelName: "",
+            vendorId: null,
             key: "universalAi",
             name: "通用AI",
             desc: "用于小说事件提取、资产提示词生成、台词提取等边缘功能，建议使用具备较强文本处理能力的模型",
@@ -217,6 +226,17 @@ export default async (
             key: "productionAgent:decisionAgent",
             name: "生产Agent:决策层",
             desc: "决策层",
+            temperature: 1,
+            maxOutputTokens: 0,
+            disabled: false,
+          },
+          {
+            model: "",
+            modelName: "",
+            vendorId: null,
+            key: "musicProductionAgent:decisionAgent",
+            name: "配乐生产Agent:决策层",
+            desc: "配乐创作讨论和任务调度",
             temperature: 1,
             maxOutputTokens: 0,
             disabled: false,
@@ -655,7 +675,80 @@ export default async (
         table.index(["generationId"], "idx_storyboard_generation_row_generation");
       },
     },
+    {
+      name: "o_directorPlanGeneration",
+      builder: (table) => {
+        table.integer("id").primary();
+        table.string("generationId").notNullable().unique();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId").notNullable();
+        table.integer("expectedSectionCount").notNullable();
+        table.string("state").notNullable();
+        table.integer("textAssetId");
+        table.integer("version");
+        table.string("contentHash");
+        table.text("errorJson");
+        table.integer("createdAt").notNullable();
+        table.integer("updatedAt").notNullable();
+        table.index(["projectId", "scriptId", "state"], "idx_director_plan_generation_scope");
+        table.index(["updatedAt"], "idx_director_plan_generation_updated");
+      },
+    },
+    {
+      name: "o_directorPlanGenerationChunk",
+      builder: (table) => {
+        table.integer("id").primary();
+        table.string("generationId").notNullable();
+        table.string("sectionKey").notNullable();
+        table.integer("chunkIndex").notNullable();
+        table.text("content").notNullable();
+        table.string("contentHash").notNullable();
+        table.integer("createdAt").notNullable();
+        table.integer("updatedAt").notNullable();
+        table.unique(["generationId", "sectionKey", "chunkIndex"], {
+          indexName: "uq_director_plan_generation_chunk",
+        });
+        table.index(["generationId", "sectionKey", "chunkIndex"], "idx_director_plan_generation_chunk_order");
+      },
+    },
     //flowData-剧本
+    {
+      name: "o_agentRun",
+      builder: (table) => {
+        table.integer("id").primary();
+        table.string("runId").notNullable().unique();
+        table.string("agentKey").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId").notNullable();
+        table.string("isolationKey").notNullable();
+        table.string("messageId");
+        table.string("status").notNullable();
+        table.string("currentStage");
+        table.string("currentSubAgent");
+        table.text("reason");
+        table.text("errorJson");
+        table.text("resultJson");
+        table.integer("heartbeatAt").notNullable();
+        table.integer("startedAt").notNullable();
+        table.integer("finishedAt");
+        table.integer("createdAt").notNullable();
+        table.integer("updatedAt").notNullable();
+        table.index(["agentKey", "projectId", "scriptId", "status"], "idx_agent_run_scope_status");
+        table.index(["runId"], "idx_agent_run_run_id");
+        table.index(["status", "heartbeatAt"], "idx_agent_run_heartbeat");
+      },
+    },
+    {
+      name: "o_agentRunEvent",
+      builder: (table) => {
+        table.integer("id").primary();
+        table.string("runId").notNullable();
+        table.string("eventType").notNullable();
+        table.text("payloadJson");
+        table.integer("createdAt").notNullable();
+        table.index(["runId", "id"], "idx_agent_run_event_run_id");
+      },
+    },
     {
       name: "o_agentWorkData",
       builder: (table) => {
@@ -765,6 +858,97 @@ export default async (
         table.primary(["id"]);
         table.unique(["id"]);
         table.index(["projectId", "scriptId", "archived"], "idx_video_track_owner_archived");
+      },
+    },
+    {
+      name: "o_musicBible",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("version").notNullable();
+        table.text("title");
+        table.text("content").notNullable();
+        table.text("styleProfileJson").notNullable().defaultTo("{}");
+        table.text("sourceSummaryJson").notNullable().defaultTo("{}");
+        table.string("state").notNullable().defaultTo("complete");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+        table.unique(["projectId", "version"], { indexName: "uq_music_bible_version" });
+        table.index(["projectId", "state"], "idx_music_bible_project_state");
+      },
+    },
+    {
+      name: "o_musicPlan",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId");
+        table.string("mode").notNullable();
+        table.integer("bibleId").notNullable();
+        table.integer("bibleVersion").notNullable();
+        table.integer("version").notNullable();
+        table.text("content").notNullable();
+        table.text("cueSheetJson").notNullable().defaultTo("[]");
+        table.string("state").notNullable().defaultTo("complete");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+        table.index(["projectId", "scriptId", "mode", "version"], "idx_music_plan_scope");
+        table.index(["bibleId"], "idx_music_plan_bible");
+      },
+    },
+    {
+      name: "o_musicCue",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId");
+        table.integer("planId").notNullable();
+        table.integer("planVersion").notNullable();
+        table.string("cueKey").notNullable();
+        table.string("cueType").notNullable();
+        table.text("title");
+        table.text("narrativePurpose");
+        table.text("startRefJson").notNullable().defaultTo("{}");
+        table.text("endRefJson").notNullable().defaultTo("{}");
+        table.integer("durationSec");
+        table.text("promptBrief");
+        table.text("musicSpecJson").notNullable().defaultTo("{}");
+        table.string("state").notNullable().defaultTo("ready");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+        table.unique(["planId", "cueKey"], { indexName: "uq_music_cue_plan_key" });
+        table.index(["projectId", "scriptId"], "idx_music_cue_scope");
+        table.index(["planId"], "idx_music_cue_plan");
+      },
+    },
+    {
+      name: "o_musicCueAsset",
+      builder: (table) => {
+        table.integer("id").notNullable();
+        table.integer("projectId").notNullable();
+        table.integer("cueId").notNullable();
+        table.integer("version").notNullable();
+        table.integer("assetsId");
+        table.integer("childAssetId");
+        table.text("prompt");
+        table.text("compiledPromptJson").notNullable().defaultTo("{}");
+        table.text("model");
+        table.string("state").notNullable().defaultTo("complete");
+        table.text("errorReason");
+        table.integer("selected").notNullable().defaultTo(0);
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.primary(["id"]);
+        table.unique(["id"]);
+        table.unique(["cueId", "version"], { indexName: "uq_music_cue_asset_version" });
+        table.index(["projectId", "cueId"], "idx_music_cue_asset_scope");
+        table.index(["cueId", "selected"], "idx_music_cue_asset_selected");
       },
     },
     {
@@ -918,6 +1102,7 @@ export default async (
       },
     },
     {
+      // Legacy skill metadata retained for database compatibility. Runtime loading uses skillResolver and stage registries.
       name: "o_skillList",
       builder: (table) => {
         table.text("id").notNullable();

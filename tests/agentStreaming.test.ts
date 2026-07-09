@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AGENT_STREAM_IDLE_TIMEOUT_MS,
   AgentStreamIdleTimeoutError,
+  AgentStreamLimitError,
   consumeFullStream,
   createAgentModelStreamScope,
 } from "../src/agents/shared/streaming";
+
+test("agent stream default idle timeout is five minutes", () => {
+  assert.equal(AGENT_STREAM_IDLE_TIMEOUT_MS, 5 * 60 * 1000);
+});
 
 class FakeTextStream {
   data = "";
@@ -157,7 +163,7 @@ test("agent stream idle timeout visibly errors and only aborts the model stream"
   assert.equal(userController.signal.aborted, false);
   assert.equal(msg.status, "error");
   assert.equal(msg.textStream.status, "error");
-  assert.match(msg.textStream.data, /AI 输出超过 120 秒没有新内容/);
+  assert.match(msg.textStream.data, /AI 输出超过 5 分钟没有新内容/);
 });
 
 test("agent stream chunk error is surfaced to the message", async () => {
@@ -220,6 +226,55 @@ test("tool input chunks keep the model stream active", async () => {
 
   assert.equal(response, "done");
   assert.equal(msg.status, "complete");
+});
+
+test("many small tool input chunks do not trigger a chunk-count limit", async () => {
+  const msg = new FakeMessage();
+
+  async function* manySmallToolInputChunks() {
+    yield { type: "tool-input-start", id: "call-1", toolName: "childAgent" };
+    for (let index = 0; index < 20_000; index += 1) {
+      yield { type: "tool-input-delta", id: "call-1", delta: "a" };
+    }
+    yield { type: "tool-input-end", id: "call-1" };
+    yield { type: "text-delta", text: "done" };
+  }
+
+  const response = await consumeFullStream({
+    agentName: "testAgent",
+    fullStream: manySmallToolInputChunks(),
+    initialMsg: msg,
+    idleTimeoutMs: 1000,
+  });
+
+  assert.equal(response, "done");
+  assert.equal(msg.status, "complete");
+});
+
+test("tool input byte limit still aborts oversized input", async () => {
+  const msg = new FakeMessage();
+  let modelAborted = false;
+
+  await assert.rejects(
+    consumeFullStream({
+      agentName: "testAgent",
+      fullStream: streamChunks([
+        { type: "tool-input-start", id: "call-1", toolName: "childAgent" },
+        { type: "tool-input-delta", id: "call-1", delta: "ab" },
+        { type: "tool-input-delta", id: "call-1", delta: "cd" },
+      ]),
+      initialMsg: msg,
+      idleTimeoutMs: 1000,
+      maxToolInputBytes: 3,
+      abortModelStream: () => {
+        modelAborted = true;
+      },
+    }),
+    AgentStreamLimitError,
+  );
+
+  assert.equal(modelAborted, true);
+  assert.equal(msg.status, "error");
 });
 
 test("tool execution suspends model idle timeout until its result arrives", async () => {

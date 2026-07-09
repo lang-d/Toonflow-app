@@ -7,11 +7,11 @@
 | 操作 | 调用 |
 |------|------|
 | 读取工作区 | `get_planData` |
-| 读取事件 | `get_novel_events(ids:number[])` |
+| 读取事件 | `get_novel_events({ chapterIndexs:number[] })` |
 
 ## 执行流程
 
-1. 调用 `get_novel_events(ids)` 获取事件表
+1. 调用 `get_novel_events({ chapterIndexs })` 获取事件表
 2. 构建骨架内容（严格参照下方【输出格式规范】）：
    - 故事核：一句话总结整部剧的核心吸引力
    - 隐线：主角的内在成长轨迹（人物弧）

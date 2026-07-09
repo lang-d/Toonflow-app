@@ -3,7 +3,7 @@ import { z } from "zod";
 import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { createUnifiedTask } from "@/services/taskCoordinator";
+import { createUnifiedTask, formatUnifiedTaskEnvelope } from "@/services/taskCoordinator";
 
 const router = express.Router();
 const referenceSchema = z.object({
@@ -55,7 +55,7 @@ export default router.post(
         model,
         describe: "视频工作台提示词生成",
       });
-      res.status(200).send(success({ taskId: task.taskId, legacyTaskId: task.legacyTaskId, trackId, status: "queued" }));
+      res.status(200).send(success({ ...formatUnifiedTaskEnvelope(task, "videoTrack", trackId), trackId }));
     } catch (e) {
       await u.db("o_videoTrack").where({ id: trackId }).update({ state: "生成失败", reason: u.error(e).message });
       res.status(400).send(error(u.error(e).message));

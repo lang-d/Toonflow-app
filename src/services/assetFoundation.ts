@@ -1,5 +1,5 @@
 import u from "@/utils";
-import { readBuiltinDataFile } from "@/services/builtinData";
+import { readConfiguredSkill } from "@/services/skillResolver";
 import { getProjectContextPack } from "@/services/projectMaterial";
 
 export type AssetFoundationType = "role" | "scene" | "tool";
@@ -45,8 +45,7 @@ function getAiText(result: any) {
 }
 
 async function readSkill(fileName: string, fallback: string) {
-  const skill = await readBuiltinDataFile("skills", fileName);
-  return skill?.content || fallback;
+  return (await readConfiguredSkill(fileName, fallback)).content;
 }
 
 function extractTagContent(text: string, tag: string) {
@@ -208,6 +207,31 @@ function assetPromptChecklist(assetType: AssetFoundationType) {
   ].join("\n");
 }
 
+function assetFoundationBoundaryRules(assetType: AssetFoundationType) {
+  const common = [
+    "基础资产边界：assetFoundation 只写默认、稳定、可复用事实，不写单集剧情状态、后续事件物件、临时摆放、屏幕内容或证据内容。",
+    "衍生资产和分镜图负责承接具体剧情时刻，例如某顿饭的菜品摆放、手机屏幕显示转账记录、录音播放界面、临时证据展示。",
+    "聊天记录、转账记录、录音、通话记录、通知文字等信息内容默认绑定到手机、电脑、录音笔、文件袋、纸质凭证等载体，不作为独立基础资产事实。",
+  ];
+  if (assetType === "scene") {
+    return [
+      ...common,
+      "场景 assetFoundation 只允许写固定布局、常设家具、常设设备、长期陈设、默认清洁/磨损状态。",
+      "禁止把某场戏临时出现的菜品、账单、手机、纸条、证据、录音、礼物、药品等写成场景默认物件。",
+      "餐厅等场景可以写桌椅、收银台、后厨连接、常见调味架等常设物；不得写某顿饭的菜碟数量、剧情餐品、冲突证据。",
+    ].join("\n");
+  }
+  if (assetType === "tool") {
+    return [
+      ...common,
+      "道具 assetFoundation 只写载体本身的稳定外观、材质、结构、归属或固定标识。",
+      "手机、电脑、录音笔等载体不得在基础设定中固化具体聊天对象、金额、录音内容、屏幕文字或后续证据状态。",
+      "只有打印聊天记录、纸质转账凭证、独立文件、独立物证等已经成为实体物件时，信息记录才可以作为道具事实。",
+    ].join("\n");
+  }
+  return common.join("\n");
+}
+
 async function buildPrompt(input: {
   asset: any;
   project: any;
@@ -250,6 +274,9 @@ async function buildPrompt(input: {
     "",
     "当前资产类型输出 checklist：",
     assetPromptChecklist(assetType),
+    "",
+    "资产基础设定边界补充：",
+    assetFoundationBoundaryRules(assetType),
   ].join("\n");
   const user = [
     `当前 artStyle：${input.project.artStyle || ""}`,

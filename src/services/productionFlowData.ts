@@ -4,8 +4,9 @@ import { resolveStoryboardReferences } from "@/services/storyboardEditor";
 import { renderStoryboardTableFromRows } from "@/services/storyboardTableText";
 import { buildStoryboardVideoFact } from "@/services/storyboardFacts";
 import { getDeriveAssetPromptSnapshot } from "@/services/imageFlow";
-import { getTextAssetContent } from "@/services/textAsset";
+import { getFullTextAssetContent } from "@/services/textAsset";
 import { VISUAL_ASSET_TYPES } from "@/services/assetTypes";
+import { getDirectorPlanGenerationState } from "@/services/directorPlanGeneration";
 
 const ACTIVE_IMAGE_TASK_STATUSES = new Set(["queued", "submitting", "processing"]);
 
@@ -63,11 +64,27 @@ export async function readPersistedScriptPlan(projectId: number, scriptId: numbe
     .orderBy("id", "desc")
     .first();
   if (!asset) return "";
-  return (await getTextAssetContent({ id: Number(asset.id), projectId, limit: Number.MAX_SAFE_INTEGER })).content;
+  return (await getFullTextAssetContent({ id: Number(asset.id), projectId })).content;
 }
 
 export async function buildProductionFlowData(projectId: number, episodesId: number) {
-  const [storedWorkData, scriptData, scriptAssets] = await Promise.all([
+  const [projectData, storedWorkData, scriptData, scriptAssets] = await Promise.all([
+    u
+      .db("o_project")
+      .where("id", projectId)
+      .select(
+        "id",
+        "name",
+        "projectType",
+        "type",
+        "artStyle",
+        "directorManual",
+        "imageModel",
+        "videoModel",
+        "videoRatio",
+        "mode",
+      )
+      .first(),
     u
       .db("o_agentWorkData")
       .where("projectId", String(projectId))
@@ -325,10 +342,26 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
     .first("generationId", "state", "expectedRowCount", "errorJson", "updatedAt");
   const stored = parseStoredWorkData(storedWorkData?.data) as any;
   const persistedScriptPlan = await readPersistedScriptPlan(projectId, episodesId);
+  const directorPlanGeneration = await getDirectorPlanGenerationState(projectId, episodesId);
   return {
     ...stored,
+    project: projectData
+      ? {
+          id: projectData.id,
+          name: projectData.name || "",
+          projectType: projectData.projectType || "",
+          type: projectData.type || "",
+          artStyle: projectData.artStyle || "",
+          directorManual: projectData.directorManual || "",
+          imageModel: projectData.imageModel || "",
+          videoModel: projectData.videoModel || "",
+          videoRatio: projectData.videoRatio || "",
+          mode: projectData.mode || "",
+        }
+      : null,
     script: scriptData?.content ?? "",
     scriptPlan: persistedScriptPlan || stored.scriptPlan || "",
+    directorPlanGeneration,
     assets,
     assetAudioBindings,
     storyboard,

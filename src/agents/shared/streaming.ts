@@ -1,8 +1,12 @@
 import { createLogger } from "@/logger";
 
-export const AGENT_STREAM_IDLE_TIMEOUT_MS = Number(process.env.AGENT_STREAM_IDLE_TIMEOUT_MS || 120000);
+export const AGENT_STREAM_IDLE_TIMEOUT_MS = Number(process.env.AGENT_STREAM_IDLE_TIMEOUT_MS || 5 * 60 * 1000);
+export const AGENT_STREAM_MAX_DURATION_MS = Number(process.env.AGENT_STREAM_MAX_DURATION_MS || 30 * 60 * 1000);
+export const AGENT_STREAM_MAX_TOOL_INPUT_BYTES = Number(process.env.AGENT_STREAM_MAX_TOOL_INPUT_BYTES || 2 * 1024 * 1024);
+export const AGENT_STREAM_LIMIT_MESSAGE =
+  "AI tool input exceeded the safety limit. The current agent run has been stopped; split the task or reduce one-shot output size.";
 export const AGENT_STREAM_IDLE_TIMEOUT_MESSAGE =
-  "AI 输出超过 120 秒没有新内容，已自动结束本次任务，请检查模型服务或重试。";
+  "AI 输出超过 5 分钟没有新内容，已自动结束本次任务，请检查模型服务或重试。";
 
 const log = createLogger("agent-stream");
 
@@ -39,6 +43,8 @@ export type ConsumeFullStreamOptions = {
   userAbortSignal?: AbortSignal;
   abortModelStream?: () => void;
   idleTimeoutMs?: number;
+  maxDurationMs?: number;
+  maxToolInputBytes?: number;
   projectId?: number | string;
   scriptId?: number | string;
 };
@@ -53,6 +59,13 @@ export class AgentStreamIdleTimeoutError extends Error {
   constructor(message = AGENT_STREAM_IDLE_TIMEOUT_MESSAGE) {
     super(message);
     this.name = "AgentStreamIdleTimeoutError";
+  }
+}
+
+export class AgentStreamLimitError extends Error {
+  constructor(message = AGENT_STREAM_LIMIT_MESSAGE) {
+    super(message);
+    this.name = "AgentStreamLimitError";
   }
 }
 
@@ -150,6 +163,8 @@ async function nextChunk<T>(
 
 export async function consumeFullStream(options: ConsumeFullStreamOptions): Promise<string> {
   const idleTimeoutMs = options.idleTimeoutMs ?? AGENT_STREAM_IDLE_TIMEOUT_MS;
+  const maxDurationMs = options.maxDurationMs ?? AGENT_STREAM_MAX_DURATION_MS;
+  const maxToolInputBytes = options.maxToolInputBytes ?? AGENT_STREAM_MAX_TOOL_INPUT_BYTES;
   const iterator = options.fullStream[Symbol.asyncIterator]();
   const activeToolCallIds = new Set<string>();
   let phase: AgentStreamPhase = "model-streaming";
@@ -160,6 +175,8 @@ export async function consumeFullStream(options: ConsumeFullStreamOptions): Prom
   let thinkTime = 0;
   let fullResponse = "";
   let chunkCount = 0;
+  let toolInputChunkCount = 0;
+  let toolInputBytes = 0;
   const startedAt = Date.now();
 
   const logContext = {
@@ -204,6 +221,19 @@ export async function consumeFullStream(options: ConsumeFullStreamOptions): Prom
 
       const chunk = result.value;
       chunkCount += 1;
+      if (Date.now() - startedAt > maxDurationMs) {
+        options.abortModelStream?.();
+        throw new AgentStreamLimitError("AI stream exceeded the maximum run duration. The current agent run has been stopped.");
+      }
+      if (chunk?.type === "tool-input-delta") {
+        toolInputChunkCount += 1;
+        const delta = chunk?.text ?? chunk?.delta ?? chunk?.argsTextDelta ?? "";
+        toolInputBytes += Buffer.byteLength(typeof delta === "string" ? delta : JSON.stringify(delta), "utf8");
+        if (toolInputBytes > maxToolInputBytes) {
+          options.abortModelStream?.();
+          throw new AgentStreamLimitError();
+        }
+      }
       if (chunkCount === 1 || chunkCount % 50 === 0 || chunk?.type === "error") {
         log.debug("Agent stream chunk", {
           event: "agent.stream.chunk",
@@ -267,6 +297,24 @@ export async function consumeFullStream(options: ConsumeFullStreamOptions): Prom
     });
   } catch (err: any) {
     thinking?.complete();
+
+    if (err instanceof AgentStreamLimitError) {
+      Promise.resolve(iterator.return?.()).catch(() => undefined);
+      text.append(err.message);
+      text.error();
+      msg.error(err.message);
+      log.warn("Agent stream safety limit reached", {
+        event: "agent.stream.limit",
+        ...logContext,
+        phase,
+        activeToolCount: activeToolCallIds.size,
+        chunkCount,
+        toolInputChunkCount,
+        toolInputBytes,
+        durationMs: Date.now() - startedAt,
+      });
+      throw err;
+    }
 
     if (
       err instanceof AgentStreamIdleTimeoutError ||

@@ -7,11 +7,11 @@
 | 操作 | 调用 |
 |------|------|
 | 读取工作区 | `get_planData` |
-| 读取事件 | `get_novel_events(ids:number[])` |
+| 读取事件 | `get_novel_events({ chapterIndexs:number[] })` |
 
 ## 执行流程
 
-1. 调用 `get_novel_events(ids)` 获取事件表，调用 `get_planData` 获取故事骨架
+1. 调用 `get_novel_events({ chapterIndexs })` 获取事件表，调用 `get_planData` 获取故事骨架
 2. 按下方【输出格式规范】，依次完成：
    - 核心改编原则（3-5条）：含优先级、正面指导、负面边界
    - 主要删除决策：被删/压缩内容、原因、对主线影响

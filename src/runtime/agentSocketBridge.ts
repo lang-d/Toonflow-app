@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import productionAgent from "@/socket/routes/productionAgent";
+import musicProductionAgent from "@/socket/routes/musicProductionAgent";
 import scriptAgent from "@/socket/routes/scriptAgent";
 import storyAgent from "@/socket/routes/storyAgent";
 
@@ -66,9 +67,11 @@ class VirtualNamespace extends EventEmitter {}
 
 export function attachAgentSocketBridge(port: any) {
   const productionNamespace = new VirtualNamespace();
+  const musicProductionNamespace = new VirtualNamespace();
   const scriptNamespace = new VirtualNamespace();
   const storyNamespace = new VirtualNamespace();
   productionAgent(productionNamespace as any);
+  musicProductionAgent(musicProductionNamespace as any);
   scriptAgent(scriptNamespace as any);
   storyAgent(storyNamespace as any);
   const sockets = new Map<string, VirtualSocket>();
@@ -86,6 +89,8 @@ export function attachAgentSocketBridge(port: any) {
       const namespace =
         message.kind === "productionAgent"
           ? productionNamespace
+          : message.kind === "musicProductionAgent"
+            ? musicProductionNamespace
           : message.kind === "storyAgent"
             ? storyNamespace
             : scriptNamespace;

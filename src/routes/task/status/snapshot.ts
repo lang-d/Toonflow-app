@@ -11,7 +11,7 @@ export default router.post(
   validateFields({
     projectId: z.number(),
     scriptId: z.number().optional(),
-    taskIds: z.array(z.string()).max(500).optional(),
+    taskIds: z.array(z.string().min(1)).max(500).optional(),
   }),
   async (req, res) => {
     const tasks = await getTaskSnapshot(req.body);

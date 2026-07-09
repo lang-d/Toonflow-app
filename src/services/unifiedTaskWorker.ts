@@ -16,16 +16,32 @@ import {
   claimUnifiedTask,
   createUnifiedTask,
   pruneTaskEvents,
+  renewUnifiedTaskLease,
   updateUnifiedTask,
   type UnifiedTaskType,
 } from "@/services/taskCoordinator";
 import { generateProjectSnapshot, importPortableProject } from "@/services/projectPortable";
 import { performStorageMigration } from "@/services/storageMigration";
-import { shouldDeferImageFlowCandidate } from "@/services/unifiedTaskDispatchPolicy";
+import { isImageGenerationTask, shouldDeferImageFlowCandidate } from "@/services/unifiedTaskDispatchPolicy";
+import {
+  executeMusicBibleGenerateTask,
+  executeMusicBibleReviewTask,
+  executeMusicCueCompilePromptTask,
+  executeMusicCueGenerateTask,
+  executeMusicCueReviewPromptTask,
+  executeMusicPlanGenerateTask,
+  executeMusicPlanReviewTask,
+  executeProjectContextPackGenerateTask,
+} from "@/services/musicTaskHandlers";
+import { executeScriptAssetExtractionTask } from "@/services/scriptAssetExtraction";
 
 type TaskHandler = (payload: any, task: any) => Promise<Record<string, unknown> | void>;
 const TASK_PENDING_FLAG = "__taskPending";
 const IMAGE_FLOW_PROVIDER_PHASES = new Set(["provider-processing", "resume-provider-query"]);
+const TASK_LEASE_MS = 120_000;
+const TASK_LEASE_RENEW_MS = 30_000;
+const MUSIC_TASK_TIMEOUT_MS = 20 * 60 * 1000;
+const MUSIC_AUDIO_TASK_TIMEOUT_MS = 60 * 60 * 1000;
 
 export interface ActiveUnifiedTaskSnapshot {
   taskId: number;
@@ -66,7 +82,42 @@ const handlers: Record<string, TaskHandler> = {
   "project-snapshot": async (payload) => generateProjectSnapshot(Number(payload.projectId)),
   "project-import": async (payload) => importPortableProject(String(payload.sourceDirectory)),
   "storage-migration": async (payload, task) => performStorageMigration(payload, task.id),
+  "music-bible-generate": async (payload, task) => executeMusicBibleGenerateTask(payload, task),
+  "music-bible-review": async (payload, task) => executeMusicBibleReviewTask(payload, task),
+  "music-plan-generate": async (payload, task) => executeMusicPlanGenerateTask(payload, task),
+  "music-plan-review": async (payload, task) => executeMusicPlanReviewTask(payload, task),
+  "music-cue-compile-prompt": async (payload, task) => executeMusicCueCompilePromptTask(payload, task),
+  "music-cue-review-prompt": async (payload, task) => executeMusicCueReviewPromptTask(payload, task),
+  "music-cue-generate": async (payload, task) => executeMusicCueGenerateTask(payload, task),
+  "project-context-pack-generate": async (payload, task) => executeProjectContextPackGenerateTask(payload, task),
+  "script-asset-extract": async (payload, task) => executeScriptAssetExtractionTask(payload, task),
 };
+
+function getTaskExecutionTimeoutMs(task: any) {
+  const handler = String(task?.handler || "");
+  if (handler === "music-cue-generate") return MUSIC_AUDIO_TASK_TIMEOUT_MS;
+  if (handler.startsWith("music-")) return MUSIC_TASK_TIMEOUT_MS;
+  return 0;
+}
+
+async function runTaskHandlerWithTimeout<T>(task: any, promise: Promise<T>): Promise<T> {
+  const timeoutMs = getTaskExecutionTimeoutMs(task);
+  if (!timeoutMs) return promise;
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`任务执行超过 ${Math.round(timeoutMs / 60000)} 分钟未完成，请减少输入资料或稍后重试。`));
+        }, timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 const DEFAULT_LIMITS: Record<UnifiedTaskType, number> = {
   prompt: 4,
@@ -96,7 +147,7 @@ export function isImageFlowProviderPendingTask(task: any): boolean {
 
 export async function readImageFlowProviderBacklog(
   database: any = db,
-): Promise<{ count: number; taskIds: Set<number>; projectIds: Set<number>; tasks: any[] }> {
+): Promise<{ count: number; taskIds: Set<number> }> {
   const rows = await database("o_tasks")
     .where({
       businessType: "image-flow",
@@ -105,13 +156,10 @@ export async function readImageFlowProviderBacklog(
     })
     .whereNotNull("providerTaskId")
     .whereIn("phase", [...IMAGE_FLOW_PROVIDER_PHASES])
-    .select("id", "projectId", "providerTaskId", "phase", "availableAt");
-  const projectIds = rows.map((row: any) => Number(row.projectId || 0)).filter((value: number) => Boolean(value));
+    .select("id");
   return {
     count: rows.length,
     taskIds: new Set(rows.map((row: any) => Number(row.id))),
-    projectIds: new Set(projectIds),
-    tasks: rows,
   };
 }
 
@@ -120,26 +168,22 @@ export function getActiveUnifiedTaskSnapshots(): ActiveUnifiedTaskSnapshot[] {
   return [...activeTasks.values()].map((task) => ({ ...task, runningMs: now - task.startedAt }));
 }
 
-function getRunningImageFlowProjectIds(): Set<number> {
-  const projectIds = new Set<number>();
-  for (const task of activeTasks.values()) {
-    if (task.businessType === "image-flow" && Number(task.projectId || 0) > 0) {
-      projectIds.add(Number(task.projectId));
-    }
-  }
-  return projectIds;
-}
-
-function getRunningImageFlowSubmitCount(): number {
+function getRunningImageGenerationCount(): number {
   let count = 0;
   for (const task of activeTasks.values()) {
-    if (task.businessType === "image-flow" && !task.providerTaskId) count += 1;
+    if (isImageGenerationTask(task)) count += 1;
   }
   return count;
 }
 
-function getRunningImageFlowTasks(): ActiveUnifiedTaskSnapshot[] {
-  return getActiveUnifiedTaskSnapshots().filter((task) => task.businessType === "image-flow");
+function getRunningScriptAssetExtractionProjectIds(): Set<number> {
+  const projectIds = new Set<number>();
+  for (const task of activeTasks.values()) {
+    if (task.handler === "script-asset-extract" && Number(task.projectId || 0) > 0) {
+      projectIds.add(Number(task.projectId));
+    }
+  }
+  return projectIds;
 }
 
 export interface UnifiedTaskWorker {
@@ -259,6 +303,12 @@ export async function startUnifiedTaskWorker(
     };
     const activeRefreshTimer = setInterval(() => void refreshActiveTask().catch(() => undefined), 5000);
     activeRefreshTimer.unref();
+    const leaseRenewTimer = setInterval(() => {
+      void renewUnifiedTaskLease(Number(task.id), TASK_LEASE_MS).catch((error) => {
+        console.warn("[unified-task-worker] lease renew failed:", u.error(error).message);
+      });
+    }, TASK_LEASE_RENEW_MS);
+    leaseRenewTimer.unref();
     try {
       console.info("[unified-task-worker] executing task", {
         taskId: task.id,
@@ -272,7 +322,8 @@ export async function startUnifiedTaskWorker(
       const handler = handlers[task.handler];
       if (!handler) throw new Error(`未注册任务处理器: ${task.handler}`);
       const payload = task.payloadJson ? JSON.parse(task.payloadJson) : {};
-      const result = await handler(payload, task);
+      await renewUnifiedTaskLease(Number(task.id), TASK_LEASE_MS);
+      const result = await runTaskHandlerWithTimeout(task, handler(payload, task));
       if (result?.[TASK_PENDING_FLAG]) return;
       const latest = await (db as any)("o_tasks").where("id", task.id).first();
       if (!["completed", "failed", "cancelled"].includes(latest?.status)) {
@@ -296,6 +347,7 @@ export async function startUnifiedTaskWorker(
       }
     } finally {
       clearInterval(activeRefreshTimer);
+      clearInterval(leaseRenewTimer);
       running.set(type, Math.max(0, (running.get(type) || 1) - 1));
       runningTaskIds.delete(Number(task.id));
       activeTasks.delete(Number(task.id));
@@ -318,39 +370,36 @@ export async function startUnifiedTaskWorker(
         .orderBy("createdAt", "asc")
         .limit(50);
       const imageFlowProviderBacklog = await readImageFlowProviderBacklog(db);
-      const runningImageFlowProjectIds = getRunningImageFlowProjectIds();
-      const runningImageFlowSubmitCount = getRunningImageFlowSubmitCount();
-      const runningImageFlowTasks = getRunningImageFlowTasks();
+      const runningScriptAssetExtractionProjectIds = getRunningScriptAssetExtractionProjectIds();
       const seenProjects = new Set<number>();
       for (const candidate of candidates) {
         const type = (candidate.taskType || "prompt") as UnifiedTaskType;
         if ((running.get(type) || 0) >= (limits[type] || 1)) continue;
         const projectId = Number(candidate.projectId || 0);
+        const queuedImageProviderCount = [...imageFlowProviderBacklog.taskIds].filter((taskId) => !runningTaskIds.has(taskId)).length;
+        const runningImageGenerationCount = getRunningImageGenerationCount();
+        if (candidate.handler === "script-asset-extract" && projectId && runningScriptAssetExtractionProjectIds.has(projectId)) {
+          continue;
+        }
         if (
           shouldDeferImageFlowCandidate(candidate, {
             imageLimit: limits.image || 1,
-            providerBacklogCount: imageFlowProviderBacklog.count,
-            providerBacklogProjectIds: imageFlowProviderBacklog.projectIds,
-            runningImageFlowProjectIds,
-            runningImageFlowSubmitCount,
+            occupiedImageCount: queuedImageProviderCount + runningImageGenerationCount,
           })
         ) {
-          const blockedByProvider = imageFlowProviderBacklog.tasks.find((row: any) => Number(row.projectId || 0) === projectId);
-          const blockedByRunning = runningImageFlowTasks.find((row) => Number(row.projectId || 0) === projectId);
           console.info("[unified-task-worker] deferred image-flow provider submit", {
             taskId: candidate.id,
             projectId,
-            reason: blockedByProvider ? "provider-backlog" : blockedByRunning ? "running-submit" : "image-limit",
-            blockedByTaskId: blockedByProvider?.id ?? blockedByRunning?.taskId,
-            blockedByProviderTaskId: blockedByProvider?.providerTaskId ?? blockedByRunning?.providerTaskId,
-            providerBacklogCount: imageFlowProviderBacklog.count,
-            runningImageFlowSubmitCount,
+            reason: "image-limit",
+            providerBacklogCount: queuedImageProviderCount,
+            runningImageGenerationCount,
+            imageLimit: limits.image || 1,
           });
           continue;
         }
         if (projectId && seenProjects.has(projectId)) continue;
         if (projectId) seenProjects.add(projectId);
-        const task = await claimUnifiedTask(workerId, 120_000, db, Number(candidate.id));
+        const task = await claimUnifiedTask(workerId, TASK_LEASE_MS, db, Number(candidate.id));
         if (task) void execute(task);
       }
     } catch (error) {

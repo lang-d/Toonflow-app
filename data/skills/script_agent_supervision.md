@@ -114,7 +114,7 @@
 
 1. 调用 `get_planData` 获取骨架数据
 2. 从【项目配置】读取：集数、单集时长、付费策略、章节范围
-4. 调用 `get_novel_events(ids:number[])` 获取事件表数据
+4. 调用 `get_novel_events({ chapterIndexs:number[] })` 获取事件表数据
 
 ### 审核维度
 

@@ -176,6 +176,12 @@ before(async () => {
         name: "Short Video",
         durationResolutionMap: [{ duration: [5], resolution: ["720p"] }],
       },
+      {
+        type: "video",
+        modelName: "fifteen-video",
+        name: "Fifteen Second Video",
+        durationResolutionMap: [{ duration: [15], resolution: ["720p"] }],
+      },
     ]),
   });
   await db("o_script").insert(
@@ -233,7 +239,7 @@ test("storyboard generation resumes batches, is idempotent, and commits atomical
   if (committed.status !== "committed") return;
   assert.equal(committed.rowCount, 12);
   assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 10 }), 12);
-  assert.equal(await countRows("o_storyboardGenerationRow", { generationId: started.generationId }), 0);
+  assert.equal(await countRows("o_storyboardGenerationRow", { generationId: started.generationId }), 12);
   const saved = await db("o_storyboard").where({ projectId: 1, scriptId: 10 }).orderBy("index", "asc");
   assert.ok(saved.every((item: any) => item.factStatus === "ready" && item.videoDesc === ""));
   assert.equal((await db("o_videoTrack").where({ projectId: 1, scriptId: 10, archived: 0 })).length, 2);
@@ -457,48 +463,29 @@ test("commit repairs wrong groupKey from the unique storyboard index owner", asy
   assert.equal(saved[1].groupIntent, "Escalate the visible conflict");
 });
 
-test("commit keeps invalid status when storyboard index is not owned by any group", async () => {
-  const unknown = await service.beginStoryboardGeneration({
-    projectId: 1,
-    scriptId: 21,
-    expectedRowCount: 2,
-    groups: [plan("G01", [0])],
-  });
-  await service.appendStoryboardRows({
-    generationId: unknown.generationId,
-    startIndex: 0,
-    rows: [row(0, "G01"), row(1, "G01")],
-  });
-
-  const result = await service.commitStoryboardGeneration(unknown.generationId);
-
-  assert.equal(result.status, "invalid");
-  if (result.status === "invalid") {
-    assert.ok(result.issues.some((issue) => issue.message.includes("row index 1 is not listed in group G01")));
-  }
+test("begin rejects a storyboard index that is not owned by any group", async () => {
+  await assert.rejects(
+    service.beginStoryboardGeneration({
+      projectId: 1,
+      scriptId: 21,
+      expectedRowCount: 2,
+      groups: [plan("G01", [0])],
+    }),
+    /must cover every storyboard index exactly once/,
+  );
   assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 21 }), 0);
 });
 
-test("commit keeps invalid status when storyboard index has multiple group owners", async () => {
-  const ambiguous = await service.beginStoryboardGeneration({
-    projectId: 1,
-    scriptId: 24,
-    expectedRowCount: 1,
-    groups: [plan("G01", [0]), plan("G02", [0])],
-  });
-  await service.appendStoryboardRows({
-    generationId: ambiguous.generationId,
-    startIndex: 0,
-    rows: [row(0, "G01")],
-  });
-
-  const result = await service.commitStoryboardGeneration(ambiguous.generationId);
-
-  assert.equal(result.status, "invalid");
-  if (result.status === "invalid") {
-    assert.equal(result.repairs, undefined);
-    assert.ok(result.issues.some((issue) => issue.field === "groups.G02"));
-  }
+test("begin rejects a storyboard index with multiple group owners", async () => {
+  await assert.rejects(
+    service.beginStoryboardGeneration({
+      projectId: 1,
+      scriptId: 24,
+      expectedRowCount: 1,
+      groups: [plan("G01", [0]), plan("G02", [0])],
+    }),
+    /must cover every storyboard index exactly once/,
+  );
   assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 24 }), 0);
 });
 
@@ -520,8 +507,46 @@ test("commit rejects storyboard groups that exceed the default video model durat
     const result = await service.commitStoryboardGeneration(started.generationId);
     assert.equal(result.status, "invalid");
     if (result.status === "invalid") {
-      assert.ok(result.issues.some((issue) => issue.field === "groups.G01.durationSec"));
+      const durationIssue = result.issues.find((issue) => issue.field === "groups.G01.durationSec");
+      assert.ok(durationIssue);
       assert.ok(result.issues.some((issue) => issue.message.includes("exceeds Short Video max duration 5s")));
+      assert.equal(durationIssue?.code, "GROUP_DURATION_EXCEEDS_MODEL");
+      assert.deepEqual(durationIssue?.details, {
+        groupKey: "G01",
+        storyboardIndexes: [0, 1, 2],
+        totalDuration: 9,
+        modelLabel: "Short Video",
+        maxDuration: 5,
+        exceededBy: 4,
+      });
+
+      const draft = await service.readStoryboardGenerationDraft({
+        generationId: started.generationId,
+        projectId: 1,
+        scriptId: 80,
+        offset: 0,
+        limit: 2,
+      });
+      assert.equal(draft.state, "invalid");
+      assert.equal(draft.total, 3);
+      assert.equal(draft.rows.length, 2);
+      assert.equal(draft.nextOffset, 2);
+      assert.equal(draft.eof, false);
+      assert.equal(draft.issues[0].code, "GROUP_DURATION_EXCEEDS_MODEL");
+      await assert.rejects(
+        service.readStoryboardGenerationDraft({
+          generationId: started.generationId,
+          projectId: 1,
+          scriptId: 90,
+        }),
+        /does not belong to the current project and script/,
+      );
+
+      const decision = service.storyboardValidationDecisionSummary(started.generationId, result);
+      assert.match(decision.summary, /本次新生成的分镜草稿未通过提交校验/);
+      assert.match(decision.summary, /当前正式分镜表未被覆盖/);
+      assert.match(decision.summary, /草稿分组 G01（第1-3镜）总时长 9 秒/);
+      assert.doesNotMatch(decision.summary, /groups\.G01\.durationSec/);
     }
     assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 80 }), 0);
   } finally {
@@ -560,6 +585,59 @@ test("commit repairs wrong groupKey before duration validation", async () => {
     assert.match(generation.errorJson, /"repairs"/);
     assert.match(generation.errorJson, /groups\.G02\.durationSec/);
     assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 23 }), 0);
+  } finally {
+    await db("o_project").where({ id: 1 }).update({ videoModel: "" });
+  }
+});
+
+test("failed draft validation is distinct from the unchanged formal storyboard version", async () => {
+  await db("o_project").where({ id: 1 }).update({ videoModel: "dreamina:fifteen-video" });
+  try {
+    const formal = await service.beginStoryboardGeneration({
+      projectId: 1,
+      scriptId: 90,
+      expectedRowCount: 4,
+      groups: [plan("G05", [0, 1, 2, 3])],
+    });
+    await service.appendStoryboardRows({
+      generationId: formal.generationId,
+      startIndex: 0,
+      rows: [0, 1, 2, 3].map((index) => ({ ...row(index, "G05"), durationSec: 3.2 })),
+    });
+    assert.equal((await service.commitStoryboardGeneration(formal.generationId)).status, "committed");
+
+    const draft = await service.beginStoryboardGeneration({
+      projectId: 1,
+      scriptId: 90,
+      expectedRowCount: 5,
+      groups: [plan("G05", [0, 1, 2, 3, 4])],
+    });
+    const durations = [2.5, 3, 3.5, 3, 3.5];
+    await service.appendStoryboardRows({
+      generationId: draft.generationId,
+      startIndex: 0,
+      rows: durations.map((durationSec, index) => ({ ...row(index, "G05"), durationSec })),
+    });
+    const invalid = await service.commitStoryboardGeneration(draft.generationId);
+    assert.equal(invalid.status, "invalid");
+    if (invalid.status !== "invalid") return;
+
+    const formalRows = await db("o_storyboard").where({ projectId: 1, scriptId: 90 });
+    assert.equal(formalRows.reduce((sum: number, item: any) => sum + Number(item.duration || 0), 0), 12.8);
+    const failedDraft = await service.readStoryboardGenerationDraft({
+      generationId: draft.generationId,
+      projectId: 1,
+      scriptId: 90,
+    });
+    assert.equal(
+      failedDraft.rows.reduce((sum: number, item: any) => sum + Number(item.row.durationSec || 0), 0),
+      15.5,
+    );
+
+    const decision = service.storyboardValidationDecisionSummary(draft.generationId, invalid);
+    assert.match(decision.summary, /草稿分组 G01（第1-5镜）总时长 15\.5 秒/);
+    assert.match(decision.summary, /超过 Fifteen Second Video 上限 15 秒 0\.5 秒/);
+    assert.match(decision.summary, /当前正式分镜表未被覆盖/);
   } finally {
     await db("o_project").where({ id: 1 }).update({ videoModel: "" });
   }

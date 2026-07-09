@@ -5,8 +5,7 @@ import u from "@/utils";
 import Memory from "@/utils/agent/memory";
 import useTools from "@/agents/scriptAgent/tools";
 import ResTool from "@/socket/resTool";
-import * as fs from "fs";
-import path from "path";
+import { readConfiguredSkill } from "@/services/skillResolver";
 import {
   consumeFullStream as consumeAgentFullStream,
   createAgentModelStreamScope,
@@ -47,8 +46,7 @@ export async function runDecisionAI(ctx: AgentContext) {
   const memory = new Memory("scriptAgent", isolationKey);
   await memory.add("user", text, { createTime: userMessageTime });
 
-  const skill = path.join(u.getPath("skills"), "script_agent_decision.md");
-  const prompt = await fs.promises.readFile(skill, "utf-8");
+  const prompt = (await readConfiguredSkill("script_agent_decision.md")).content;
 
   const mem = buildMemPrompt(await memory.get(text));
 
@@ -77,7 +75,7 @@ export async function runDecisionAI(ctx: AgentContext) {
       abortSignal: modelStreamScope.signal,
       tools: {
         ...memory.getTools(),
-        ...useTools({ resTool: ctx.resTool, msg: ctx.msg }),
+        ...useTools({ resTool: ctx.resTool, msg: ctx.msg, toolsNames: ["get_novel_events"] }),
         ...createSubAgent(ctx),
       },
       onFinish: async (completion) => {
@@ -116,6 +114,7 @@ function createSubAgent(parentCtx: AgentContext) {
     name,
     memoryKey,
     tools: extraTools,
+    toolNames,
     messages,
   }: {
     key: `${string}:${string}`;
@@ -124,6 +123,7 @@ function createSubAgent(parentCtx: AgentContext) {
     name: string;
     memoryKey: string;
     tools?: Record<string, any>;
+    toolNames: string[];
     messages?: { role: "user" | "assistant" | "system"; content: string }[];
   }) {
     parentCtx.msg.complete();
@@ -136,7 +136,7 @@ function createSubAgent(parentCtx: AgentContext) {
         system,
         messages: messages ?? [{ role: "user", content: prompt }],
         abortSignal: modelStreamScope.signal,
-        tools: { ...extraTools, ...useTools({ resTool, msg: subMsg }) },
+        tools: { ...extraTools, ...useTools({ resTool, msg: subMsg, toolsNames: toolNames }) },
       });
 
       fullResponse = await consumeAgentFullStream({
@@ -172,8 +172,7 @@ function createSubAgent(parentCtx: AgentContext) {
     description: "运行执行subAgent来完成故事骨架相关任务",
     inputSchema: jsonSchema<{ prompt: string }>(promptInput),
     execute: async ({ prompt }) => {
-      const skill = path.join(u.getPath("skills"), "script_execution_skeleton.md");
-      const systemPrompt = await fs.promises.readFile(skill, "utf-8");
+      const systemPrompt = (await readConfiguredSkill("script_execution_skeleton.md")).content;
 
       const formatPrompt = "\n你必须使用如下XML格式写入工作区：\n<storySkeleton>故事骨架内容</storySkeleton>";
 
@@ -183,6 +182,7 @@ function createSubAgent(parentCtx: AgentContext) {
         system: systemPrompt + formatPrompt,
         name: "编剧",
         memoryKey: "assistant:execution:storySkeleton",
+        toolNames: ["get_planData", "get_novel_events"],
         messages: [{ role: "user", content: prompt + formatPrompt }],
       });
     },
@@ -192,8 +192,7 @@ function createSubAgent(parentCtx: AgentContext) {
     description: "运行执行subAgent来完成改编策略相关任务",
     inputSchema: jsonSchema<{ prompt: string }>(promptInput),
     execute: async ({ prompt }) => {
-      const skill = path.join(u.getPath("skills"), "script_execution_adaptation.md");
-      const systemPrompt = await fs.promises.readFile(skill, "utf-8");
+      const systemPrompt = (await readConfiguredSkill("script_execution_adaptation.md")).content;
 
       const formatPrompt = "\n你必须使用如下XML格式写入工作区：\n<adaptationStrategy>改编策略内容</adaptationStrategy>";
 
@@ -203,6 +202,7 @@ function createSubAgent(parentCtx: AgentContext) {
         system: systemPrompt + formatPrompt,
         name: "编剧",
         memoryKey: "assistant:execution:adaptationStrategy",
+        toolNames: ["get_planData", "get_novel_events"],
         messages: [{ role: "user", content: prompt + formatPrompt }],
       });
     },
@@ -212,8 +212,7 @@ function createSubAgent(parentCtx: AgentContext) {
     description: "运行执行subAgent来完成剧本相关任务",
     inputSchema: jsonSchema<{ prompt: string }>(promptInput),
     execute: async ({ prompt }) => {
-      const skill = path.join(u.getPath("skills"), "script_execution_script.md");
-      const systemPrompt = await fs.promises.readFile(skill, "utf-8");
+      const systemPrompt = (await readConfiguredSkill("script_execution_script.md")).content;
 
       const scriptList = await u.db("o_script").where("projectId", resTool.data.projectId).select("id", "name");
       const scriptPrompt = ["## 可用剧本(ID:名称)", scriptList.map((s: any) => `${s.id}:${(s.name || "").replace(/[,:]/g, "")}`).join(","), ""].join(
@@ -234,6 +233,7 @@ function createSubAgent(parentCtx: AgentContext) {
         ],
         name: "编剧",
         memoryKey: "assistant:execution:script",
+        toolNames: ["get_planData", "get_novel_events", "get_novel_text", "get_script_content"],
       });
     },
   });
@@ -242,8 +242,7 @@ function createSubAgent(parentCtx: AgentContext) {
     description: "运行监督层subAgent执行独立任务，完成后返回结果",
     inputSchema: jsonSchema<{ prompt: string }>(promptInput),
     execute: async ({ prompt }) => {
-      const skill = path.join(u.getPath("skills"), "script_agent_supervision.md");
-      const systemPrompt = await fs.promises.readFile(skill, "utf-8");
+      const systemPrompt = (await readConfiguredSkill("script_agent_supervision.md")).content;
 
       return runAgent({
         key: "scriptAgent:supervisionAgent",
@@ -251,6 +250,7 @@ function createSubAgent(parentCtx: AgentContext) {
         system: systemPrompt,
         name: "编辑",
         memoryKey: "assistant:supervision",
+        toolNames: ["get_planData", "get_novel_events", "get_novel_text", "get_script_content"],
       });
     },
   });

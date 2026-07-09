@@ -8,11 +8,11 @@ const router = express.Router();
 export default router.post(
   "/",
   validateFields({
-    taskId: z.number(),
+    taskId: z.string().min(1),
   }),
   async (req, res) => {
     const { taskId } = req.body;
-    const data = await u.db("o_tasks").where("id", taskId).select("*").first();
+    const data = await u.db("o_tasks").where("taskId", taskId).select("*").first();
     res.status(200).send(success(data));
   }
 );

@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { musicEpisodeIsolationKey, musicProjectIsolationKey } from "@/services/musicStageState";
 const router = express.Router();
 
 function normalizeRole(role?: string | null): "user" | "assistant" {
@@ -13,12 +14,17 @@ export default router.post(
   "/",
   validateFields({
     projectId: z.number(),
-    agentType: z.enum(["scriptAgent", "productionAgent"]),
+    agentType: z.enum(["scriptAgent", "productionAgent", "musicProductionAgent"]),
     episodesId: z.number().optional(),
   }),
   async (req, res) => {
     const { projectId, agentType, episodesId } = req.body;
-    const isolationKey = `${projectId}:${agentType}${episodesId ? `:${episodesId}` : ""}`;
+    const isolationKey =
+      agentType === "musicProductionAgent"
+        ? episodesId
+          ? musicEpisodeIsolationKey(projectId, episodesId)
+          : musicProjectIsolationKey(projectId)
+        : `${projectId}:${agentType}${episodesId ? `:${episodesId}` : ""}`;
 
     const rows = await u
       .db("memories")

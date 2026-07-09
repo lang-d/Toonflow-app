@@ -1,5 +1,5 @@
 ---
-name: director_planning_liveaction_urban
+name: director_planning_style
 description: 真人都市约束 — 定义真人都市风格在色调体系、光影方案、质感方向、场景空间元素、配乐选择与环境音上的全局约束，并针对Seedance 2.0做深度适配。适用于任何叙事类型。
 metaData: director_skills, seedance2.0_adapted
 ---

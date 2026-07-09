@@ -13,7 +13,6 @@ process.env.TOONFLOW_SKIP_DB_INIT = "1";
 let db: any;
 let flowData: typeof import("../src/services/productionFlowData");
 let textAsset: typeof import("../src/services/textAsset");
-let productionAgent: typeof import("../src/agents/productionAgent");
 let addDeriveAssetRoute: any;
 
 async function postRoute(route: any, body: Record<string, unknown>) {
@@ -39,7 +38,6 @@ before(async () => {
   db = (await import("../src/utils/db")).db;
   flowData = await import("../src/services/productionFlowData");
   textAsset = await import("../src/services/textAsset");
-  productionAgent = await import("../src/agents/productionAgent");
   addDeriveAssetRoute = (await import("../src/routes/production/assets/addDeriveAsset")).default;
 
   await db.schema.createTable("o_agentWorkData", (table: any) => {
@@ -50,6 +48,18 @@ before(async () => {
     table.text("data");
     table.integer("createTime");
     table.integer("updateTime");
+  });
+  await db.schema.createTable("o_project", (table: any) => {
+    table.integer("id").primary();
+    table.string("name");
+    table.string("projectType");
+    table.string("type");
+    table.string("artStyle");
+    table.string("directorManual");
+    table.string("imageModel");
+    table.string("videoModel");
+    table.string("videoRatio");
+    table.text("mode");
   });
   await db.schema.createTable("o_script", (table: any) => {
     table.integer("id").primary();
@@ -173,6 +183,18 @@ before(async () => {
     table.integer("updateTime");
   });
 
+  await db("o_project").insert({
+    id: 1,
+    name: "Test project",
+    projectType: "script",
+    type: "drama",
+    artStyle: "visual-manual",
+    directorManual: "director-manual",
+    imageModel: "vendor:image",
+    videoModel: "vendor:video",
+    videoRatio: "9:16",
+    mode: "[]",
+  });
   await db("o_script").insert({ id: 10, projectId: 1, content: "episode script" });
 });
 
@@ -193,6 +215,8 @@ test("getFlowData restores scriptPlan from legacy work data when no text asset e
 
   const result = await flowData.buildProductionFlowData(1, 10);
   assert.equal(result.scriptPlan, "legacy director plan");
+  assert.equal(result.project?.artStyle, "visual-manual");
+  assert.equal(result.project?.directorManual, "director-manual");
 });
 
 test("getFlowData prefers latest complete scriptPlan text asset over legacy work data", async () => {
@@ -217,6 +241,24 @@ test("getFlowData prefers latest complete scriptPlan text asset over legacy work
 
   const result = await flowData.buildProductionFlowData(1, 10);
   assert.equal(result.scriptPlan, "persisted director plan v2");
+});
+
+test("getFlowData reads complete scriptPlan text asset over one megabyte", async () => {
+  const tailMarker = "FLOW_DATA_LONG_SCRIPT_PLAN_TAIL";
+  const longPlan = `director plan ${"x".repeat(1024 * 1024 + 80_000)} ${tailMarker}`;
+  await textAsset.createTextAsset({
+    projectId: 1,
+    scriptId: 10,
+    targetType: "scriptPlan",
+    targetId: "director-plan",
+    content: longPlan,
+    summary: "",
+    state: "complete",
+  });
+
+  const result = await flowData.buildProductionFlowData(1, 10);
+  assert.equal(result.scriptPlan.length, longPlan.length);
+  assert.match(result.scriptPlan, new RegExp(tailMarker));
 });
 
 test("getFlowData exposes latest storyboard generation failure diagnostics", async () => {
@@ -446,10 +488,4 @@ test("getFlowData keeps active task over existing storyboard image", async () =>
   assert.equal(storyboard.status, "processing");
   assert.equal(storyboard.legacyTaskId, 83001);
   assert.equal(storyboard.nodeId, "active-node");
-});
-
-test("scriptPlan XML extraction only accepts complete non-empty tags", () => {
-  assert.equal(productionAgent.extractCompleteScriptPlanXml("<scriptPlan>usable plan</scriptPlan>"), "usable plan");
-  assert.equal(productionAgent.extractCompleteScriptPlanXml("<scriptPlan>unfinished"), "");
-  assert.equal(productionAgent.extractCompleteScriptPlanXml("<scriptPlan>   </scriptPlan>"), "");
 });

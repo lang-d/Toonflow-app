@@ -4,7 +4,7 @@ import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { tool, jsonSchema } from "ai";
-import { createUnifiedTask } from "@/services/taskCoordinator";
+import { createUnifiedTask, formatUnifiedTaskEnvelope } from "@/services/taskCoordinator";
 const router = express.Router();
 
 // 获取资产
@@ -50,7 +50,7 @@ export default router.post(
         describe: `匹配角色音色：${asset.name}`,
         payload: { projectId, assetId: asset.id },
       });
-      tasks.push({ assetId: asset.id, taskId: task.taskId, legacyTaskId: task.legacyTaskId });
+      tasks.push({ assetId: asset.id, ...formatUnifiedTaskEnvelope(task, "asset", asset.id) });
     }
     res.status(200).send(success({ total: tasks.length, tasks }));
   },

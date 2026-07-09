@@ -111,3 +111,56 @@ test("invokeAiObjectWithFallback retries as text JSON when responseFormat is uns
     (u.Ai as any).Text = original;
   }
 });
+
+test("invokeAiObjectWithFallback retries as text JSON when structured output misses schema", async () => {
+  const original = u.Ai.Text;
+  let calls = 0;
+  (u.Ai as any).Text = () => ({
+    invoke: async (input: any) => {
+      calls += 1;
+      if (input.output) throw new Error("No object generated: response did not match schema.");
+      assert.equal(input.output, undefined);
+      return { text: "{\"value\":\"fallback\",\"count\":5}" };
+    },
+  });
+  try {
+    const result = await invokeAiObjectWithFallback({
+      modelKey: "universalAi",
+      system: "system",
+      messages: [{ role: "user", content: "user" }],
+      schema,
+      label: "demo",
+    });
+    assert.deepEqual(result, { value: "fallback", count: 5 });
+    assert.equal(calls, 2);
+  } finally {
+    (u.Ai as any).Text = original;
+  }
+});
+
+test("invokeAiObjectWithFallback repairs fallback JSON once", async () => {
+  const original = u.Ai.Text;
+  let calls = 0;
+  (u.Ai as any).Text = () => ({
+    invoke: async (input: any) => {
+      calls += 1;
+      if (input.output) throw new Error("No object generated: response did not match schema.");
+      if (calls === 2) return { text: "{\"value\":\"needs-repair\"}" };
+      assert.match(input.messages.at(-1)?.content || "", /Repair the previous demo JSON output/);
+      return { text: "{\"value\":\"repaired\",\"count\":6}" };
+    },
+  });
+  try {
+    const result = await invokeAiObjectWithFallback({
+      modelKey: "universalAi",
+      system: "system",
+      messages: [{ role: "user", content: "user" }],
+      schema,
+      label: "demo",
+    });
+    assert.deepEqual(result, { value: "repaired", count: 6 });
+    assert.equal(calls, 3);
+  } finally {
+    (u.Ai as any).Text = original;
+  }
+});

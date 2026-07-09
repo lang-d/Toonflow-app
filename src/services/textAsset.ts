@@ -78,8 +78,8 @@ export function resolveTextAssetPath(filePath: string) {
   return target;
 }
 
-async function nextTextAssetId() {
-  const row: any = await u.db("o_textAsset").max("id as id").first();
+async function nextTextAssetId(database: any = u.db) {
+  const row: any = await database("o_textAsset").max("id as id").first();
   return Number(row?.id || 0) + 1;
 }
 
@@ -108,8 +108,8 @@ async function nextVersion(input: {
   scriptId?: number | null;
   targetType: TextAssetTargetType;
   targetId?: string | number | null;
-}) {
-  const query = u.db("o_textAsset").where({ projectId: input.projectId, targetType: input.targetType });
+}, database: any = u.db) {
+  const query = database("o_textAsset").where({ projectId: input.projectId, targetType: input.targetType });
   if (input.scriptId == null) query.whereNull("scriptId");
   else query.andWhere("scriptId", input.scriptId);
   if (input.targetId == null) query.whereNull("targetId");
@@ -118,11 +118,11 @@ async function nextVersion(input: {
   return Number(row?.version || 0) + 1;
 }
 
-export async function createTextAsset(input: CreateTextAssetInput) {
+export async function createTextAsset(input: CreateTextAssetInput, database: any = u.db) {
   const content = input.content ?? "";
   const now = Date.now();
-  const id = await nextTextAssetId();
-  const version = await nextVersion(input);
+  const id = await nextTextAssetId(database);
+  const version = await nextVersion(input, database);
   const ext = input.extension || (input.targetType === "promptDiagnostic" ? "json" : "md");
   const targetId = sanitizeSegment(input.targetId ?? "project", "project");
   const scriptSegment = input.scriptId == null ? "common" : `script-${input.scriptId}`;
@@ -140,21 +140,26 @@ export async function createTextAsset(input: CreateTextAssetInput) {
   const hash = sha256(content);
   const summary =
     input.summary === undefined ? content.replace(/\s+/g, " ").slice(0, 500).slice(0, 1000) : input.summary.slice(0, 1000);
-  await u.db("o_textAsset").insert({
-    id,
-    projectId: input.projectId,
-    scriptId: input.scriptId ?? null,
-    targetType: input.targetType,
-    targetId: input.targetId == null ? null : String(input.targetId),
-    filePath: relativePath,
-    summary,
-    size,
-    hash,
-    version,
-    state: input.state || "complete",
-    createTime: now,
-    updateTime: now,
-  });
+  try {
+    await database("o_textAsset").insert({
+      id,
+      projectId: input.projectId,
+      scriptId: input.scriptId ?? null,
+      targetType: input.targetType,
+      targetId: input.targetId == null ? null : String(input.targetId),
+      filePath: relativePath,
+      summary,
+      size,
+      hash,
+      version,
+      state: input.state || "complete",
+      createTime: now,
+      updateTime: now,
+    });
+  } catch (error) {
+    await fs.unlink(absolutePath).catch(() => undefined);
+    throw error;
+  }
   return {
     id,
     projectId: input.projectId,
@@ -177,8 +182,8 @@ export async function getTextAssetContent(input: {
   projectId: number;
   offset?: number;
   limit?: number;
-}): Promise<TextAssetContent> {
-  const row = await u.db("o_textAsset").where({ id: input.id, projectId: input.projectId }).first();
+}, database: any = u.db): Promise<TextAssetContent> {
+  const row = await database("o_textAsset").where({ id: input.id, projectId: input.projectId }).first();
   if (!row) throw new Error("Text asset not found");
   const absolutePath = resolveTextAssetPath(String(row.filePath || ""));
   const content = await fs.readFile(absolutePath, "utf8");
@@ -190,6 +195,58 @@ export async function getTextAssetContent(input: {
     size: Buffer.byteLength(content, "utf8"),
     eof: offset + slice.length >= content.length,
   };
+}
+
+export async function getFullTextAssetContent(
+  input: { id: number; projectId: number },
+  database: any = u.db,
+): Promise<TextAssetContent> {
+  let offset = 0;
+  let size = 0;
+  let content = "";
+  for (;;) {
+    const page = await getTextAssetContent(
+      {
+        id: input.id,
+        projectId: input.projectId,
+        offset,
+        limit: MAX_PAGE_LIMIT,
+      },
+      database,
+    );
+    content += page.content;
+    size = page.size;
+    offset += page.content.length;
+    if (page.eof) break;
+  }
+  return { content, size, eof: true };
+}
+
+export async function deleteTextAssetFiles(rows: Array<{ filePath: string }>) {
+  for (const row of rows) {
+    const absolutePath = resolveTextAssetPath(String(row.filePath || ""));
+    await fs.unlink(absolutePath).catch((error: any) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+  }
+}
+
+export async function deleteTextAssetRecords(rows: Array<{ id: number; filePath: string }>, database: any = u.db) {
+  const deletedIds: number[] = [];
+  const failedIds: number[] = [];
+  for (const row of rows) {
+    try {
+      const absolutePath = resolveTextAssetPath(String(row.filePath || ""));
+      await fs.unlink(absolutePath).catch((error: any) => {
+        if (error?.code !== "ENOENT") throw error;
+      });
+      deletedIds.push(Number(row.id));
+    } catch {
+      failedIds.push(Number(row.id));
+    }
+  }
+  if (deletedIds.length) await database("o_textAsset").whereIn("id", deletedIds).delete();
+  return { deletedIds, failedIds };
 }
 
 export function summarizeLongText(content: string, textAssetId: number) {
