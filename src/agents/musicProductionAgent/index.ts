@@ -12,9 +12,10 @@ import useMusicProductionTools from "@/agents/musicProductionAgent/tools";
 import {
   musicProjectIsolationKey,
   resolveMusicIsolationKey,
-  type MusicStageStateInput,
-} from "@/services/musicStageState";
+  type MusicScopeInput,
+} from "@/services/musicScope";
 import { listMusicCues, parseJsonValue, type MusicScopeMode } from "@/services/musicDirector";
+import { recordAgentModelStreamFinished, type AgentRunContext } from "@/services/agentRun";
 
 export interface AgentContext {
   socket: Socket;
@@ -24,6 +25,8 @@ export interface AgentContext {
   abortSignal?: AbortSignal;
   resTool: ResTool;
   msg: ReturnType<ResTool["newMessage"]>;
+  onTaskQueued?: (task: { taskId: string; targetType: string; targetId?: string | number | null }) => void;
+  runContext?: AgentRunContext;
   thinkConfig: {
     think: boolean;
     thinlLevel: 0 | 1 | 2 | 3;
@@ -90,10 +93,11 @@ async function latestMusicPlan(projectId: number, mode: MusicScopeMode, scriptId
     scriptId: row.scriptId,
     content: truncate(row.content, 3000),
     cueSheet: parseJsonValue(row.cueSheetJson, []),
+    recommendedProduction: parseJsonValue(row.recommendedProductionJson, null),
   };
 }
 
-async function buildReadOnlyProductionContext(input: Required<Pick<MusicStageStateInput, "projectId">> & MusicStageStateInput) {
+async function buildReadOnlyProductionContext(input: Required<Pick<MusicScopeInput, "projectId">> & MusicScopeInput) {
   const project = await u
     .db("o_project")
     .where("id", input.projectId)
@@ -237,7 +241,7 @@ export async function runDecisionAI(ctx: AgentContext) {
   await ensureMusicProductionAgentDeploy();
 
   const currentMemory = new Memory("musicProductionAgent", ctx.isolationKey);
-  await currentMemory.add("user", ctx.text);
+  await currentMemory.add("user", ctx.text, ctx.userMessageTime == null ? undefined : { createTime: ctx.userMessageTime });
   const currentMem = await currentMemory.get(ctx.text);
 
   const projectKey = musicProjectIsolationKey(projectId);
@@ -270,10 +274,15 @@ export async function runDecisionAI(ctx: AgentContext) {
       abortSignal: modelStreamScope.signal,
       tools: {
         ...currentMemory.getTools(),
-        ...useMusicProductionTools({ resTool: ctx.resTool, msg: ctx.msg }),
+        ...useMusicProductionTools({ resTool: ctx.resTool, msg: ctx.msg, onTaskQueued: ctx.onTaskQueued, runContext: ctx.runContext }),
       },
       onFinish: async (completion) => {
-        await currentMemory.add("assistant:decision", stripXmlTags(completion.text));
+        if (ctx.runContext) {
+          await recordAgentModelStreamFinished(ctx.runContext.runId, completion).catch((error) => {
+            console.warn("[musicProductionAgent] failed to record model stream completion:", u.error(error).message);
+          });
+        }
+        await currentMemory.add("assistant:decision", stripXmlTags(completion.text), { createTime: new Date(ctx.msg.datetime).getTime() });
       },
     });
 

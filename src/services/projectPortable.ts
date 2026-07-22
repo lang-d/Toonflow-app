@@ -104,6 +104,12 @@ async function collectProjectTables(database: any, projectId: number): Promise<S
       "o_musicPlan",
       "o_musicCue",
       "o_musicCueAsset",
+      "o_musicLibraryItem",
+      "o_musicLibraryEdition",
+      "o_musicLyricsVersion",
+      "o_musicPromptVersion",
+      "o_musicLibraryVersion",
+      "o_musicCueBinding",
       "o_workbenchMergedReference",
       "o_directorAsset",
       "o_storyArtifact",
@@ -390,6 +396,12 @@ export async function importPortableProject(sourceDirectory: string, database: a
     "o_musicPlan",
     "o_musicCue",
     "o_musicCueAsset",
+    "o_musicLibraryItem",
+    "o_musicLibraryEdition",
+    "o_musicLyricsVersion",
+    "o_musicPromptVersion",
+    "o_musicLibraryVersion",
+    "o_musicCueBinding",
     "o_workbenchMergedReference",
     "o_directorAsset",
     "o_storyArtifact",
@@ -446,6 +458,11 @@ export async function importPortableProject(sourceDirectory: string, database: a
       bibleId: "o_musicBible",
       planId: "o_musicPlan",
       cueId: "o_musicCue",
+      libraryItemId: "o_musicLibraryItem",
+      editionId: "o_musicLibraryEdition",
+      libraryVersionId: "o_musicLibraryVersion",
+      promptVersionId: "o_musicPromptVersion",
+      lyricsVersionId: "o_musicLyricsVersion",
       childAssetId: "o_assets",
       taskCenterId: "o_tasks",
       legacyTaskId: "o_tasks",
@@ -490,7 +507,6 @@ export async function importPortableProject(sourceDirectory: string, database: a
       ["sourceArtifactId", "o_storyArtifact"],
       ["newArtifactId", "o_storyArtifact"],
       ["suggestionId", "o_productionReviewSuggestion"],
-      ["parentId", "o_productionReviewSuggestion"],
       ["storyboardId", "o_storyboard"],
       ["flowId", "o_imageFlow"],
       ["trackId", "o_videoTrack"],
@@ -500,11 +516,35 @@ export async function importPortableProject(sourceDirectory: string, database: a
       ["bibleId", "o_musicBible"],
       ["planId", "o_musicPlan"],
       ["cueId", "o_musicCue"],
+      ["libraryItemId", "o_musicLibraryItem"],
+      ["relatedItemId", "o_musicLibraryItem"],
+      ["editionId", "o_musicLibraryEdition"],
+      ["parentEditionId", "o_musicLibraryEdition"],
+      ["selectedVersionId", "o_musicLibraryVersion"],
+      ["libraryVersionId", "o_musicLibraryVersion"],
+      ["sourceVersionId", "o_musicLibraryVersion"],
+      ["promptVersionId", "o_musicPromptVersion"],
+      ["lyricsVersionId", "o_musicLyricsVersion"],
+      ["legacyCueAssetId", "o_musicCueAsset"],
       ["childAssetId", "o_assets"],
       ["taskCenterId", "o_tasks"],
       ["legacyTaskId", "o_tasks"],
     ];
     for (const [field, targetTable] of fields) if (row[field] != null) row[field] = mapId(targetTable, row[field]);
+    if (row.parentId != null) {
+      if (table === "o_storyArtifact") row.parentId = mapId("o_storyArtifact", row.parentId);
+      else if (table === "o_productionReviewSuggestion") {
+        const targetType = String(row.targetType || "");
+        if (targetType.startsWith("music")) row.parentId = null;
+        else if (targetType === "storyboard" || targetType === "storyboardImage") row.parentId = mapId("o_storyboard", row.parentId);
+        else if (targetType === "asset" || targetType === "deriveAsset") row.parentId = mapId("o_assets", row.parentId);
+        else row.parentId = null;
+      }
+    }
+    if (row.basedOnId != null) {
+      if (table === "o_musicLyricsVersion") row.basedOnId = mapId("o_musicLyricsVersion", row.basedOnId);
+      if (table === "o_musicPromptVersion") row.basedOnId = mapId("o_musicPromptVersion", row.basedOnId);
+    }
     if (row.businessId != null) {
       const businessType = String(row.businessType || "");
       if (businessType === "video-generation") row.businessId = mapId("o_video", row.businessId);
@@ -529,8 +569,18 @@ export async function importPortableProject(sourceDirectory: string, database: a
           row.targetId = mapId("o_musicBible", row.targetId);
         } else if (targetType === "musicPlan") {
           row.targetId = mapId("o_musicPlan", row.targetId);
-        } else if (targetType === "musicCue" || targetType === "musicPrompt") {
+        } else if (targetType === "musicCue") {
           row.targetId = mapId("o_musicCue", row.targetId);
+        } else if (targetType === "musicPrompt") {
+          row.targetId = maps.get("o_musicPromptVersion")?.has(Number(row.targetId))
+            ? mapId("o_musicPromptVersion", row.targetId)
+            : mapId("o_musicCue", row.targetId);
+        } else if (targetType === "musicLibraryItem") {
+          row.targetId = mapId("o_musicLibraryItem", row.targetId);
+        } else if (targetType === "musicLibraryVersion") {
+          row.targetId = mapId("o_musicLibraryVersion", row.targetId);
+        } else if (targetType === "musicLyrics") {
+          row.targetId = mapId("o_musicLyricsVersion", row.targetId);
         }
       } else {
         row.targetId = /storyboard/i.test(String(row.targetType))
@@ -558,6 +608,8 @@ export async function importPortableProject(sourceDirectory: string, database: a
       "relatedObjects",
       "camera",
       "stageDraft",
+      "cueSheetJson",
+      "libraryPlanJson",
     ]) {
       if (typeof row[jsonField] !== "string" || !row[jsonField]) continue;
       try {
@@ -606,6 +658,12 @@ export async function importPortableProject(sourceDirectory: string, database: a
     "o_musicBible",
     "o_musicPlan",
     "o_musicCue",
+    "o_musicLibraryItem",
+    "o_musicLibraryEdition",
+    "o_musicLyricsVersion",
+    "o_musicPromptVersion",
+    "o_musicLibraryVersion",
+    "o_musicCueBinding",
     "o_musicCueAsset",
     "o_storyboard",
     "o_video",

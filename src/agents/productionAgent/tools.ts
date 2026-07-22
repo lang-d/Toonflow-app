@@ -22,18 +22,35 @@ import {
   commitDirectorPlanGeneration,
   readDirectorPlanAsset,
 } from "@/services/directorPlanGeneration";
+import { getTextAssetContent } from "@/services/textAsset";
 import { applyStoryboardPanelImageFieldsWithDb, updateDeriveAssetPrompt } from "@/services/imageFlow";
-import { emitWithAckTimeout } from "@/agents/shared/socketAck";
 import { buildProductionFlowData } from "@/services/productionFlowData";
 import { VISUAL_ASSET_TYPES, isVisualAssetType } from "@/services/assetTypes";
 import { cleanupAssetRelations } from "@/services/scriptAssetBinding";
+import { enqueueAssetImageGeneration } from "@/services/assetImageGeneration";
+import { enqueueStoryboardImageGeneration } from "@/services/storyboardImageGeneration";
 import {
   PROJECT_MATERIAL_CATEGORIES,
   getProjectContextPack,
   listProjectMaterials,
   readProjectMaterial,
 } from "@/services/projectMaterial";
-import type { AgentRunContext } from "@/services/agentRun";
+import { replaceStoryboardTableAgentReviewSuggestions } from "@/services/productionReview";
+import { recordAgentRunEvent, type AgentRunContext } from "@/services/agentRun";
+import {
+  storyboardGroupPreflightSchema,
+  validateStoryboardGroupPreflightStructure,
+  type StoryboardGroupPreflight,
+} from "@/services/storyboardGroupPreflightContract";
+
+function emitBestEffort(socket: { emit(event: string, ...args: unknown[]): unknown }, event: string, payload: unknown) {
+  try {
+    socket.emit(event, payload, () => undefined);
+  } catch (error) {
+    console.warn("[productionAgent] UI notification failed", event, u.error(error).message);
+  }
+  return Promise.resolve(undefined);
+}
 
 const deriveAssetSchema = z.object({
   id: z.number().describe("衍生资产ID,如果新增则为空"),
@@ -108,6 +125,63 @@ function stringifyAckMessage(value: unknown) {
   } catch {
     return String(value);
   }
+}
+
+async function submitImageGeneration<T>(
+  _socket: unknown,
+  event: "generateDeriveAsset" | "generateStoryboard",
+  payload: { ids: number[] },
+  _timeout?: unknown,
+  context?: Record<string, unknown>,
+): Promise<T> {
+  const projectId = Number(context?.projectId);
+  const scriptId = Number(context?.scriptId);
+  if (!Number.isFinite(projectId) || !Number.isFinite(scriptId)) {
+    throw new Error("Production agent image generation requires a project and script scope");
+  }
+  const ids = Array.from(new Set(payload.ids.map(Number).filter(Number.isFinite)));
+  if (!ids.length) throw new Error("Image generation requires at least one target ID");
+
+  if (event === "generateStoryboard") {
+    const result = await enqueueStoryboardImageGeneration({ projectId, scriptId, storyboardIds: ids });
+    return { success: Number(result.successCount || 0) > 0 || result.failedCount === 0, message: result } as T;
+  }
+
+  const rows = await u
+    .db("o_assets")
+    .where({ projectId })
+    .whereIn("id", ids)
+    .whereNotNull("assetsId")
+    .select("id", "type", "name", "prompt");
+  const found = new Set(rows.map((row: any) => Number(row.id)));
+  const errors = ids
+    .filter((id) => !found.has(id))
+    .map((assetId) => ({ assetId, error: "Derived asset does not belong to the current project" }));
+  const supported = rows.filter((row: any) => isVisualAssetType(row.type));
+  errors.push(
+    ...rows
+      .filter((row: any) => !isVisualAssetType(row.type))
+      .map((row: any) => ({ assetId: Number(row.id), error: `Unsupported visual asset type: ${row.type || "unknown"}` })),
+  );
+  const submitted = supported.length
+    ? await enqueueAssetImageGeneration({
+        projectId,
+        items: supported.map((row: any) => ({
+          id: Number(row.id),
+          type: row.type,
+          name: String(row.name || "Derived asset"),
+          prompt: String(row.prompt || ""),
+        })),
+      })
+    : { total: 0, tasks: [] as any[] };
+  const result: GenerateDeriveAssetResult = {
+    total: submitted.total + errors.length,
+    tasks: submitted.tasks,
+    successCount: submitted.tasks.length,
+    failedCount: errors.length,
+    errors,
+  };
+  return { success: Number(result.successCount || 0) > 0 || result.failedCount === 0, message: result } as T;
 }
 
 function normalizeGenerateDeriveAssetResult(value: unknown): GenerateDeriveAssetResult {
@@ -197,13 +271,18 @@ const storyboardSchema = z.object({
   factStatus: z.enum(["draft", "ready", "legacy"]).optional().describe("分镜事实状态"),
   location: z.string().optional(),
   timeOfDay: z.string().optional(),
+  sceneContinuityId: z.string().nullable().optional(),
   picture: z.string().optional(),
   action: z.string().optional(),
   shotSize: z.string().optional(),
   cameraMove: z.string().optional(),
+  cameraAngle: z.string().nullable().optional(),
+  transitionFromPrevious: z.string().nullable().optional(),
   dialogue: z.string().optional(),
   sound: z.string().optional(),
   visibleEmotion: z.string().optional(),
+  characters: z.array(z.any()).optional(),
+  requiredAssets: z.array(z.any()).optional(),
 });
 const workbenchDataSchema = z.object({
   name: z.string().describe("项目名称"),
@@ -229,6 +308,62 @@ const beginStoryboardTableInputSchema = z.object({
   expectedRowCount: z.number().int().positive(),
   groups: z.array(storyboardGroupPlanV2Schema).min(1),
 });
+const prepareStoryboardTableInputSchema = storyboardGroupPreflightSchema;
+
+const storyboardTableDecisionInputSchema = z.object({
+  intent: z.enum(["new_generation", "review_revision", "custom_revision", "accept_current", "clarify"]),
+  rationale: z.string().trim().min(1),
+});
+const updateAgentProgressInputSchema = z.object({
+  stage: z.string().trim().min(1).max(100),
+  subAgent: z.string().trim().min(1).max(100).optional(),
+  title: z.string().trim().min(1).max(240),
+  detail: z.string().trim().max(2000).optional(),
+  phase: z.string().trim().max(80).optional(),
+});
+const listStoryboardGenerationsInputSchema = z.object({
+  limit: z.number().int().min(1).max(20).optional().default(10),
+});
+const readStoryboardGenerationInputSchema = z
+  .object({
+    generationId: z.string().uuid().optional(),
+    revision: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional().default(0),
+    limit: z.number().int().min(1).max(20).optional().default(10),
+  })
+  .refine((input) => Boolean(input.generationId) !== Boolean(input.revision), {
+    message: "Provide exactly one of generationId or revision",
+  });
+const listProductionReviewsInputSchema = z.object({
+  target: z.enum(["directorPlan", "storyboardTable", "storyboardPanel", "general"]).optional(),
+  limit: z.number().int().min(1).max(20).optional().default(10),
+});
+const readProductionReviewInputSchema = z
+  .object({
+    reviewRunId: z.string().trim().min(1).optional(),
+    textAssetId: z.number().int().positive().optional(),
+    offset: z.number().int().nonnegative().optional().default(0),
+    limit: z.number().int().min(1).max(64 * 1024).optional().default(16000),
+  })
+  .refine((input) => Boolean(input.reviewRunId) !== Boolean(input.textAssetId), {
+    message: "Provide exactly one of reviewRunId or textAssetId",
+  });
+const readTextAssetInputSchema = z.object({
+  id: z.number().int().positive(),
+  offset: z.number().int().nonnegative().optional().default(0),
+  limit: z.number().int().min(1).max(64 * 1024).optional().default(16000),
+});
+const listDirectorPlanGenerationsInputSchema = z.object({
+  limit: z.number().int().min(1).max(20).optional().default(10),
+});
+const readDirectorPlanGenerationInputSchema = z
+  .object({
+    textAssetId: z.number().int().positive().optional(),
+    version: z.number().int().positive().optional(),
+  })
+  .refine((input) => Boolean(input.textAssetId) !== Boolean(input.version), {
+    message: "Provide exactly one of textAssetId or version",
+  });
 
 const appendStoryboardRowsInputSchema = z.object({
   generationId: z.string().uuid(),
@@ -259,6 +394,25 @@ const awaitUserDecisionInputSchema = z.object({
     .optional()
     .default([]),
   context: z.record(z.string(), z.unknown()).optional().default({}),
+});
+const storyboardTableReviewItemSchema = z.object({
+  scope: z.enum(["global", "storyboard", "director_plan", "asset"]).default("storyboard"),
+  storyboardId: z.number().int().positive().optional(),
+  storyboardIndex: z.number().int().nonnegative().optional(),
+  issueType: z.string().trim().min(1).max(120),
+  severity: z.enum(["info", "warning", "blocking"]),
+  field: z.string().trim().min(1).max(120),
+  message: z.string().trim().min(1).max(1000),
+  reason: z.string().trim().min(1).max(3000),
+  suggestedAction: z.string().trim().min(1).max(2000),
+  owner: z.enum(["storyboardTable", "deriveAssets", "directorPlan"]),
+}).superRefine((item, ctx) => {
+  if (item.scope === "storyboard" && (item.storyboardId == null || item.storyboardIndex == null)) {
+    ctx.addIssue({ code: "custom", message: "storyboard scope requires storyboardId and storyboardIndex" });
+  }
+});
+const recordStoryboardTableReviewInputSchema = z.object({
+  items: z.array(storyboardTableReviewItemSchema).max(100),
 });
 const directorPlanGenerationStateSchema = z.object({
   current: z
@@ -359,6 +513,15 @@ interface ToolConfig {
   toolsNames?: string[];
   msg: ReturnType<ResTool["newMessage"]>;
   runContext?: AgentRunContext;
+  continuation?: {
+    run: { runId: string; currentStage: string | null; currentSubAgent: string | null };
+    decision: unknown;
+  } | null;
+  storyboardProgress?: {
+    appendText(text: string): unknown;
+    updateTitle(title: string): unknown;
+    complete(): unknown;
+  };
 }
 
 function scopedNumber(value: unknown, field: string) {
@@ -400,10 +563,40 @@ function shortStoryboardCommitMessage(result: any) {
   return "";
 }
 
+function parseJsonSafe(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return value ?? null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function parseGroupCount(value: unknown) {
+  const parsed = parseJsonSafe(value);
+  return Array.isArray(parsed) ? parsed.length : 0;
+}
+
+function reviewTargetMatches(stage: string | null | undefined, target?: string) {
+  if (!target) return /^supervision/.test(String(stage || ""));
+  if (target === "storyboardTable") return stage === "supervisionStoryboardTable";
+  if (target === "storyboardPanel") return stage === "supervisionStoryboardPanel";
+  if (target === "directorPlan") return stage === "supervisionDirectorPlan";
+  return stage === "supervision";
+}
+
 export default (toolCpnfig: ToolConfig) => {
-  const { resTool, toolsNames, msg, runContext } = toolCpnfig;
+  const { resTool, toolsNames, msg, runContext, continuation, storyboardProgress } = toolCpnfig;
   const { socket } = resTool;
   let storyboardTableTerminalFailure = false;
+  let storyboardPreflight: StoryboardGroupPreflight | null = null;
+  let storyboardGenerationId: string | null = null;
+  let storyboardRowsWritten = 0;
+  let flowDataPromise: Promise<FlowData> | null = null;
+
+  const canonicalGroups = (groups: Array<z.infer<typeof storyboardGroupPlanV2Schema>>) =>
+    groups.map((group) => storyboardGroupPlanV2Schema.parse(group));
+
   const tools: Record<string, Tool> = {
     get_flowData: tool({
       description: "获取工作区数据",
@@ -429,7 +622,8 @@ export default (toolCpnfig: ToolConfig) => {
         try {
           const projectId = scopedNumber(resTool.data.projectId, "projectId");
           const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
-          const flowData = (await buildProductionFlowData(projectId, scriptId)) as FlowData;
+          flowDataPromise ||= buildProductionFlowData(projectId, scriptId) as Promise<FlowData>;
+          const flowData = await flowDataPromise;
           thinking.appendText(`读取到${flowDataKeyLabels[flowKey]}:\n` + JSON.stringify(flowData[flowKey], null, 2));
           thinking.updateTitle(`获取${flowDataKeyLabels[flowKey]}完成`);
           thinking.complete();
@@ -441,6 +635,378 @@ export default (toolCpnfig: ToolConfig) => {
           storyboardTableTerminalFailure = true;
           throw error;
         }
+      },
+    }),
+    update_agent_progress: tool({
+      description:
+        "Report the agent's current business progress for panel recovery. This does not finish the run and does not change production facts.",
+      inputSchema: jsonSchema<z.infer<typeof updateAgentProgressInputSchema>>(
+        updateAgentProgressInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = updateAgentProgressInputSchema.parse(raw);
+        if (!runContext) return { recorded: false, reason: "no agent run context" };
+        await runContext.updateProgress({
+          stage: input.stage,
+          subAgent: input.subAgent ?? null,
+          title: input.title,
+          detail: input.detail ?? null,
+          phase: input.phase ?? null,
+        });
+        return { recorded: true, ...input };
+      },
+    }),
+    complete_agent_run: tool({
+      description:
+        "Explicitly finish this Agent Run after the requested work is complete. This only records the model-declared terminal state and does not change production facts.",
+      inputSchema: jsonSchema<{ stage: string; subAgent?: string; summary?: string }>(
+        z.object({ stage: z.string().min(1).max(100), subAgent: z.string().min(1).max(100).optional(), summary: z.string().max(2000).optional() }).toJSONSchema(),
+      ),
+      execute: async (input) => {
+        if (!runContext) throw new Error("Agent Run context is required to complete a run");
+        runContext.setCompleted({
+          stage: input.stage,
+          subAgent: input.subAgent,
+          reason: input.summary || "",
+          resultJson: { kind: "agent_completed", summary: input.summary ?? null },
+        });
+        runContext.stopForTerminal();
+        return { status: "completed", terminal: true, ...input };
+      },
+    }),
+    list_storyboard_generations: tool({
+      description:
+        "List storyboard-table generation versions for the current project/script. Returns metadata only; call read_storyboard_generation for rows.",
+      inputSchema: jsonSchema<z.infer<typeof listStoryboardGenerationsInputSchema>>(
+        listStoryboardGenerationsInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = listStoryboardGenerationsInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        const rows = await u
+          .db("o_storyboardGeneration")
+          .where({ projectId, scriptId })
+          .orderBy("updatedAt", "desc")
+          .limit(input.limit);
+        const generations = await Promise.all(
+          rows.map(async (row: any) => {
+            const countRow = await u
+              .db("o_storyboardGenerationRow")
+              .where({ generationId: row.generationId })
+              .count<{ count: number }[]>({ count: "*" })
+              .first();
+            return {
+              generationId: String(row.generationId),
+              state: String(row.state || ""),
+              revision: row.revision == null ? null : Number(row.revision),
+              expectedRowCount: Number(row.expectedRowCount || 0),
+              rowCount: Number(countRow?.count || 0),
+              groupCount: parseGroupCount(row.groupPlanJson),
+              createdAt: row.createdAt == null ? null : Number(row.createdAt),
+              updatedAt: row.updatedAt == null ? null : Number(row.updatedAt),
+              hasError: Boolean(row.errorJson),
+            };
+          }),
+        );
+        return { projectId, scriptId, generations };
+      },
+    }),
+    read_storyboard_generation: tool({
+      description:
+        "Read one storyboard-table generation by generationId or committed revision. Use this before cross-version repair.",
+      inputSchema: jsonSchema<z.infer<typeof readStoryboardGenerationInputSchema>>(
+        readStoryboardGenerationInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = readStoryboardGenerationInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        let query = u.db("o_storyboardGeneration").where({ projectId, scriptId });
+        if (input.generationId) query = query.andWhere("generationId", input.generationId);
+        else query = query.andWhere("revision", input.revision).orderBy("updatedAt", "desc");
+        const generation = await query.first();
+        if (!generation) throw new Error("Storyboard generation not found in current project/script");
+        const offset = Math.max(0, Number(input.offset || 0));
+        const limit = Math.min(20, Math.max(1, Number(input.limit || 10)));
+        const rowQuery = u
+          .db("o_storyboardGenerationRow")
+          .where({ generationId: generation.generationId })
+          .orderBy("rowIndex", "asc");
+        const [rows, totalRow] = await Promise.all([
+          rowQuery.clone().offset(offset).limit(limit),
+          rowQuery.clone().count<{ count: number }[]>({ count: "*" }).first(),
+        ]);
+        const total = Number(totalRow?.count || 0);
+        return {
+          generation: {
+            generationId: String(generation.generationId),
+            state: String(generation.state || ""),
+            revision: generation.revision == null ? null : Number(generation.revision),
+            expectedRowCount: Number(generation.expectedRowCount || 0),
+            groups: parseJsonSafe(generation.groupPlanJson) || [],
+            error: parseJsonSafe(generation.errorJson),
+            createdAt: generation.createdAt == null ? null : Number(generation.createdAt),
+            updatedAt: generation.updatedAt == null ? null : Number(generation.updatedAt),
+          },
+          offset,
+          limit,
+          total,
+          nextOffset: offset + rows.length < total ? offset + rows.length : null,
+          eof: offset + rows.length >= total,
+          rows: rows.map((row: any) => ({ index: Number(row.rowIndex), row: parseJsonSafe(row.rowJson) })),
+        };
+      },
+    }),
+    list_production_reviews: tool({
+      description:
+        "List archived production review reports for the current project/script. Returns textAssetId and reviewRunId; read the report text separately.",
+      inputSchema: jsonSchema<z.infer<typeof listProductionReviewsInputSchema>>(
+        listProductionReviewsInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = listProductionReviewsInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        const events = await u
+          .db("o_agentRunEvent")
+          .where({ eventType: "agent_output_archived" })
+          .orderBy("id", "desc")
+          .limit(Math.max(50, input.limit * 5));
+        const reviews: any[] = [];
+        for (const event of events) {
+          const payload = parseJsonSafe(event.payloadJson) as any;
+          if (!payload || !reviewTargetMatches(payload.stage, input.target)) continue;
+          const run = await u
+            .db("o_agentRun")
+            .where({ runId: event.runId, agentKey: "productionAgent", projectId, scriptId })
+            .first("runId", "status", "currentStage", "currentSubAgent", "startedAt", "finishedAt");
+          if (!run) continue;
+          const asset = payload.textAssetId
+            ? await u.db("o_textAsset").where({ id: Number(payload.textAssetId), projectId }).first()
+            : null;
+          reviews.push({
+            reviewRunId: String(event.runId),
+            stage: payload.stage ?? run.currentStage ?? null,
+            subAgent: payload.subAgent ?? run.currentSubAgent ?? null,
+            textAssetId: payload.textAssetId == null ? null : Number(payload.textAssetId),
+            summary: asset?.summary ?? payload.summary ?? "",
+            size: asset?.size == null ? payload.size ?? null : Number(asset.size),
+            createdAt: Number(event.createdAt),
+            runStatus: run.status,
+          });
+          if (reviews.length >= input.limit) break;
+        }
+        return { projectId, scriptId, reviews };
+      },
+    }),
+    read_production_review: tool({
+      description: "Read an archived production review report by reviewRunId or textAssetId.",
+      inputSchema: jsonSchema<z.infer<typeof readProductionReviewInputSchema>>(
+        readProductionReviewInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = readProductionReviewInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        let textAssetId = input.textAssetId;
+        const reviewRunId = input.reviewRunId ?? null;
+        if (!textAssetId && reviewRunId) {
+          const run = await u
+            .db("o_agentRun")
+            .where({ runId: reviewRunId, agentKey: "productionAgent", projectId, scriptId })
+            .first("runId");
+          if (!run) throw new Error("Review run not found in current project/script");
+          const event = await u
+            .db("o_agentRunEvent")
+            .where({ runId: reviewRunId, eventType: "agent_output_archived" })
+            .orderBy("id", "desc")
+            .first();
+          const payload = parseJsonSafe(event?.payloadJson) as any;
+          textAssetId = payload?.textAssetId == null ? undefined : Number(payload.textAssetId);
+        }
+        if (!textAssetId) throw new Error("Review report text asset not found");
+        const asset = await u.db("o_textAsset").where({ id: textAssetId, projectId }).first();
+        if (!asset) throw new Error("Review text asset not found in current project");
+        if (asset.scriptId != null && Number(asset.scriptId) !== scriptId) {
+          throw new Error("Review text asset does not belong to the current script");
+        }
+        const page = await getTextAssetContent({
+          id: textAssetId,
+          projectId,
+          offset: input.offset,
+          limit: input.limit,
+        });
+        return {
+          reviewRunId,
+          textAsset: {
+            id: Number(asset.id),
+            summary: String(asset.summary || ""),
+            size: Number(asset.size || page.size),
+            targetType: asset.targetType,
+            targetId: asset.targetId,
+            version: Number(asset.version || 0),
+          },
+          ...page,
+        };
+      },
+    }),
+    read_text_asset: tool({
+      description: "Read a text asset page by id in the current project scope.",
+      inputSchema: jsonSchema<z.infer<typeof readTextAssetInputSchema>>(readTextAssetInputSchema.toJSONSchema()),
+      execute: async (raw) => {
+        const input = readTextAssetInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        return getTextAssetContent({ id: input.id, projectId, offset: input.offset, limit: input.limit });
+      },
+    }),
+    list_director_plan_generations: tool({
+      description:
+        "List director-plan committed/history versions for the current project/script. Use before version-specific director-plan revision.",
+      inputSchema: jsonSchema<z.infer<typeof listDirectorPlanGenerationsInputSchema>>(
+        listDirectorPlanGenerationsInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = listDirectorPlanGenerationsInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        const rows = await u
+          .db("o_directorPlanGeneration")
+          .where({ projectId, scriptId })
+          .orderBy("updatedAt", "desc")
+          .limit(input.limit);
+        return {
+          projectId,
+          scriptId,
+          generations: rows.map((row: any) => ({
+            generationId: String(row.generationId),
+            state: String(row.state || ""),
+            textAssetId: row.textAssetId == null ? null : Number(row.textAssetId),
+            version: row.version == null ? null : Number(row.version),
+            updatedAt: row.updatedAt == null ? null : Number(row.updatedAt),
+            hasError: Boolean(row.errorJson),
+          })),
+        };
+      },
+    }),
+    read_director_plan_generation: tool({
+      description: "Read one committed director-plan version by textAssetId or version.",
+      inputSchema: jsonSchema<z.infer<typeof readDirectorPlanGenerationInputSchema>>(
+        readDirectorPlanGenerationInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = readDirectorPlanGenerationInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        let textAssetId = input.textAssetId;
+        if (!textAssetId && input.version) {
+          const asset = await u
+            .db("o_textAsset")
+            .where({ projectId, scriptId, targetType: "scriptPlan", version: input.version, state: "complete" })
+            .orderBy("id", "desc")
+            .first("id");
+          textAssetId = asset?.id == null ? undefined : Number(asset.id);
+        }
+        if (!textAssetId) throw new Error("Director plan generation not found");
+        const result = await readDirectorPlanAsset({ projectId, scriptId, textAssetId });
+        return { textAssetId: result.id, version: result.version, content: result.content };
+      },
+    }),
+    prepare_storyboard_table: tool({
+      description:
+        "Prepare the complete narrative-shot and video-group schedule in memory before creating a storyboard generation. This does not write storyboard facts.",
+      inputSchema: jsonSchema<z.infer<typeof prepareStoryboardTableInputSchema>>(
+        prepareStoryboardTableInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const thinking = storyboardProgress || msg.thinking("正在整理剧情与镜头节奏...");
+        const ownsThinking = !storyboardProgress;
+        try {
+          if (storyboardTableTerminalFailure) {
+            throw new Error("This storyboard-table run is write-locked after a terminal failure.");
+          }
+          if (runContext) await recordAgentRunEvent(runContext.runId, "storyboard_prepare_started", {});
+          const input = prepareStoryboardTableInputSchema.parse(raw);
+          const issues = validateStoryboardGroupPreflightStructure(input);
+          if (issues.length) {
+            throw new Error(`Storyboard preparation is structurally invalid: ${issues.join("; ")}`);
+          }
+          storyboardPreflight = input;
+          storyboardGenerationId = null;
+          storyboardRowsWritten = 0;
+          if (runContext) {
+            await recordAgentRunEvent(runContext.runId, "storyboard_prepare_completed", {
+              status: input.status,
+              shotCount: input.shots.length,
+              groupCount: input.groups.length,
+            });
+          }
+          thinking.appendText(`shots=${input.shots.length}, groups=${input.groups.length}, status=${input.status}`);
+          thinking.updateTitle?.("剧情与镜头节奏整理完成");
+          if (input.status === "needs_user") {
+            runContext?.setPendingDecision({
+              stage: "storyboardTable",
+              subAgent: "storyboardTableAgent",
+              reason: input.summary,
+              resultJson: {
+                source: "storyboardTablePreparation",
+                longTakeConflict: input.longTakeConflict,
+                actions: ["change_model", "redesign_shot"],
+              },
+            });
+            return {
+              status: input.status,
+              prepared: false,
+              requiresUserDecision: true,
+              summary: input.summary,
+              longTakeConflict: input.longTakeConflict,
+            };
+          }
+          return {
+            status: input.status,
+            prepared: true,
+            expectedRowCount: input.shots.length,
+            groups: canonicalGroups(input.groups),
+            summary: input.summary,
+          };
+        } catch (error: any) {
+          thinking.appendText(u.error(error).message);
+          thinking.updateTitle?.("剧情与镜头节奏整理失败");
+          if (runContext) {
+            await recordAgentRunEvent(runContext.runId, "storyboard_prepare_failed", {
+              reason: u.error(error).message,
+            });
+          }
+          throw error;
+        } finally {
+          if (ownsThinking) thinking.complete();
+        }
+      },
+    }),
+    declare_storyboard_table_decision: tool({
+      description:
+        "Record the decision Agent's understanding of the user's current natural-language request for an unresolved storyboard-table review. This never starts generation or changes storyboard facts.",
+      inputSchema: jsonSchema<z.infer<typeof storyboardTableDecisionInputSchema>>(
+        storyboardTableDecisionInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = storyboardTableDecisionInputSchema.parse(raw);
+        if (!continuation || continuation.run.currentStage !== "supervisionStoryboardTable") {
+          throw new Error("No unresolved storyboard-table review is available for a decision declaration.");
+        }
+        if (runContext) {
+          await recordAgentRunEvent(runContext.runId, "storyboard_table_decision_received", {
+            pendingRunId: continuation.run.runId,
+            intent: input.intent,
+            rationale: input.rationale,
+          });
+        }
+        return {
+          accepted: true,
+          pendingRunId: continuation.run.runId,
+          intent: input.intent,
+          reviewContext: continuation.decision,
+        };
       },
     }),
     await_user_decision: tool({
@@ -473,8 +1039,47 @@ export default (toolCpnfig: ToolConfig) => {
             source: pending ?? null,
           },
         });
-        runContext.stopForTerminal();
         return { status: "awaiting_user", terminal: true, question: input.question, options: input.options };
+      },
+    }),
+    record_storyboard_table_review: tool({
+      description:
+        "Persist the complete current storyboard-table audit report. This is advisory only and never changes storyboard facts.",
+      inputSchema: jsonSchema<z.infer<typeof recordStoryboardTableReviewInputSchema>>(
+        recordStoryboardTableReviewInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = recordStoryboardTableReviewInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        const ids = [
+          ...new Set(input.items.flatMap((item) => (item.storyboardId == null ? [] : [item.storyboardId]))),
+        ];
+        const rows = ids.length
+          ? await u
+              .db("o_storyboard")
+              .where({ projectId, scriptId })
+              .whereIn("id", ids)
+              .select("id", "index")
+          : [];
+        const storyboardIndexes = new Map(rows.map((row: any) => [Number(row.id), Number(row.index)]));
+        const invalid = input.items.find((item) =>
+          item.storyboardId == null
+            ? false
+            : storyboardIndexes.get(item.storyboardId) !== Number(item.storyboardIndex),
+        );
+        if (invalid) {
+          throw new Error(`Storyboard review item does not match the current scope: ${invalid.storyboardId}`);
+        }
+        const result = await replaceStoryboardTableAgentReviewSuggestions({ projectId, scriptId, items: input.items });
+        if (runContext) {
+          await recordAgentRunEvent(runContext.runId, "storyboard_table_review_recorded", {
+            projectId,
+            scriptId,
+            reviewedAt: result.reviewedAt,
+          });
+        }
+        return { recorded: true, reviewedAt: result.reviewedAt };
       },
     }),
     list_project_materials: tool({
@@ -579,7 +1184,21 @@ export default (toolCpnfig: ToolConfig) => {
         if (storyboardTableTerminalFailure) {
           throw new Error("本轮已有终止型失败，不能重新 begin_storyboard_table；请向用户报告失败原因后停止。");
         }
-        const thinking = msg.thinking("正在创建分镜表写入批次...");
+        if (!storyboardPreflight || storyboardPreflight.status !== "ready") {
+          throw new Error("Call prepare_storyboard_table with a ready plan before begin_storyboard_table.");
+        }
+        const preparedGroups = canonicalGroups(storyboardPreflight.groups);
+        const requestedGroups = canonicalGroups(input.groups);
+        if (input.expectedRowCount !== storyboardPreflight.shots.length) {
+          throw new Error(
+            `expectedRowCount ${input.expectedRowCount} does not match prepared shot count ${storyboardPreflight.shots.length}`,
+          );
+        }
+        if (JSON.stringify(requestedGroups) !== JSON.stringify(preparedGroups)) {
+          throw new Error("begin_storyboard_table groups must exactly match prepare_storyboard_table groups.");
+        }
+        const thinking = storyboardProgress || msg.thinking("正在创建分镜表写入批次...");
+        const ownsThinking = !storyboardProgress;
         try {
           const result = await beginStoryboardGeneration({
             projectId,
@@ -587,6 +1206,15 @@ export default (toolCpnfig: ToolConfig) => {
             expectedRowCount: input.expectedRowCount,
             groups: input.groups,
           });
+          storyboardGenerationId = result.generationId;
+          storyboardRowsWritten = 0;
+          if (runContext) {
+            await recordAgentRunEvent(runContext.runId, "storyboard_generation_started", {
+              generationId: result.generationId,
+              expectedRowCount: input.expectedRowCount,
+              groupCount: input.groups.length,
+            });
+          }
           thinking.appendText(`generationId=${result.generationId}, expectedRows=${input.expectedRowCount}`);
           return result;
         } catch (error: any) {
@@ -594,7 +1222,7 @@ export default (toolCpnfig: ToolConfig) => {
           thinking.updateTitle?.("storyboard table begin failed");
           throw error;
         } finally {
-          thinking.complete();
+          if (ownsThinking) thinking.complete();
         }
       },
     }),
@@ -623,9 +1251,22 @@ export default (toolCpnfig: ToolConfig) => {
           throw new Error("This run is write-locked after storyboard validation failed; await a user decision instead.");
         }
         const input = appendStoryboardRowsInputSchema.parse(raw);
-        const thinking = msg.thinking(`正在写入分镜 ${input.startIndex + 1}-${input.startIndex + input.rows.length}...`);
+        if (!storyboardGenerationId || input.generationId !== storyboardGenerationId) {
+          throw new Error("append_storyboard_rows must target the generation created from the current preparation.");
+        }
+        const thinking = storyboardProgress || msg.thinking(`正在写入分镜 ${input.startIndex + 1}-${input.startIndex + input.rows.length}...`);
+        const ownsThinking = !storyboardProgress;
         try {
           const result = await appendStoryboardRows(input);
+          storyboardRowsWritten = Math.max(storyboardRowsWritten, Number(result.nextIndex || 0));
+          if (runContext) {
+            await recordAgentRunEvent(runContext.runId, "storyboard_batch_appended", {
+              generationId: input.generationId,
+              startIndex: input.startIndex,
+              accepted: result.accepted,
+              nextIndex: result.nextIndex,
+            });
+          }
           thinking.appendText(`accepted=${result.accepted}, nextIndex=${result.nextIndex}, issues=${result.issues.length}`);
           return result;
         } catch (error: any) {
@@ -633,7 +1274,7 @@ export default (toolCpnfig: ToolConfig) => {
           thinking.updateTitle?.("storyboard rows append failed");
           throw error;
         } finally {
-          thinking.complete();
+          if (ownsThinking) thinking.complete();
         }
       },
     }),
@@ -645,12 +1286,29 @@ export default (toolCpnfig: ToolConfig) => {
           throw new Error("This run is write-locked after storyboard validation failed; await a user decision instead.");
         }
         const input = commitStoryboardTableInputSchema.parse(raw);
-        const thinking = msg.thinking("正在校验并提交完整分镜表...");
+        if (!storyboardGenerationId || input.generationId !== storyboardGenerationId) {
+          throw new Error("commit_storyboard_table must target the generation created from the current preparation.");
+        }
+        if (!storyboardPreflight || storyboardRowsWritten !== storyboardPreflight.shots.length) {
+          throw new Error(
+            `Cannot commit: prepared ${storyboardPreflight?.shots.length || 0} rows but accepted ${storyboardRowsWritten}.`,
+          );
+        }
+        const thinking = storyboardProgress || msg.thinking("正在校验并提交完整分镜表...");
+        const ownsThinking = !storyboardProgress;
         try {
           const result = await commitStoryboardGeneration(input.generationId);
           if (result.status === "committed") {
             thinking.appendText(`rows=${result.rowCount}, groups=${result.groupCount}, revision=${result.revision}`);
             thinking.updateTitle?.("storyboard table committed");
+            if (runContext) {
+              await recordAgentRunEvent(runContext.runId, "storyboard_committed", {
+                generationId: input.generationId,
+                rowCount: result.rowCount,
+                groupCount: result.groupCount,
+                revision: result.revision,
+              });
+            }
           } else if (result.status === "invalid") {
             thinking.appendText(JSON.stringify(result.issues));
             thinking.updateTitle?.("storyboard table validation failed");
@@ -705,7 +1363,7 @@ export default (toolCpnfig: ToolConfig) => {
           thinking.updateTitle?.("storyboard table commit failed");
           throw error;
         } finally {
-          thinking.complete();
+          if (ownsThinking) thinking.complete();
         }
       },
     }),
@@ -814,17 +1472,8 @@ export default (toolCpnfig: ToolConfig) => {
           notifyData.id = insertedId;
           thinking.appendText(`已新增衍生资产，ID: ${insertedId}\n`);
         }
-        const res = await emitWithAckTimeout(socket, "addDeriveAsset", notifyData, undefined, {
-          agentName: "productionAgent",
-          toolName: "add_deriveAsset",
-          projectId: resTool.data.projectId,
-          scriptId: resTool.data.scriptId,
-        }).catch((error: any) => {
-          thinking.appendText(u.error(error).message);
-          thinking.updateTitle?.("add_deriveAsset failed");
-          thinking.complete();
-          throw error;
-        });
+        await emitBestEffort(socket, "addDeriveAsset", notifyData);
+        const res = { ok: true, assetId: notifyData.id, parentAssetId: deriveAsset.assetsId };
         thinking.updateTitle("资产操作完成");
         thinking.complete();
         return res ?? "操作成功";
@@ -842,20 +1491,14 @@ export default (toolCpnfig: ToolConfig) => {
       ),
       execute: async ({ assetsId, id }) => {
         const thinking = msg.thinking("正在操作资产...");
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const asset = await u.db("o_assets").where({ id, assetsId, projectId }).first("id");
+        if (!asset) throw new Error("Derived asset does not belong to the current project and parent asset");
         await cleanupAssetRelations(u.db, [id]);
-        await u.db("o_assets").where("id", id).del();
+        await u.db("o_assets").where({ id, projectId }).del();
         thinking.appendText(`已删除衍生资产，ID: ${id}\n`);
-        const res = await emitWithAckTimeout(socket, "delDeriveAsset", { assetsId, id }, undefined, {
-          agentName: "productionAgent",
-          toolName: "del_deriveAsset",
-          projectId: resTool.data.projectId,
-          scriptId: resTool.data.scriptId,
-        }).catch((error: any) => {
-          thinking.appendText(u.error(error).message);
-          thinking.updateTitle?.("del_deriveAsset failed");
-          thinking.complete();
-          throw error;
-        });
+        await emitBestEffort(socket, "delDeriveAsset", { assetsId, id });
+        const res = { ok: true, assetId: id, parentAssetId: assetsId };
         thinking.updateTitle("资产操作完成");
         thinking.complete();
         return res ?? "删除成功";
@@ -873,7 +1516,7 @@ export default (toolCpnfig: ToolConfig) => {
       execute: async ({ ids }) => {
         const thinking = msg.thinking("正在生成衍生资产...");
         try {
-          const ack = await emitWithAckTimeout<GenerateDeriveAssetAck>(socket, "generateDeriveAsset", { ids }, undefined, {
+          const ack = await submitImageGeneration<GenerateDeriveAssetAck>(socket, "generateDeriveAsset", { ids }, undefined, {
             agentName: "productionAgent",
             toolName: "generate_deriveAsset",
             projectId: resTool.data.projectId,
@@ -912,7 +1555,7 @@ export default (toolCpnfig: ToolConfig) => {
       execute: async ({ ids }) => {
         const thinking = msg.thinking("正在生成分镜...");
         try {
-          const ack = await emitWithAckTimeout<GenerateStoryboardAck>(socket, "generateStoryboard", { ids }, undefined, {
+          const ack = await submitImageGeneration<GenerateStoryboardAck>(socket, "generateStoryboard", { ids }, undefined, {
             agentName: "productionAgent",
             toolName: "generate_storyboard",
             projectId: resTool.data.projectId,

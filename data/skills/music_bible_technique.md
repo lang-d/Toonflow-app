@@ -2,17 +2,13 @@
 
 Think like a scoring director, not a genre keyword mapper.
 
-Strong music design should answer:
-- What emotional question does the whole work keep asking?
-- Which characters or relationships deserve motifs?
-- Which scenes should carry music, which should be left dry, and why?
-- Which timbres belong to the story world?
-- Which musical gestures are forbidden because they cheapen the tone?
-- How should the score evolve across episodes or acts?
+Answer:
+- What emotional question does the series keep asking?
+- Which relationships or dramatic forces deserve reusable musical identities?
+- How can one identity change across narrative phases without becoming a different work?
+- Where should music withdraw so dialogue, room tone, or social pressure remains exposed?
+- Which timbres belong to the story world, and which would cheapen it?
 
-Avoid:
-- generic piles such as "epic, cinematic, emotional"
-- copying a director plan as music direction
-- mapping genre directly to stock styles
-- requiring music for every shot
-- explaining plot instead of musical behavior
+Prefer a small number of memorable, transformable identities over many scene-specific tracks. Define transformation dimensions such as tempo, harmony, register, density, instrumentation, vocal presence, and unresolved/resolved cadence.
+
+Avoid generic adjective piles, plot summaries, one-theme-per-character inflation, music on every scene, and speculative song creation.

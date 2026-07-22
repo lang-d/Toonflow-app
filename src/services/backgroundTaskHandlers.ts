@@ -238,25 +238,6 @@ export async function executeAudioBindingTask(payload: any) {
   }
 }
 
-export async function executeNovelEventTask(payload: any) {
-  const novel = await u.db("o_novel").where({ id: payload.novelId, projectId: payload.projectId }).first();
-  if (!novel) throw new Error("小说章节不存在");
-  const cleaner = new u.cleanNovel(1);
-  let failureReason = "";
-  cleaner.emitter.on("item", (item: any) => {
-    failureReason = item.errorReason || "";
-  });
-  const result = await cleaner.start([novel], payload.projectId);
-  const event = result[0]?.event;
-  await u.db("o_novel").where("id", payload.novelId).update({
-    event: event || null,
-    eventState: event ? 1 : -1,
-    errorReason: event ? null : failureReason || "事件提取失败",
-  });
-  if (!event) throw new Error(failureReason || "事件提取失败");
-  return { businessId: payload.novelId };
-}
-
 export async function executeThumbnailTask(payload: {
   originalPath: string;
   thumbnailPath: string;

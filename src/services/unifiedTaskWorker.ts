@@ -7,7 +7,6 @@ import {
   executeAssetImageTask,
   executeAssetPromptTask,
   executeAudioBindingTask,
-  executeNovelEventTask,
   executeStoryboardImageTask,
   executeThumbnailTask,
 } from "@/services/backgroundTaskHandlers";
@@ -31,9 +30,15 @@ import {
   executeMusicCueReviewPromptTask,
   executeMusicPlanGenerateTask,
   executeMusicPlanReviewTask,
+  executeMusicLyricsGenerateTask,
+  executeMusicLyricsReviewTask,
+  executeMusicLibraryCompilePromptTask,
+  executeMusicLibraryGenerateTask,
+  executeMusicAudioTrimTask,
   executeProjectContextPackGenerateTask,
 } from "@/services/musicTaskHandlers";
 import { executeScriptAssetExtractionTask } from "@/services/scriptAssetExtraction";
+import { executeNovelEventExtractionTask, failPendingNovelEventExtraction } from "@/services/novelEventExtraction";
 
 type TaskHandler = (payload: any, task: any) => Promise<Record<string, unknown> | void>;
 const TASK_PENDING_FLAG = "__taskPending";
@@ -77,7 +82,7 @@ const handlers: Record<string, TaskHandler> = {
   "asset-foundation": async (payload) => executeAssetFoundationTask(payload),
   "storyboard-image": async (payload, task) => executeStoryboardImageTask(payload, task),
   "audio-binding": async (payload) => executeAudioBindingTask(payload),
-  "novel-event": async (payload) => executeNovelEventTask(payload),
+  "novel-event": async (payload, task) => executeNovelEventExtractionTask(payload, task),
   thumbnail: async (payload) => executeThumbnailTask(payload),
   "project-snapshot": async (payload) => generateProjectSnapshot(Number(payload.projectId)),
   "project-import": async (payload) => importPortableProject(String(payload.sourceDirectory)),
@@ -89,13 +94,18 @@ const handlers: Record<string, TaskHandler> = {
   "music-cue-compile-prompt": async (payload, task) => executeMusicCueCompilePromptTask(payload, task),
   "music-cue-review-prompt": async (payload, task) => executeMusicCueReviewPromptTask(payload, task),
   "music-cue-generate": async (payload, task) => executeMusicCueGenerateTask(payload, task),
+  "music-lyrics-generate": async (payload, task) => executeMusicLyricsGenerateTask(payload, task),
+  "music-lyrics-review": async (payload, task) => executeMusicLyricsReviewTask(payload, task),
+  "music-library-compile-prompt": async (payload, task) => executeMusicLibraryCompilePromptTask(payload, task),
+  "music-library-generate": async (payload, task) => executeMusicLibraryGenerateTask(payload, task),
+  "music-audio-trim": async (payload, task) => executeMusicAudioTrimTask(payload, task),
   "project-context-pack-generate": async (payload, task) => executeProjectContextPackGenerateTask(payload, task),
   "script-asset-extract": async (payload, task) => executeScriptAssetExtractionTask(payload, task),
 };
 
 function getTaskExecutionTimeoutMs(task: any) {
   const handler = String(task?.handler || "");
-  if (handler === "music-cue-generate") return MUSIC_AUDIO_TASK_TIMEOUT_MS;
+  if (["music-cue-generate", "music-library-generate", "music-audio-trim"].includes(handler)) return MUSIC_AUDIO_TASK_TIMEOUT_MS;
   if (handler.startsWith("music-")) return MUSIC_TASK_TIMEOUT_MS;
   return 0;
 }
@@ -228,6 +238,15 @@ export async function recoverInterruptedUnifiedTasks(database: any = db, exclude
           reason: MISSING_PROVIDER_TASK_ID_REASON,
         });
       } else {
+        if (task.handler === "novel-event") {
+          let payload: any = {};
+          try {
+            payload = task.payloadJson ? JSON.parse(task.payloadJson) : {};
+          } catch {
+            // Keep the task failure path available even when a legacy payload is malformed.
+          }
+          await failPendingNovelEventExtraction(payload, MISSING_PROVIDER_TASK_ID_REASON, database);
+        }
         await updateUnifiedTask(task.id, {
           status: "failed",
           phase: "interrupted",

@@ -1,24 +1,18 @@
 # Music Bible Flow
 
-Create a project-level music bible before cue generation.
+Create one project-level music direction document before works or episode usage segments.
 
-Use only selected context:
-- project premise and theme
-- story type and emotional promise
-- main relationships and recurring conflicts
-- pacing notes, scene boundaries, and emotional movement from director planning if present
-- existing context pack summaries
+Read the project premise, complete story material available at project scope, relationships, recurring conflicts, context pack, and director pacing/emotional movement. Distill them; do not paste source text.
 
-Do not paste all source material into the bible. Distill it into scoring decisions.
-
-Required output:
-- title
-- overall score thesis
-- theme motifs and when they may transform
-- sonic palette and instrumentation families
-- vocal/lyrics policy
+The Bible defines:
+- overall scoring thesis and emotional promise
+- motif families and rules for transformation
+- sonic palette, instrumentation families, texture and dynamic range
 - silence and restraint strategy
-- source music, insert song, opening theme, ending theme, BGM, stinger, and ambient responsibilities
-- avoid list
-- continuity rules for project, episode, and concept modes
-- styleProfile JSON-friendly fields for downstream prompt compilation
+- responsibilities of score themes, source music, stingers, and optional songs
+- vocal and lyrics policy
+- reuse and continuity rules across episodes
+- avoid list and tonal failure modes
+- JSON-friendly styleProfile for downstream compilation
+
+The Bible does not create a cue sheet, does not create music works, and does not assume opening, ending, theme, or insert songs are required. It may explain when such works would be justified and wait for user confirmation.

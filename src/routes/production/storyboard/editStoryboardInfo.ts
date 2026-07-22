@@ -36,6 +36,8 @@ export default router.post(
     action: z.string().optional(),
     shotSize: z.string().optional(),
     cameraMove: z.string().optional(),
+    cameraAngle: z.string().optional(),
+    transitionFromPrevious: z.string().optional(),
     dialogue: z.string().optional(),
     sound: z.string().optional(),
     visibleEmotion: z.string().optional(),

@@ -1,10 +1,13 @@
 import { updateUnifiedTask } from "@/services/taskCoordinator";
 import { generateMusicCueAsset } from "@/services/musicAsset";
-import { compileMusicCuePrompt } from "@/services/musicCueCompiler";
+import { generateMusicLibraryAsset } from "@/services/musicAsset";
+import { compileMusicCuePrompt, compileMusicLibraryPrompt } from "@/services/musicCueCompiler";
 import { generateMusicBible, generateMusicPlan } from "@/services/musicDirector";
-import { reviewMusicBible, reviewMusicPlan, reviewMusicPrompt } from "@/services/musicReviewer";
+import { reviewMusicBible, reviewMusicLyrics, reviewMusicPlan, reviewMusicPrompt } from "@/services/musicReviewer";
 import { generateProjectContextPack } from "@/services/projectMaterial";
 import { isAiObjectContractError } from "@/services/aiJsonObject";
+import { generateMusicLyricsDraft } from "@/services/musicLyrics";
+import { trimMusicLibraryVersion } from "@/services/musicAudioTrim";
 
 function suggestionIds(result: any) {
   return (result?.suggestions || [])
@@ -55,6 +58,7 @@ export async function executeMusicPlanGenerateTask(payload: any, task: any) {
     planId: Number(result.plan.id),
     version: Number(result.plan.version),
     cueCount: Number(result.cues?.length || 0),
+    materializationWarnings: result.materializationWarnings || [],
   };
 }
 
@@ -73,9 +77,10 @@ export async function executeMusicCueCompilePromptTask(payload: any, task: any) 
   const result = await withMusicAiFailureReason("\u914d\u4e50\u63d0\u793a\u8bcd\u7f16\u8bd1", () => compileMusicCuePrompt(payload));
   return {
     cueId: Number(payload.cueId),
-    model: String(payload.model || ""),
-    prompt: result.prompt,
-    compiledPromptJson: result,
+    promptMode: result.promptMode || payload.promptMode || "modelSpecific",
+    model: result.model || null,
+    promptVersionId: Number(result.promptVersionId),
+    reviewStatus: "unreviewed",
   };
 }
 
@@ -83,8 +88,10 @@ export async function executeMusicCueReviewPromptTask(payload: any, task: any) {
   await updateUnifiedTask(task.id, { status: "processing", phase: "reviewing-prompt", progress: 20 });
   const result = await withMusicAiFailureReason("\u914d\u4e50\u63d0\u793a\u8bcd\u5ba1\u67e5", () => reviewMusicPrompt(payload));
   return {
-    cueId: Number(payload.cueId),
-    model: String(payload.model || ""),
+    cueId: payload.cueId == null ? null : Number(payload.cueId),
+    editionId: payload.editionId == null ? null : Number(payload.editionId),
+    promptVersionId: Number(result.promptVersionId),
+    reviewStatus: result.reviewStatus,
     suggestionIds: suggestionIds(result),
     issueCount: Number(result?.issues?.length || 0),
   };
@@ -99,7 +106,60 @@ export async function executeMusicCueGenerateTask(payload: any, task: any) {
     musicCueAssetId: Number(result.musicCueAsset?.id),
     assetsId: Number(result.musicCueAsset?.assetsId),
     childAssetId: Number(result.musicCueAsset?.childAssetId),
+    musicCueAssetIds: (result.musicCueAssets || []).map((item: any) => Number(item.id)),
+    libraryVersionIds: (result.libraryVersions || []).map((item: any) => Number(item.id)),
+    failedCandidates: result.failedCandidates || [],
   };
+}
+
+export async function executeMusicLyricsGenerateTask(payload: any, task: any) {
+  await updateUnifiedTask(task.id, { status: "processing", phase: "generating-lyrics", progress: 20 });
+  const result = await withMusicAiFailureReason("歌词草稿生成", () => generateMusicLyricsDraft(payload));
+  return { editionId: Number(payload.editionId), lyricsVersionId: Number(result.lyrics.id), version: Number(result.lyrics.version) };
+}
+
+export async function executeMusicLyricsReviewTask(payload: any, task: any) {
+  await updateUnifiedTask(task.id, { status: "processing", phase: "reviewing-lyrics", progress: 20 });
+  const result = await withMusicAiFailureReason("Lyrics review", () => reviewMusicLyrics(payload));
+  return {
+    editionId: Number(payload.editionId),
+    lyricsVersionId: Number(result.lyricsVersionId),
+    reviewStatus: result.reviewStatus,
+    suggestionIds: suggestionIds(result),
+    issueCount: Number(result?.issues?.length || 0),
+  };
+}
+
+export async function executeMusicLibraryCompilePromptTask(payload: any, task: any) {
+  await updateUnifiedTask(task.id, { status: "processing", phase: "compiling-library-prompt", progress: 20 });
+  const result = await withMusicAiFailureReason("项目音乐提示词编译", () => compileMusicLibraryPrompt(payload));
+  return {
+    editionId: Number(payload.editionId),
+    promptMode: result.promptMode || payload.promptMode || "modelSpecific",
+    model: result.model || null,
+    promptVersionId: Number(result.promptVersionId),
+    reviewStatus: "unreviewed",
+  };
+}
+
+export async function executeMusicLibraryGenerateTask(payload: any, task: any) {
+  await updateUnifiedTask(task.id, { status: "processing", phase: "generating-library-audio", progress: 20 });
+  const result = await withMusicAiFailureReason("项目音乐生成", () => generateMusicLibraryAsset(payload));
+  return {
+    editionId: Number(payload.editionId),
+    libraryVersionId: Number(result.libraryVersion?.id),
+    assetsId: Number(result.libraryVersion?.assetsId),
+    childAssetId: Number(result.libraryVersion?.childAssetId),
+    libraryVersionIds: (result.libraryVersions || []).map((item: any) => Number(item.id)),
+    candidateCount: Number(result.libraryVersions?.length || 0),
+    failedCandidates: result.failedCandidates || [],
+    promptVersionId: Number(payload.promptVersionId),
+  };
+}
+
+export async function executeMusicAudioTrimTask(payload: any, task: any) {
+  await updateUnifiedTask(task.id, { status: "processing", phase: "trimming-audio", progress: 20 });
+  return trimMusicLibraryVersion(payload);
 }
 
 export async function executeProjectContextPackGenerateTask(payload: any, task: any) {

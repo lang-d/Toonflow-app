@@ -1,6 +1,8 @@
 import u from "@/utils";
 import { createUnifiedTask, formatUnifiedTaskEnvelope, type UnifiedTaskEnvelope } from "@/services/taskCoordinator";
 import { latestMusicBible } from "@/services/musicDirector";
+import { resolveMusicModelCapabilities } from "@/services/musicModelCapability";
+import { resolveMusicPromptProfile } from "@/services/musicCueCompiler";
 
 type QueueResult = UnifiedTaskEnvelope;
 
@@ -33,6 +35,10 @@ async function assertCue(projectId: number, cueId: number) {
   const cue = await u.db("o_musicCue").where({ projectId, id: cueId }).first();
   if (!cue) throw new Error("Music cue does not exist");
   return cue;
+}
+
+async function assertModelSpecificMusicPrompt(model: string) {
+  await Promise.all([resolveMusicModelCapabilities(model), resolveMusicPromptProfile(model)]);
 }
 
 export async function queueMusicBibleGenerate(input: { projectId: number; instruction?: string }) {
@@ -124,6 +130,7 @@ export async function queueMusicPlanReview(input: { projectId: number; planId: n
 
 export async function queueMusicCueCompilePrompt(input: { projectId: number; cueId: number; model: string; instruction?: string }) {
   const cue = await assertCue(input.projectId, input.cueId);
+  await assertModelSpecificMusicPrompt(input.model);
   const task = await createUnifiedTask({
     projectId: input.projectId,
     scriptId: cue.scriptId ?? undefined,
@@ -136,7 +143,7 @@ export async function queueMusicCueCompilePrompt(input: { projectId: number; cue
     businessType: "music-prompt",
     businessId: input.cueId,
     handler: "music-cue-compile-prompt",
-    payload: input,
+    payload: { ...input, promptMode: "modelSpecific" },
     priority: 70,
     model: input.model,
     describe: "Compile music cue prompt",
@@ -144,14 +151,37 @@ export async function queueMusicCueCompilePrompt(input: { projectId: number; cue
   return formatUnifiedTaskEnvelope(task, "musicPrompt", input.cueId);
 }
 
+export async function queueGenericMusicCuePrompt(input: { projectId: number; cueId: number; instruction?: string }) {
+  const cue = await assertCue(input.projectId, input.cueId);
+  const task = await createUnifiedTask({
+    projectId: input.projectId,
+    scriptId: cue.scriptId ?? undefined,
+    taskClass: "Generic music cue prompt compile",
+    taskType: "prompt",
+    status: "queued",
+    phase: "queued",
+    targetType: "musicPrompt",
+    targetId: input.cueId,
+    businessType: "music-prompt",
+    businessId: input.cueId,
+    handler: "music-cue-compile-prompt",
+    payload: { ...input, promptMode: "generic" },
+    priority: 70,
+    describe: "Compile provider-neutral music cue prompt",
+  });
+  return formatUnifiedTaskEnvelope(task, "musicPrompt", input.cueId);
+}
+
 export async function queueMusicCueReviewPrompt(input: {
   projectId: number;
   cueId: number;
-  model: string;
-  prompt: string;
-  compiledPromptJson?: unknown;
+  promptVersionId: number;
+  expectedPromptMode?: "generic" | "modelSpecific";
 }) {
   const cue = await assertCue(input.projectId, input.cueId);
+  const prompt = await u.db("o_musicPromptVersion" as any).where({ projectId: input.projectId, id: input.promptVersionId, targetType: "cue", cueId: input.cueId }).first();
+  if (!prompt) throw new Error("Music prompt version does not belong to this cue");
+  if (input.expectedPromptMode && (prompt.promptMode || "modelSpecific") !== input.expectedPromptMode) throw new Error("Prompt version mode does not match this review request");
   const task = await createUnifiedTask({
     projectId: input.projectId,
     scriptId: cue.scriptId ?? undefined,
@@ -166,20 +196,54 @@ export async function queueMusicCueReviewPrompt(input: {
     handler: "music-cue-review-prompt",
     payload: input,
     priority: 70,
-    model: input.model,
+    model: prompt.model || undefined,
     describe: "Review music cue prompt",
   });
   return formatUnifiedTaskEnvelope(task, "musicPrompt", input.cueId);
 }
 
+export async function queueMusicLibraryReviewPrompt(input: {
+  projectId: number;
+  editionId: number;
+  promptVersionId: number;
+  expectedPromptMode?: "generic" | "modelSpecific";
+}) {
+  await assertProject(input.projectId);
+  const edition = await u.db("o_musicLibraryEdition").where({ projectId: input.projectId, id: input.editionId }).first();
+  if (!edition) throw new Error("Music library edition does not exist");
+  const prompt = await u.db("o_musicPromptVersion").where({ projectId: input.projectId, id: input.promptVersionId, targetType: "edition", editionId: input.editionId }).first();
+  if (!prompt) throw new Error("Music prompt version does not belong to this edition");
+  if (input.expectedPromptMode && (prompt.promptMode || "modelSpecific") !== input.expectedPromptMode) throw new Error("Prompt version mode does not match this review request");
+  const task = await createUnifiedTask({
+    projectId: input.projectId,
+    taskClass: "Music library prompt review",
+    taskType: "prompt",
+    status: "queued",
+    phase: "queued",
+    targetType: "musicPrompt",
+    targetId: input.promptVersionId,
+    businessType: "music-library-prompt",
+    businessId: input.editionId,
+    handler: "music-cue-review-prompt",
+    payload: input,
+    priority: 70,
+    model: prompt.model || undefined,
+    describe: "Review saved project music prompt",
+  });
+  return formatUnifiedTaskEnvelope(task, "musicPrompt", input.promptVersionId);
+}
+
 export async function queueMusicCueGenerate(input: {
   projectId: number;
   cueId: number;
-  model: string;
-  instruction?: string;
+  promptVersionId: number;
   select?: boolean;
+  acknowledgeWarnings?: boolean;
 }) {
   const cue = await assertCue(input.projectId, input.cueId);
+  const prompt = await u.db("o_musicPromptVersion" as any).where({ projectId: input.projectId, id: input.promptVersionId, targetType: "cue", cueId: input.cueId }).first();
+  if (!prompt) throw new Error("Music prompt version does not belong to this cue");
+  if ((prompt.promptMode || "modelSpecific") !== "modelSpecific") throw new Error("A provider-neutral music prompt cannot create an audio task");
   const task = await createUnifiedTask({
     projectId: input.projectId,
     scriptId: cue.scriptId ?? undefined,
@@ -194,10 +258,178 @@ export async function queueMusicCueGenerate(input: {
     handler: "music-cue-generate",
     payload: input,
     priority: 80,
-    model: input.model,
+    model: prompt.model || undefined,
     describe: "Generate music cue audio",
   });
   return formatUnifiedTaskEnvelope(task, "musicCueAsset", input.cueId);
+}
+
+export async function queueMusicLyricsGenerate(input: { projectId: number; editionId: number; instruction?: string; basedOnId?: number | null }) {
+  await assertProject(input.projectId);
+  const edition = await u.db("o_musicLibraryEdition" as any).where({ projectId: input.projectId, id: input.editionId }).first();
+  if (!edition) throw new Error("Music library edition does not exist");
+  const task = await createUnifiedTask({
+    projectId: input.projectId,
+    taskClass: "Music lyrics generation",
+    taskType: "prompt",
+    status: "queued",
+    phase: "queued",
+    targetType: "musicLyrics",
+    targetId: input.editionId,
+    businessType: "music-lyrics",
+    businessId: input.editionId,
+    handler: "music-lyrics-generate",
+    payload: input,
+    priority: 70,
+    describe: "Generate a lyrics draft for user confirmation",
+  });
+  return formatUnifiedTaskEnvelope(task, "musicLyrics", input.editionId);
+}
+
+export async function queueMusicLyricsReview(input: { projectId: number; editionId: number; lyricsVersionId: number }) {
+  await assertProject(input.projectId);
+  const lyrics = await u.db("o_musicLyricsVersion" as any).where({ projectId: input.projectId, editionId: input.editionId, id: input.lyricsVersionId }).first();
+  if (!lyrics) throw new Error("Lyrics version does not exist or does not belong to this edition");
+  const task = await createUnifiedTask({
+    projectId: input.projectId,
+    taskClass: "Music lyrics review",
+    taskType: "prompt",
+    status: "queued",
+    phase: "queued",
+    targetType: "musicLyrics",
+    targetId: input.lyricsVersionId,
+    businessType: "music-lyrics",
+    businessId: input.editionId,
+    handler: "music-lyrics-review",
+    payload: input,
+    priority: 70,
+    describe: "Review a saved lyrics version",
+  });
+  return formatUnifiedTaskEnvelope(task, "musicLyrics", input.lyricsVersionId);
+}
+
+export async function queueMusicLibraryCompilePrompt(input: {
+  projectId: number;
+  editionId: number;
+  model: string;
+  instruction?: string;
+  effectiveMusicDurationSec?: number;
+  requestedDurationSec?: number;
+  lyricsVersionId?: number | null;
+}) {
+  await assertProject(input.projectId);
+  await assertModelSpecificMusicPrompt(input.model);
+  const edition = await u.db("o_musicLibraryEdition" as any).where({ projectId: input.projectId, id: input.editionId }).first();
+  if (!edition) throw new Error("Music library edition does not exist");
+  const task = await createUnifiedTask({
+    projectId: input.projectId,
+    taskClass: "Music library prompt compile",
+    taskType: "prompt",
+    status: "queued",
+    phase: "queued",
+    targetType: "musicPrompt",
+    targetId: input.editionId,
+    businessType: "music-library-prompt",
+    businessId: input.editionId,
+    handler: "music-library-compile-prompt",
+    payload: { ...input, promptMode: "modelSpecific" },
+    priority: 70,
+    model: input.model,
+    describe: "Compile project music work prompt",
+  });
+  return formatUnifiedTaskEnvelope(task, "musicPrompt", input.editionId);
+}
+
+export async function queueGenericMusicLibraryPrompt(input: {
+  projectId: number;
+  editionId: number;
+  instruction?: string;
+  effectiveMusicDurationSec?: number;
+  requestedDurationSec?: number;
+  lyricsVersionId?: number | null;
+}) {
+  await assertProject(input.projectId);
+  const edition = await u.db("o_musicLibraryEdition" as any).where({ projectId: input.projectId, id: input.editionId }).first();
+  if (!edition) throw new Error("Music library edition does not exist");
+  const task = await createUnifiedTask({
+    projectId: input.projectId,
+    taskClass: "Generic music library prompt compile",
+    taskType: "prompt",
+    status: "queued",
+    phase: "queued",
+    targetType: "musicPrompt",
+    targetId: input.editionId,
+    businessType: "music-library-prompt",
+    businessId: input.editionId,
+    handler: "music-library-compile-prompt",
+    payload: { ...input, promptMode: "generic" },
+    priority: 70,
+    describe: "Compile provider-neutral project music prompt",
+  });
+  return formatUnifiedTaskEnvelope(task, "musicPrompt", input.editionId);
+}
+
+export async function queueMusicLibraryGenerate(input: {
+  projectId: number;
+  editionId: number;
+  promptVersionId: number;
+  lyricsVersionId?: number | null;
+  acknowledgeWarnings?: boolean;
+}) {
+  await assertProject(input.projectId);
+  const edition = await u.db("o_musicLibraryEdition" as any).where({ projectId: input.projectId, id: input.editionId }).first();
+  if (!edition) throw new Error("Music library edition does not exist");
+  const prompt = await u.db("o_musicPromptVersion" as any).where({ projectId: input.projectId, id: input.promptVersionId, targetType: "edition", editionId: input.editionId }).first();
+  if (!prompt) throw new Error("Music prompt version does not belong to this edition");
+  if ((prompt.promptMode || "modelSpecific") !== "modelSpecific") throw new Error("A provider-neutral music prompt cannot create an audio task");
+  const task = await createUnifiedTask({
+    projectId: input.projectId,
+    taskClass: "Music library audio generation",
+    taskType: "audio",
+    status: "queued",
+    phase: "queued",
+    targetType: "musicLibraryVersion",
+    targetId: input.editionId,
+    businessType: "music-library-version",
+    businessId: input.editionId,
+    handler: "music-library-generate",
+    payload: input,
+    priority: 80,
+    describe: "Generate project music work audio",
+  });
+  return formatUnifiedTaskEnvelope(task, "musicLibraryVersion", input.editionId);
+}
+
+export async function queueMusicLibraryTrim(input: {
+  projectId: number;
+  sourceLibraryVersionId: number;
+  startMs: number;
+  endMs: number;
+  fadeInMs?: number;
+  fadeOutMs?: number;
+  title: string;
+  bindCueId?: number | null;
+  select?: boolean;
+}) {
+  await assertProject(input.projectId);
+  const source = await u.db("o_musicLibraryVersion" as any).where({ projectId: input.projectId, id: input.sourceLibraryVersionId }).first();
+  if (!source) throw new Error("Music library version does not exist");
+  const task = await createUnifiedTask({
+    projectId: input.projectId,
+    taskClass: "Music audio trim",
+    taskType: "audio",
+    status: "queued",
+    phase: "queued",
+    targetType: "musicLibraryVersion",
+    targetId: input.sourceLibraryVersionId,
+    businessType: "music-library-trim",
+    businessId: input.sourceLibraryVersionId,
+    handler: "music-audio-trim",
+    payload: input,
+    priority: 60,
+    describe: "Create a trimmed derivative music version",
+  });
+  return formatUnifiedTaskEnvelope(task, "musicLibraryVersion", input.sourceLibraryVersionId);
 }
 
 export async function queueProjectContextPackGenerate(input: { projectId: number; instruction?: string; previousContent?: string }) {

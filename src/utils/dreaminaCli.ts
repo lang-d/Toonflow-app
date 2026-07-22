@@ -1831,6 +1831,46 @@ export function getDreaminaVideoResolutions(help: string, modelName: string) {
   return [...resolutions];
 }
 
+export function discoverDreaminaMediaModels(command: (typeof MEDIA_COMMANDS)[number], help: string): ToonflowModel[] {
+  const models: ToonflowModel[] = [];
+  const commandModels = extractModelMetas(help);
+  const modelValues = commandModels.length ? commandModels : [{ id: "default", displayName: "默认模型（由 CLI 决定）" }];
+  const isImage = command.endsWith("image");
+  for (const modelMeta of modelValues) {
+    const modelValue = modelMeta.id;
+    const label = modelMeta.displayName;
+    if (isImage) {
+      models.push({
+        name: `即梦 ${command} · ${label}`,
+        modelName: `${command}:${modelValue}`,
+        type: "image",
+        mode: command === "text2image" ? ["text"] : ["singleImage", "multiReference"],
+        associationSkills: describeMeta(command, modelMeta, false),
+      });
+      continue;
+    }
+    const mode =
+      command === "text2video"
+        ? ["text"]
+        : command === "image2video"
+          ? ["singleImage"]
+          : command === "multiframe2video"
+            ? ["startFrameOptional", ["imageReference:9"]]
+            : ["text", "startFrameOptional", ["imageReference:9", "videoReference:3", "audioReference:3"]];
+    models.push({
+      name: `即梦 ${command} · ${label}`,
+      modelName: `${command}:${modelValue}`,
+      type: "video",
+      mode,
+      associationSkills: describeMeta(command, modelMeta, true),
+      audio: command === "multimodal2video" ? "optional" : false,
+      durationResolutionMap: [{ duration: extractDurations(help), resolution: getDreaminaVideoResolutions(help, modelValue) }],
+      queueConfig: defaultVideoQueueConfig(modelMeta.concurrency || 1),
+    });
+  }
+  return models;
+}
+
 async function discoverModels() {
   ensureInstalled();
   const models: ToonflowModel[] = [];
@@ -1847,41 +1887,7 @@ async function discoverModels() {
     } catch (err) {
       help = "";
     }
-    const commandModels = extractModelMetas(help);
-    const modelValues = commandModels.length ? commandModels : [{ id: "default", displayName: "默认模型（由 CLI 决定）" }];
-    const isImage = command.endsWith("image");
-    for (const modelMeta of modelValues) {
-      const modelValue = modelMeta.id;
-      const label = modelMeta.displayName;
-      if (isImage) {
-        models.push({
-          name: `即梦 ${command} · ${label}`,
-          modelName: `${command}:${modelValue}`,
-          type: "image",
-          mode: command === "text2image" ? ["text"] : ["singleImage", "multiReference"],
-          associationSkills: describeMeta(command, modelMeta, false),
-        });
-      } else {
-        const mode =
-          command === "text2video"
-            ? ["text"]
-            : command === "image2video"
-              ? ["singleImage"]
-              : command === "multiframe2video"
-                ? ["startFrameOptional", ["imageReference:9"]]
-                : ["text", "startFrameOptional", ["imageReference:9", "videoReference:3", "audioReference:3"]];
-        models.push({
-          name: `即梦 ${command} · ${label}`,
-          modelName: `${command}:${modelValue}`,
-          type: "video",
-          mode,
-          associationSkills: describeMeta(command, modelMeta, true),
-          audio: command === "multimodal2video" ? "optional" : false,
-          durationResolutionMap: [{ duration: extractDurations(help), resolution: getDreaminaVideoResolutions(help, modelValue) }],
-          queueConfig: defaultVideoQueueConfig(modelMeta.concurrency || 1),
-        });
-      }
-    }
+    models.push(...discoverDreaminaMediaModels(command, help));
   }
   const musicCommands = discoverMusicCommandsFromHelp(rootHelp);
   for (const command of musicCommands) {
@@ -1906,7 +1912,7 @@ async function discoverModels() {
         associationSkills: `${describeMeta(command, modelMeta, false)}; type: music`,
         durationRange: extractMusicDurationRange(help),
         outputFormats: [...new Set([...extractFlagValues(help, "output_format"), ...extractFlagValues(help, "format")])],
-        vocal: supportedFlags.includes("vocal_mode") || supportedFlags.includes("lyrics") ? "optional" : "optional",
+        vocal: supportedFlags.includes("vocal_mode") || supportedFlags.includes("lyrics") ? "optional" : false,
         lyrics: supportedFlags.includes("lyrics") ? "optional" : false,
         referenceAudio: supportedFlags.some((flagName) => ["audio", "reference_audio", "ref_audio"].includes(flagName)) ? "optional" : false,
         loop: supportedFlags.includes("loop") ? "optional" : false,

@@ -891,6 +891,8 @@ export default async (
         table.integer("version").notNullable();
         table.text("content").notNullable();
         table.text("cueSheetJson").notNullable().defaultTo("[]");
+        table.text("libraryPlanJson").notNullable().defaultTo("[]");
+        table.text("recommendedProductionJson");
         table.string("state").notNullable().defaultTo("complete");
         table.integer("createTime").notNullable();
         table.integer("updateTime").notNullable();
@@ -915,6 +917,11 @@ export default async (
         table.text("startRefJson").notNullable().defaultTo("{}");
         table.text("endRefJson").notNullable().defaultTo("{}");
         table.integer("durationSec");
+        table.string("durationMode").notNullable().defaultTo("estimated");
+        table.integer("estimatedDurationSec");
+        table.integer("estimatedMinDurationSec");
+        table.integer("estimatedMaxDurationSec");
+        table.string("durationConfidence");
         table.text("promptBrief");
         table.text("musicSpecJson").notNullable().defaultTo("{}");
         table.string("state").notNullable().defaultTo("ready");
@@ -949,6 +956,146 @@ export default async (
         table.unique(["cueId", "version"], { indexName: "uq_music_cue_asset_version" });
         table.index(["projectId", "cueId"], "idx_music_cue_asset_scope");
         table.index(["cueId", "selected"], "idx_music_cue_asset_selected");
+      },
+    },
+    {
+      name: "o_musicLibraryItem",
+      builder: (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("bibleId");
+        table.integer("bibleVersion");
+        table.string("workKey").notNullable();
+        table.string("workType").notNullable();
+        table.text("title");
+        table.text("narrativeRole");
+        table.string("reuseScope").notNullable().defaultTo("project");
+        table.integer("relatedItemId");
+        table.string("relationType");
+        table.string("state").notNullable().defaultTo("planned");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.unique(["projectId", "workKey"], { indexName: "uq_music_library_work_key" });
+      },
+    },
+    {
+      name: "o_musicLibraryEdition",
+      builder: (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("libraryItemId").notNullable();
+        table.integer("parentEditionId");
+        table.string("editionKey").notNullable();
+        table.string("editionType").notNullable();
+        table.text("title");
+        table.text("narrativePhase");
+        table.integer("episodeStart");
+        table.integer("episodeEnd");
+        table.string("vocalMode").notNullable().defaultTo("instrumental");
+        table.string("language");
+        table.text("musicSpecJson").notNullable().defaultTo("{}");
+        table.integer("selectedVersionId");
+        table.string("state").notNullable().defaultTo("planned");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.unique(["libraryItemId", "editionKey"], { indexName: "uq_music_library_edition_key" });
+      },
+    },
+    {
+      name: "o_musicLyricsVersion",
+      builder: (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("editionId").notNullable();
+        table.integer("version").notNullable();
+        table.text("title");
+        table.string("language");
+        table.text("content").notNullable();
+        table.string("source").notNullable().defaultTo("user");
+        table.integer("basedOnId");
+        table.string("hash").notNullable();
+        table.string("state").notNullable().defaultTo("draft");
+        table.string("reviewStatus").notNullable().defaultTo("unreviewed");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.unique(["editionId", "version"], { indexName: "uq_music_lyrics_version" });
+      },
+    },
+    {
+      name: "o_musicPromptVersion",
+      builder: (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId");
+        table.string("targetType").notNullable();
+        table.integer("cueId");
+        table.integer("editionId");
+        table.integer("lyricsVersionId");
+        table.integer("version").notNullable();
+        table.text("model").notNullable();
+        table.string("promptMode").notNullable().defaultTo("modelSpecific");
+        table.text("profileSource");
+        table.text("prompt").notNullable();
+        table.text("negativePrompt");
+        table.text("generationConfigJson").notNullable().defaultTo("{}");
+        table.string("source").notNullable().defaultTo("ai");
+        table.integer("basedOnId");
+        table.string("hash").notNullable();
+        table.string("reviewStatus").notNullable().defaultTo("unreviewed");
+        table.string("state").notNullable().defaultTo("active");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.unique(["cueId", "version"], { indexName: "uq_music_prompt_cue_version" });
+        table.unique(["editionId", "version"], { indexName: "uq_music_prompt_edition_version" });
+      },
+    },
+    {
+      name: "o_musicLibraryVersion",
+      builder: (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("editionId").notNullable();
+        table.integer("version").notNullable();
+        table.integer("promptVersionId");
+        table.integer("lyricsVersionId");
+        table.string("promptHash");
+        table.string("lyricsHash");
+        table.string("generationConfigHash");
+        table.integer("assetsId");
+        table.integer("childAssetId");
+        table.text("model");
+        table.text("generationConfigJson").notNullable().defaultTo("{}");
+        table.integer("generationDurationSec");
+        table.integer("effectiveMusicDurationSec");
+        table.string("derivationType").notNullable().defaultTo("generated");
+        table.integer("sourceVersionId");
+        table.integer("legacyCueAssetId");
+        table.integer("trimStartMs");
+        table.integer("trimEndMs");
+        table.integer("fadeInMs");
+        table.integer("fadeOutMs");
+        table.string("state").notNullable().defaultTo("generating");
+        table.text("errorReason");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.unique(["editionId", "version"], { indexName: "uq_music_library_version" });
+      },
+    },
+    {
+      name: "o_musicCueBinding",
+      builder: (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId");
+        table.integer("cueId").notNullable();
+        table.string("usageMode").notNullable();
+        table.integer("editionId");
+        table.integer("libraryVersionId");
+        table.integer("suggestedUseDurationSec");
+        table.string("state").notNullable().defaultTo("planned");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+        table.unique(["cueId"], { indexName: "uq_music_cue_binding" });
       },
     },
     {

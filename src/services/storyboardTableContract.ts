@@ -39,7 +39,7 @@ export const storyboardTableRowV2Schema = z.object({
   groupName: requiredText,
   groupIntent: requiredText,
   beatId: requiredText,
-  durationSec: z.number().positive(),
+  durationSec: z.number().int().positive(),
   location: requiredText,
   timeOfDay: requiredText,
   sceneContinuityId: optionalText,

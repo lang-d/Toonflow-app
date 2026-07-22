@@ -19,14 +19,19 @@ export interface StoryboardVideoFact {
   scene: string;
   location: string;
   timeOfDay: string;
+  sceneContinuityId: string;
   picture: string;
   action: string;
   shotSize: string;
   cameraMove: string;
+  cameraAngle: string;
+  transitionFromPrevious: string;
   duration: string | number | null;
   dialogue: string;
   sound: string;
   visibleEmotion: string;
+  characters: StoryboardTableRowV2["characters"];
+  requiredAssets: StoryboardTableRowV2["requiredAssets"];
   groupKey?: string;
   groupName?: string;
   groupIntent?: string;
@@ -81,10 +86,13 @@ export function buildStoryboardVideoFact(row: any, associateAssetsIds: number[] 
     scene: text(structured?.location) || (factStatus === "legacy" ? text(row.scene) : ""),
     location: text(structured?.location) || (factStatus === "legacy" ? text(row.location || row.scene) : ""),
     timeOfDay: text(structured?.timeOfDay) || (factStatus === "legacy" ? text(row.timeOfDay) : ""),
+    sceneContinuityId: text(structured?.sceneContinuityId) || (factStatus === "legacy" ? text(row.sceneContinuityId) : ""),
     picture: text(structured?.picture) || (factStatus === "legacy" ? text(row.picture) : ""),
     action: text(structured?.action) || (factStatus === "legacy" ? text(row.action) : ""),
     shotSize: text(structured?.shotSize) || (factStatus === "legacy" ? text(row.shotSize) : ""),
     cameraMove: text(structured?.cameraMove) || (factStatus === "legacy" ? text(row.cameraMove) : ""),
+    cameraAngle: text(structured?.cameraAngle),
+    transitionFromPrevious: text(structured?.transitionFromPrevious),
     duration: structured?.durationSec ?? (factStatus === "legacy" ? row.duration ?? null : null),
     dialogue: tableRow
       ? stringifyDialogue(tableRow.dialogue)
@@ -93,6 +101,8 @@ export function buildStoryboardVideoFact(row: any, associateAssetsIds: number[] 
       ? stringifySoundEffects(tableRow.soundEffects)
       : objectSound(object?.soundEffects) || (factStatus === "legacy" ? text(row.sound) : ""),
     visibleEmotion: text(structured?.visibleEmotion) || (factStatus === "legacy" ? text(row.visibleEmotion) : ""),
+    characters: tableRow?.characters || [],
+    requiredAssets: tableRow?.requiredAssets || [],
     groupKey: text(structured?.groupKey) || (factStatus === "legacy" ? text(row.groupKey) : "") || undefined,
     groupName: text(structured?.groupName) || (factStatus === "legacy" ? text(row.groupName) : "") || undefined,
     groupIntent: text(structured?.groupIntent) || (factStatus === "legacy" ? text(row.groupIntent) : "") || undefined,

@@ -1,4 +1,4 @@
-// @db-hash f3c119b6c2d342791b30005645a92f0d
+// @db-hash 53e7a226b0f9d6674b6d06b06b5a66f0
 //该文件由脚本自动生成，请勿手动修改
 
 export interface memories {
@@ -210,8 +210,13 @@ export interface o_musicCue {
   'createTime': number;
   'cueKey': string;
   'cueType': string;
+  'durationConfidence'?: string | null;
+  'durationMode'?: string | null;
   'durationSec'?: number | null;
   'endRefJson'?: string;
+  'estimatedDurationSec'?: number | null;
+  'estimatedMaxDurationSec'?: number | null;
+  'estimatedMinDurationSec'?: number | null;
   'id'?: number;
   'musicSpecJson'?: string;
   'narrativePurpose'?: string | null;
@@ -241,6 +246,98 @@ export interface o_musicCueAsset {
   'updateTime': number;
   'version': number;
 }
+export interface o_musicCueBinding {
+  'createTime': number;
+  'cueId': number;
+  'editionId'?: number | null;
+  'id'?: number;
+  'libraryVersionId'?: number | null;
+  'projectId': number;
+  'scriptId'?: number | null;
+  'state'?: string;
+  'suggestedUseDurationSec'?: number | null;
+  'updateTime': number;
+  'usageMode': string;
+}
+export interface o_musicLibraryEdition {
+  'createTime': number;
+  'editionKey': string;
+  'editionType': string;
+  'episodeEnd'?: number | null;
+  'episodeStart'?: number | null;
+  'id'?: number;
+  'language'?: string | null;
+  'libraryItemId': number;
+  'musicSpecJson'?: string;
+  'narrativePhase'?: string | null;
+  'parentEditionId'?: number | null;
+  'projectId': number;
+  'selectedVersionId'?: number | null;
+  'state'?: string;
+  'title'?: string | null;
+  'updateTime': number;
+  'vocalMode'?: string;
+}
+export interface o_musicLibraryItem {
+  'bibleId'?: number | null;
+  'bibleVersion'?: number | null;
+  'createTime': number;
+  'id'?: number;
+  'narrativeRole'?: string | null;
+  'projectId': number;
+  'relatedItemId'?: number | null;
+  'relationType'?: string | null;
+  'reuseScope'?: string;
+  'state'?: string;
+  'title'?: string | null;
+  'updateTime': number;
+  'workKey': string;
+  'workType': string;
+}
+export interface o_musicLibraryVersion {
+  'assetsId'?: number | null;
+  'childAssetId'?: number | null;
+  'createTime': number;
+  'derivationType'?: string;
+  'editionId': number;
+  'effectiveMusicDurationSec'?: number | null;
+  'errorReason'?: string | null;
+  'fadeInMs'?: number | null;
+  'fadeOutMs'?: number | null;
+  'generationConfigHash'?: string | null;
+  'generationConfigJson'?: string;
+  'generationDurationSec'?: number | null;
+  'id'?: number;
+  'legacyCueAssetId'?: number | null;
+  'lyricsHash'?: string | null;
+  'lyricsVersionId'?: number | null;
+  'model'?: string | null;
+  'projectId': number;
+  'promptHash'?: string | null;
+  'promptVersionId'?: number | null;
+  'sourceVersionId'?: number | null;
+  'state'?: string;
+  'trimEndMs'?: number | null;
+  'trimStartMs'?: number | null;
+  'updateTime': number;
+  'version': number;
+}
+export interface o_musicLyricsVersion {
+  'basedOnId'?: number | null;
+  'content': string;
+  'createTime': number;
+  'editionId': number;
+  'hash': string;
+  'id'?: number;
+  'language'?: string | null;
+  'projectId': number;
+  'reviewStatus'?: string;
+  'source'?: string;
+  'state'?: string;
+  'title'?: string | null;
+  'updateTime': number;
+  'version': number;
+}
 export interface o_musicPlan {
   'bibleId': number;
   'bibleVersion': number;
@@ -248,10 +345,35 @@ export interface o_musicPlan {
   'createTime': number;
   'cueSheetJson'?: string;
   'id'?: number;
+  'libraryPlanJson'?: string | null;
   'mode': string;
   'projectId': number;
+  'recommendedProductionJson'?: string | null;
   'scriptId'?: number | null;
   'state'?: string;
+  'updateTime': number;
+  'version': number;
+}
+export interface o_musicPromptVersion {
+  'basedOnId'?: number | null;
+  'createTime': number;
+  'cueId'?: number | null;
+  'editionId'?: number | null;
+  'generationConfigJson'?: string;
+  'hash': string;
+  'id'?: number;
+  'lyricsVersionId'?: number | null;
+  'model': string;
+  'negativePrompt'?: string | null;
+  'profileSource'?: string | null;
+  'projectId': number;
+  'prompt': string;
+  'promptMode'?: string | null;
+  'reviewStatus'?: string;
+  'scriptId'?: number | null;
+  'source'?: string;
+  'state'?: string;
+  'targetType': string;
   'updateTime': number;
   'version': number;
 }
@@ -671,7 +793,13 @@ export interface DB {
   "o_musicBible": o_musicBible;
   "o_musicCue": o_musicCue;
   "o_musicCueAsset": o_musicCueAsset;
+  "o_musicCueBinding": o_musicCueBinding;
+  "o_musicLibraryEdition": o_musicLibraryEdition;
+  "o_musicLibraryItem": o_musicLibraryItem;
+  "o_musicLibraryVersion": o_musicLibraryVersion;
+  "o_musicLyricsVersion": o_musicLyricsVersion;
   "o_musicPlan": o_musicPlan;
+  "o_musicPromptVersion": o_musicPromptVersion;
   "o_novel": o_novel;
   "o_productionReviewFeedback": o_productionReviewFeedback;
   "o_productionReviewSuggestion": o_productionReviewSuggestion;

@@ -9,8 +9,10 @@ import {
   createAgentRunContext,
   finishAgentRun,
   getActiveAgentRun,
+  getLatestAgentRun,
   getUnresolvedAgentDecision,
   interruptExpiredAgentRuns,
+  recordAgentRunEvent,
   updateAgentRunHeartbeat,
   type AgentRunContext,
   type AgentRunStatus,
@@ -35,6 +37,10 @@ type ProductionAgentSocketContext = {
   projectId: number;
   scriptId: number;
 };
+
+function productionAgentRoom(context: ProductionAgentSocketContext) {
+  return `productionAgent:${context.projectId}:${context.scriptId}`;
+}
 
 async function validateProductionAgentContext(input: any): Promise<ProductionAgentSocketContext> {
   const projectId = Number(input?.projectId);
@@ -77,11 +83,20 @@ export default (nsp: Namespace) => {
     }
 
     console.log("[productionAgent] connected:", socket.id, context.isolationKey);
+    socket.join(productionAgentRoom(context));
 
-    let resTool = new ResTool(socket, {
-      projectId: context.projectId,
-      scriptId: context.scriptId,
-    });
+    const createScopedResTool = () =>
+      new ResTool(
+        {
+          emit: (event: string, ...args: any[]) => nsp.to(productionAgentRoom(context)).emit(event, ...args),
+        } as unknown as Socket,
+        {
+          projectId: context.projectId,
+          scriptId: context.scriptId,
+        },
+      );
+
+    let resTool = createScopedResTool();
     let abortController: AbortController | null = null;
     let currentRunContext: AgentRunContext | null = null;
     let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -95,27 +110,66 @@ export default (nsp: Namespace) => {
       try {
         if (abortController) throw new Error("production agent is running; stop it before switching context");
         const nextContext = await validateProductionAgentContext(data);
+        socket.leave(productionAgentRoom(context));
         context = nextContext;
-        resTool = new ResTool(socket, {
-          projectId: nextContext.projectId,
-          scriptId: nextContext.scriptId,
-        });
+        socket.join(productionAgentRoom(context));
+        resTool = createScopedResTool();
         console.log("[productionAgent] context updated:", context.isolationKey);
+        void restoreRunState().catch((error) =>
+          console.warn("[productionAgent] failed to restore run state after context update:", u.error(error).message),
+        );
         callback?.({ success: true });
       } catch (error) {
         callback?.({ success: false, message: u.error(error).message });
       }
     });
 
-    const emitRunUpdate = (payload: Record<string, unknown>) => {
-      socket.emit("agent:run:update", {
+    const runUpdatePayload = (payload: Record<string, unknown>) => ({
         agentKey: "productionAgent",
         projectId: context.projectId,
         scriptId: context.scriptId,
         serverTime: Date.now(),
         ...payload,
-      });
+    });
+
+    const emitRunUpdate = (payload: Record<string, unknown>) => {
+      socket.emit("agent:run:update", runUpdatePayload(payload));
     };
+
+    const broadcastRunUpdate = (payload: Record<string, unknown>) => {
+      nsp.to(productionAgentRoom(context)).emit("agent:run:update", runUpdatePayload(payload));
+    };
+
+    const restoreRunState = async () => {
+      const scope = {
+        agentKey: "productionAgent",
+        projectId: context.projectId,
+        scriptId: context.scriptId,
+      };
+      const activeRun = await getActiveAgentRun(scope);
+      if (activeRun) {
+        void recordAgentRunEvent(activeRun.runId, "client_resumed", {
+          socketId: socket.id,
+          isolationKey: context.isolationKey,
+        });
+        emitRunUpdate({ status: activeRun.status, activeRun, resumed: true });
+        return;
+      }
+      const latestRun = await getLatestAgentRun(scope);
+      if (latestRun) {
+        emitRunUpdate({
+          status: latestRun.status,
+          run: latestRun,
+          latestRun,
+          resumed: false,
+          terminal: latestRun.status !== "running",
+        });
+      }
+    };
+
+    void restoreRunState().catch((error) =>
+      console.warn("[productionAgent] failed to restore run state:", u.error(error).message),
+    );
 
     const clearHeartbeat = () => {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -166,7 +220,7 @@ export default (nsp: Namespace) => {
       }
       const runContext = createAgentRunContext(createdRun.run.runId);
       currentRunContext = runContext;
-      emitRunUpdate({ status: "running", run: createdRun.run });
+      broadcastRunUpdate({ status: "running", run: createdRun.run });
       heartbeatTimer = setInterval(() => {
         void updateAgentRunHeartbeat(createdRun.run.runId).catch((error) => {
           console.warn("[productionAgent] heartbeat failed:", u.error(error).message);
@@ -186,15 +240,19 @@ export default (nsp: Namespace) => {
         continuation,
       };
 
-      let finalStatus: AgentRunStatus = "completed";
-      let finalReason: string | null = null;
-      let finalError: unknown = null;
+      let finalStatus: AgentRunStatus = "failed";
+      let finalReason: string | null = "Agent stream ended without a terminal declaration.";
+      let finalError: unknown = { code: "AGENT_TERMINAL_DECLARATION_MISSING" };
       try {
         await agent.runDecisionAI(ctx);
         if (runContext.terminalIntent) {
           finalStatus = runContext.terminalIntent.status;
           finalReason = runContext.terminalIntent.reason;
           finalError = runContext.terminalIntent.errorJson;
+        } else {
+          await recordAgentRunEvent(createdRun.run.runId, "terminal_declaration_missing", {
+            code: "AGENT_TERMINAL_DECLARATION_MISSING",
+          });
         }
       } catch (err: any) {
         if (runContext.terminalIntent) {
@@ -204,9 +262,6 @@ export default (nsp: Namespace) => {
         } else if (runContext.abortReason === "user_stop") {
           finalStatus = "cancelled";
           finalReason = "用户已停止当前 Production Agent chat。";
-        } else if (runContext.abortReason === "socket_disconnect") {
-          finalStatus = "interrupted";
-          finalReason = "Socket disconnected before the Production Agent chat completed.";
         } else if (err.name === "AbortError" || currentController.signal.aborted) {
           finalStatus = "cancelled";
           finalReason = "Production Agent chat was cancelled.";
@@ -218,17 +273,29 @@ export default (nsp: Namespace) => {
         }
       } finally {
         clearHeartbeat();
-        const finished = await finishAgentRun(createdRun.run.runId, {
-          status: finalStatus,
-          reason: finalReason,
-          errorJson: finalError,
-          resultJson: runContext.terminalIntent?.resultJson,
-        });
-        emitRunUpdate({ status: finished?.status || finalStatus, run: finished });
-        if (abortController === currentController) {
-          abortController = null;
+        let finished = null;
+        try {
+          finished = await finishAgentRun(createdRun.run.runId, {
+            status: finalStatus,
+            reason: finalReason,
+            errorJson: finalError,
+            resultJson: runContext.terminalIntent?.resultJson,
+            currentStage: runContext.terminalIntent?.stage,
+            currentSubAgent: runContext.terminalIntent?.subAgent,
+          });
+        } catch (error) {
+          console.error("[productionAgent] failed to persist terminal run status:", u.error(error).message);
+        } finally {
+          if (abortController === currentController) {
+            abortController = null;
+          }
+          if (currentRunContext === runContext) currentRunContext = null;
         }
-        if (currentRunContext === runContext) currentRunContext = null;
+        if (finished) {
+          broadcastRunUpdate({ status: finished.status, run: finished });
+        } else {
+          broadcastRunUpdate({ status: "running", runId: createdRun.run.runId, terminalPersistenceFailed: true });
+        }
       }
     });
 
@@ -246,9 +313,12 @@ export default (nsp: Namespace) => {
 
     socket.on("disconnect", () => {
       console.log("[productionAgent] disconnected:", socket.id);
-      currentRunContext && (currentRunContext.abortReason = "socket_disconnect");
-      abortController?.abort();
-      clearHeartbeat();
+      if (currentRunContext) {
+        void recordAgentRunEvent(currentRunContext.runId, "client_detached", {
+          socketId: socket.id,
+          isolationKey: context.isolationKey,
+        }).catch((error) => console.warn("[productionAgent] failed to record client detach:", u.error(error).message));
+      }
     });
   });
 };

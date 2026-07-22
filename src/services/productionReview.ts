@@ -13,6 +13,9 @@ export type ProductionReviewTargetType =
   | "musicPlan"
   | "musicCue"
   | "musicPrompt"
+  | "musicLibraryItem"
+  | "musicLibraryVersion"
+  | "musicLyrics"
   | "bgmSuggestion"
   | "videoResult";
 
@@ -32,6 +35,19 @@ export interface ProductionReviewSuggestionInput {
   reason?: string;
   proposedAction?: string;
   proposedPatch?: unknown;
+}
+
+export interface StoryboardTableAgentReviewItem {
+  scope: "global" | "storyboard" | "director_plan" | "asset";
+  storyboardId?: number;
+  storyboardIndex?: number;
+  issueType: string;
+  severity: ProductionReviewSeverity;
+  field: string;
+  message: string;
+  reason: string;
+  suggestedAction: string;
+  owner: "storyboardTable" | "deriveAssets" | "directorPlan";
 }
 
 function now() {
@@ -121,6 +137,61 @@ export async function upsertReviewSuggestion(input: ProductionReviewSuggestionIn
   }
   const [id] = await u.db("o_productionReviewSuggestion").insert({ ...row, createTime: now() });
   return getReviewSuggestion(Number(id));
+}
+
+/**
+ * Replaces the current independent storyboard-table audit report. The audit is
+ * advisory: it never applies a patch to storyboard facts.
+ */
+export async function replaceStoryboardTableAgentReviewSuggestions(input: {
+  projectId: number;
+  scriptId: number;
+  items: StoryboardTableAgentReviewItem[];
+}) {
+  const timestamp = now();
+  return u.db.transaction(async (trx: any) => {
+    await trx("o_productionReviewSuggestion")
+      .where({
+        projectId: input.projectId,
+        scriptId: input.scriptId,
+        status: "open",
+      })
+      .whereIn("targetType", ["storyboard", "storyboardTable"])
+      .where("issueType", "like", "storyboard_table_agent:%")
+      .update({ status: "resolved", updateTime: timestamp });
+
+    const suggestionIds: number[] = [];
+    for (const item of input.items) {
+      const targetType = item.scope === "storyboard" ? "storyboard" : "storyboardTable";
+      const targetId = item.scope === "storyboard" ? String(item.storyboardId) : String(input.scriptId);
+      const [id] = await trx("o_productionReviewSuggestion").insert({
+        projectId: input.projectId,
+        scriptId: input.scriptId,
+        targetType,
+        targetId,
+        parentId: null,
+        version: 1,
+        issueType: `storyboard_table_agent:${item.issueType}`,
+        severity: item.severity,
+        message: item.message,
+        reason: item.reason,
+        proposedAction: item.suggestedAction,
+        proposedPatch: serializeJson({
+          source: "supervisionStoryboardTable",
+          scope: item.scope,
+          storyboardIndex: item.storyboardIndex,
+          field: item.field,
+          owner: item.owner,
+          advisory: true,
+        }),
+        status: "open",
+        createTime: timestamp,
+        updateTime: timestamp,
+      });
+      suggestionIds.push(Number(id));
+    }
+    return { suggestionIds, count: suggestionIds.length, reviewedAt: timestamp };
+  });
 }
 
 export async function acceptReviewSuggestion(id: number) {

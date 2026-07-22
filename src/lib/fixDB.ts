@@ -18,6 +18,7 @@ import { fixAssetSchema } from "@/lib/dbFixes/assetSchemaFixes";
 import { cleanupScriptAssetBindings } from "@/lib/dbFixes/scriptAssetBindingFixes";
 import { fixVendorConfigs } from "@/lib/dbFixes/vendorConfigFixes";
 import { truncateLongErrorFields } from "@/lib/dbFixes/maintenanceFixes";
+import { repairDuplicateRunningAgentRuns } from "@/lib/migrations/agentRunLifecycleV1";
 
 const SNAPSHOT_DECOUPLING_KEY = "migration:project-snapshot-decoupling-v1";
 
@@ -140,8 +141,11 @@ export default async (knex: Knex): Promise<void> => {
       });
     }
     await addColumn("o_musicPlan", "cueSheetJson", "text");
+    await addColumn("o_musicPlan", "libraryPlanJson", "text");
+    await addColumn("o_musicPlan", "recommendedProductionJson", "text");
     await addColumn("o_musicPlan", "state", "string");
     await knex("o_musicPlan").whereNull("cueSheetJson").update({ cueSheetJson: "[]" });
+    await knex("o_musicPlan").whereNull("libraryPlanJson").update({ libraryPlanJson: "[]" });
     await knex("o_musicPlan").whereNull("state").update({ state: "complete" });
     await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_plan_scope ON o_musicPlan(projectId, scriptId, mode, version)");
     await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_plan_bible ON o_musicPlan(bibleId)");
@@ -172,6 +176,11 @@ export default async (knex: Knex): Promise<void> => {
     await addColumn("o_musicCue", "startRefJson", "text");
     await addColumn("o_musicCue", "endRefJson", "text");
     await addColumn("o_musicCue", "durationSec", "integer");
+    await addColumn("o_musicCue", "durationMode", "string");
+    await addColumn("o_musicCue", "estimatedDurationSec", "integer");
+    await addColumn("o_musicCue", "estimatedMinDurationSec", "integer");
+    await addColumn("o_musicCue", "estimatedMaxDurationSec", "integer");
+    await addColumn("o_musicCue", "durationConfidence", "string");
     await addColumn("o_musicCue", "promptBrief", "text");
     await addColumn("o_musicCue", "musicSpecJson", "text");
     await addColumn("o_musicCue", "state", "string");
@@ -179,6 +188,8 @@ export default async (knex: Knex): Promise<void> => {
     await knex("o_musicCue").whereNull("endRefJson").update({ endRefJson: "{}" });
     await knex("o_musicCue").whereNull("musicSpecJson").update({ musicSpecJson: "{}" });
     await knex("o_musicCue").whereNull("state").update({ state: "ready" });
+    await knex("o_musicCue").whereNull("durationMode").update({ durationMode: "estimated" });
+    await knex("o_musicCue").whereNull("estimatedDurationSec").update({ estimatedDurationSec: knex.ref("durationSec") });
     await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_cue_plan_key ON o_musicCue(planId, cueKey)");
     await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_cue_scope ON o_musicCue(projectId, scriptId)");
     await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_cue_plan ON o_musicCue(planId)");
@@ -216,6 +227,188 @@ export default async (knex: Knex): Promise<void> => {
     await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_cue_asset_version ON o_musicCueAsset(cueId, version)");
     await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_cue_asset_scope ON o_musicCueAsset(projectId, cueId)");
     await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_cue_asset_selected ON o_musicCueAsset(cueId, selected)");
+
+    if (!(await knex.schema.hasTable("o_musicLibraryItem"))) {
+      await knex.schema.createTable("o_musicLibraryItem", (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("bibleId");
+        table.integer("bibleVersion");
+        table.string("workKey").notNullable();
+        table.string("workType").notNullable();
+        table.text("title");
+        table.text("narrativeRole");
+        table.string("reuseScope").notNullable().defaultTo("project");
+        table.integer("relatedItemId");
+        table.string("relationType");
+        table.string("state").notNullable().defaultTo("planned");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+      });
+    }
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_library_work_key ON o_musicLibraryItem(projectId, workKey)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_library_item_scope ON o_musicLibraryItem(projectId, state, workType)");
+
+    if (!(await knex.schema.hasTable("o_musicLibraryEdition"))) {
+      await knex.schema.createTable("o_musicLibraryEdition", (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("libraryItemId").notNullable();
+        table.integer("parentEditionId");
+        table.string("editionKey").notNullable();
+        table.string("editionType").notNullable();
+        table.text("title");
+        table.text("narrativePhase");
+        table.integer("episodeStart");
+        table.integer("episodeEnd");
+        table.string("vocalMode").notNullable().defaultTo("instrumental");
+        table.string("language");
+        table.text("musicSpecJson").notNullable().defaultTo("{}");
+        table.integer("selectedVersionId");
+        table.string("state").notNullable().defaultTo("planned");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+      });
+    }
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_library_edition_key ON o_musicLibraryEdition(libraryItemId, editionKey)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_library_edition_scope ON o_musicLibraryEdition(projectId, libraryItemId, state)");
+
+    if (!(await knex.schema.hasTable("o_musicLyricsVersion"))) {
+      await knex.schema.createTable("o_musicLyricsVersion", (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("editionId").notNullable();
+        table.integer("version").notNullable();
+        table.text("title");
+        table.string("language");
+        table.text("content").notNullable();
+        table.string("source").notNullable().defaultTo("user");
+        table.integer("basedOnId");
+        table.string("hash").notNullable();
+        table.string("state").notNullable().defaultTo("draft");
+        table.string("reviewStatus").notNullable().defaultTo("unreviewed");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+      });
+    }
+    await addColumn("o_musicLyricsVersion", "reviewStatus", "string");
+    await knex("o_musicLyricsVersion").whereNull("reviewStatus").update({ reviewStatus: "unreviewed" });
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_lyrics_version ON o_musicLyricsVersion(editionId, version)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_lyrics_state ON o_musicLyricsVersion(projectId, editionId, state)");
+
+    if (!(await knex.schema.hasTable("o_musicPromptVersion"))) {
+      await knex.schema.createTable("o_musicPromptVersion", (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId");
+        table.string("targetType").notNullable();
+        table.integer("cueId");
+        table.integer("editionId");
+        table.integer("lyricsVersionId");
+        table.integer("version").notNullable();
+        table.text("model").notNullable();
+        table.string("promptMode").notNullable().defaultTo("modelSpecific");
+        table.text("profileSource");
+        table.text("prompt").notNullable();
+        table.text("negativePrompt");
+        table.text("generationConfigJson").notNullable().defaultTo("{}");
+        table.string("source").notNullable().defaultTo("ai");
+        table.integer("basedOnId");
+        table.string("hash").notNullable();
+        table.string("reviewStatus").notNullable().defaultTo("unreviewed");
+        table.string("state").notNullable().defaultTo("active");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+      });
+    }
+    await addColumn("o_musicPromptVersion", "lyricsVersionId", "integer");
+    await addColumn("o_musicPromptVersion", "promptMode", "string");
+    await addColumn("o_musicPromptVersion", "profileSource", "text");
+    await knex("o_musicPromptVersion").whereNull("promptMode").update({ promptMode: "modelSpecific" });
+    await knex.raw(`
+      UPDATE o_musicPromptVersion AS target
+      SET version = (
+        SELECT COUNT(*) FROM o_musicPromptVersion AS candidate
+        WHERE candidate.projectId = target.projectId
+          AND candidate.targetType = target.targetType
+          AND COALESCE(candidate.cueId, 0) = COALESCE(target.cueId, 0)
+          AND COALESCE(candidate.editionId, 0) = COALESCE(target.editionId, 0)
+          AND (candidate.createTime < target.createTime OR (candidate.createTime = target.createTime AND candidate.id <= target.id))
+      )
+    `);
+    await knex.raw(`
+      UPDATE o_musicPromptVersion AS target
+      SET state = 'superseded'
+      WHERE state = 'active' AND EXISTS (
+        SELECT 1 FROM o_musicPromptVersion AS newer
+        WHERE newer.projectId = target.projectId
+          AND newer.targetType = target.targetType
+          AND COALESCE(newer.cueId, 0) = COALESCE(target.cueId, 0)
+          AND COALESCE(newer.editionId, 0) = COALESCE(target.editionId, 0)
+          AND newer.id > target.id
+      )
+    `);
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_prompt_cue ON o_musicPromptVersion(projectId, cueId, version)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_prompt_edition ON o_musicPromptVersion(projectId, editionId, version)");
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_prompt_cue_version ON o_musicPromptVersion(cueId, version) WHERE targetType = 'cue' AND cueId IS NOT NULL");
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_prompt_edition_version ON o_musicPromptVersion(editionId, version) WHERE targetType = 'edition' AND editionId IS NOT NULL");
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_prompt_cue_active ON o_musicPromptVersion(cueId) WHERE targetType = 'cue' AND cueId IS NOT NULL AND state = 'active'");
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_prompt_edition_active ON o_musicPromptVersion(editionId) WHERE targetType = 'edition' AND editionId IS NOT NULL AND state = 'active'");
+
+    if (!(await knex.schema.hasTable("o_musicLibraryVersion"))) {
+      await knex.schema.createTable("o_musicLibraryVersion", (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("editionId").notNullable();
+        table.integer("version").notNullable();
+        table.integer("promptVersionId");
+        table.integer("lyricsVersionId");
+        table.string("promptHash");
+        table.string("lyricsHash");
+        table.string("generationConfigHash");
+        table.integer("assetsId");
+        table.integer("childAssetId");
+        table.text("model");
+        table.text("generationConfigJson").notNullable().defaultTo("{}");
+        table.integer("generationDurationSec");
+        table.integer("effectiveMusicDurationSec");
+        table.string("derivationType").notNullable().defaultTo("generated");
+        table.integer("sourceVersionId");
+        table.integer("legacyCueAssetId");
+        table.integer("trimStartMs");
+        table.integer("trimEndMs");
+        table.integer("fadeInMs");
+        table.integer("fadeOutMs");
+        table.string("state").notNullable().defaultTo("generating");
+        table.text("errorReason");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+      });
+    }
+    await addColumn("o_musicLibraryVersion", "promptHash", "string");
+    await addColumn("o_musicLibraryVersion", "lyricsHash", "string");
+    await addColumn("o_musicLibraryVersion", "generationConfigHash", "string");
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_library_version ON o_musicLibraryVersion(editionId, version)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_library_version_scope ON o_musicLibraryVersion(projectId, editionId, state)");
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_library_version_legacy ON o_musicLibraryVersion(legacyCueAssetId) WHERE legacyCueAssetId IS NOT NULL");
+
+    if (!(await knex.schema.hasTable("o_musicCueBinding"))) {
+      await knex.schema.createTable("o_musicCueBinding", (table) => {
+        table.increments("id").primary();
+        table.integer("projectId").notNullable();
+        table.integer("scriptId");
+        table.integer("cueId").notNullable();
+        table.string("usageMode").notNullable();
+        table.integer("editionId");
+        table.integer("libraryVersionId");
+        table.integer("suggestedUseDurationSec");
+        table.string("state").notNullable().defaultTo("planned");
+        table.integer("createTime").notNullable();
+        table.integer("updateTime").notNullable();
+      });
+    }
+    await knex.raw("CREATE UNIQUE INDEX IF NOT EXISTS uq_music_cue_binding ON o_musicCueBinding(cueId)");
+    await knex.raw("CREATE INDEX IF NOT EXISTS idx_music_cue_binding_scope ON o_musicCueBinding(projectId, scriptId, usageMode)");
   };
   await fixAssetSchema(knex);
   await ensureMusicTables();
@@ -866,15 +1059,6 @@ export default async (knex: Knex): Promise<void> => {
   await addColumn("o_agentRun", "errorJson", "text");
   await addColumn("o_agentRun", "resultJson", "text");
   await addColumn("o_agentRun", "finishedAt", "integer");
-  await knex.raw(
-    "CREATE INDEX IF NOT EXISTS idx_agent_run_scope_status ON o_agentRun(agentKey, projectId, scriptId, status)",
-  );
-  await knex.raw("CREATE INDEX IF NOT EXISTS idx_agent_run_run_id ON o_agentRun(runId)");
-  await knex.raw("CREATE INDEX IF NOT EXISTS idx_agent_run_heartbeat ON o_agentRun(status, heartbeatAt)");
-  await knex.raw(
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_run_running_scope ON o_agentRun(agentKey, projectId, scriptId) WHERE status = 'running'",
-  );
-
   if (!(await knex.schema.hasTable("o_agentRunEvent"))) {
     await knex.schema.createTable("o_agentRunEvent", (table) => {
       table.increments("id").primary();
@@ -884,6 +1068,15 @@ export default async (knex: Knex): Promise<void> => {
       table.integer("createdAt").notNullable();
     });
   }
+  await repairDuplicateRunningAgentRuns(knex);
+  await knex.raw(
+    "CREATE INDEX IF NOT EXISTS idx_agent_run_scope_status ON o_agentRun(agentKey, projectId, scriptId, status)",
+  );
+  await knex.raw("CREATE INDEX IF NOT EXISTS idx_agent_run_run_id ON o_agentRun(runId)");
+  await knex.raw("CREATE INDEX IF NOT EXISTS idx_agent_run_heartbeat ON o_agentRun(status, heartbeatAt)");
+  await knex.raw(
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_run_running_scope ON o_agentRun(agentKey, projectId, scriptId) WHERE status = 'running'",
+  );
   await knex.raw("CREATE INDEX IF NOT EXISTS idx_agent_run_event_run_id ON o_agentRunEvent(runId, id)");
 
   if (!(await knex.schema.hasTable("o_directorPlanGenerationChunk"))) {
@@ -985,6 +1178,12 @@ export default async (knex: Knex): Promise<void> => {
     "o_musicPlan",
     "o_musicCue",
     "o_musicCueAsset",
+    "o_musicLibraryItem",
+    "o_musicLibraryEdition",
+    "o_musicLyricsVersion",
+    "o_musicPromptVersion",
+    "o_musicLibraryVersion",
+    "o_musicCueBinding",
     "o_workbenchMergedReference",
     "o_directorAsset",
     "o_editImageTask",
@@ -1024,6 +1223,12 @@ export default async (knex: Knex): Promise<void> => {
     ["o_musicPlan", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_musicCue", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_musicCueAsset", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_musicLibraryItem", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_musicLibraryEdition", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_musicLyricsVersion", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_musicPromptVersion", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_musicLibraryVersion", "COALESCE(NEW.projectId, OLD.projectId)"],
+    ["o_musicCueBinding", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_workbenchMergedReference", "COALESCE(NEW.projectId, OLD.projectId)"],
     ["o_directorAsset", "COALESCE(NEW.projectId, OLD.projectId)"],
   ] as const;

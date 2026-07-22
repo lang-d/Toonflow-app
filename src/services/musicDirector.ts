@@ -3,6 +3,8 @@ import u from "@/utils";
 import { invokeAiObjectWithFallback, parseAiJsonWithSchema } from "@/services/aiJsonObject";
 import { readConfiguredSkill } from "@/services/skillResolver";
 import { getProjectContextPack } from "@/services/projectMaterial";
+import { getFullTextAssetContent, latestTextAsset } from "@/services/textAsset";
+import { ensureLegacyMusicLibraryMigration } from "@/services/musicLibrary";
 
 export type MusicScopeMode = "concept" | "project" | "episode";
 
@@ -23,13 +25,45 @@ const musicCueSchema = z.object({
   startRef: jsonRecord.default({}),
   endRef: jsonRecord.default({}),
   durationSec: z.number().int().positive().max(900).optional(),
+  estimatedDurationSec: z.number().int().positive().max(900).optional(),
+  estimatedMinDurationSec: z.number().int().positive().max(900).optional(),
+  estimatedMaxDurationSec: z.number().int().positive().max(900).optional(),
+  durationConfidence: z.enum(["low", "medium", "high"]).default("medium"),
+  usageMode: z.enum(["reuse", "new", "silence"]).default("new"),
+  editionId: z.number().int().positive().optional(),
+  libraryVersionId: z.number().int().positive().optional(),
   promptBrief: z.string().optional(),
   musicSpec: jsonRecord.default({}),
 });
 
+const musicLibraryEditionPlanSchema = z.object({
+  editionKey: z.string(),
+  editionType: z.enum(["master", "narrative_variant", "arrangement", "vocal_variant", "instrumental", "short_edit", "custom"]),
+  title: z.string().optional(),
+  narrativePhase: z.string().optional(),
+  episodeStart: z.number().int().positive().optional(),
+  episodeEnd: z.number().int().positive().optional(),
+  vocalMode: z.enum(["instrumental", "vocal", "optional"]).default("instrumental"),
+  language: z.string().optional(),
+  musicSpec: jsonRecord.default({}),
+});
+
+const musicLibraryItemPlanSchema = z.object({
+  workKey: z.string(),
+  workType: z.enum(["theme_song", "opening_song", "ending_song", "insert_song", "score_theme", "source_music", "stinger"]),
+  title: z.string(),
+  narrativeRole: z.string().optional(),
+  reuseScope: z.enum(["project", "episode", "single_use"]).default("project"),
+  relationType: z.enum(["evolves_from", "replaces", "companion"]).optional(),
+  relatedWorkKey: z.string().optional(),
+  editions: z.array(musicLibraryEditionPlanSchema).default([]),
+});
+
 const musicPlanSchema = z.object({
   content: z.string(),
+  libraryItems: z.array(musicLibraryItemPlanSchema).default([]),
   cues: z.array(musicCueSchema).default([]),
+  recommendedProduction: z.object({ workKey: z.string(), editionKey: z.string(), reason: z.string() }).nullable().optional(),
 });
 
 function now() {
@@ -39,6 +73,14 @@ function now() {
 function truncate(value: unknown, max = 8000) {
   const text = String(value ?? "").trim();
   return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function chunkText(value: unknown, max = 6000) {
+  const text = String(value ?? "").trim();
+  if (!text) return [];
+  const chunks: string[] = [];
+  for (let offset = 0; offset < text.length; offset += max) chunks.push(text.slice(offset, offset + max));
+  return chunks;
 }
 
 export function parseJsonValue<T>(value: unknown, fallback: T): T {
@@ -67,31 +109,33 @@ async function collectMusicContext(input: { projectId: number; scriptId?: number
   const contextPack = await getProjectContextPack(input.projectId).catch(() => null);
   const scripts = input.scriptId
     ? await u.db("o_script").where({ projectId: input.projectId, id: input.scriptId }).select("id", "name", "content")
-    : await u.db("o_script").where({ projectId: input.projectId }).select("id", "name", "content").orderBy("id", "asc").limit(8);
-  const storyboards = await u
-    .db("o_storyboard")
-    .where({ projectId: input.projectId })
-    .modify((qb: any) => {
-      if (input.scriptId) qb.where("scriptId", input.scriptId);
-    })
-    .select("id", "scriptId", "trackId", "index", "duration", "location", "timeOfDay", "sceneContinuityId", "track", "videoDesc", "tableRowJson")
-    .orderBy("scriptId", "asc")
-    .orderBy("index", "asc")
-    .limit(80);
-  const videoTracks = await u
-    .db("o_videoTrack")
-    .where({ projectId: input.projectId })
-    .modify((qb: any) => {
-      if (input.scriptId) qb.where("scriptId", input.scriptId);
-    })
-    .select("*")
-    .limit(40)
-    .catch(() => []);
+    : await u.db("o_script").where({ projectId: input.projectId }).select("id", "name", "content").orderBy("id", "asc");
+  const storyboards = input.mode === "episode" && input.scriptId
+    ? await u
+        .db("o_storyboard")
+        .where({ projectId: input.projectId, scriptId: input.scriptId })
+        .select("id", "scriptId", "trackId", "index", "duration", "location", "timeOfDay", "sceneContinuityId", "track", "videoDesc", "tableRowJson")
+        .orderBy("index", "asc")
+    : [];
+  const directorPlans = await Promise.all(scripts.map(async (script: any) => {
+    const asset = await latestTextAsset({ projectId: input.projectId, scriptId: script.id, targetType: "scriptPlan", targetId: "director-plan", state: "complete" });
+    if (!asset) return null;
+    const content = await getFullTextAssetContent({ id: Number(asset.id), projectId: input.projectId }).then((row) => row.content).catch(() => "");
+    return { scriptId: script.id, textAssetId: asset.id, contentChunks: chunkText(content) };
+  }));
+  await ensureLegacyMusicLibraryMigration(input.projectId);
+  const libraryItems = await (u.db as any)("o_musicLibraryItem").where({ projectId: input.projectId }).whereNot("state", "archived").orderBy("id", "asc");
+  const editions = libraryItems.length
+    ? await (u.db as any)("o_musicLibraryEdition").where({ projectId: input.projectId }).whereIn("libraryItemId", libraryItems.map((item: any) => item.id)).whereNot("state", "archived")
+    : [];
+  const versions = editions.length
+    ? await (u.db as any)("o_musicLibraryVersion").where({ projectId: input.projectId, state: "complete" }).whereIn("editionId", editions.map((item: any) => item.id))
+    : [];
 
   const scriptBrief = scripts.map((script: any) => ({
     id: script.id,
     name: script.name,
-    content: truncate(script.content, input.scriptId ? 12000 : 3000),
+    contentChunks: chunkText(script.content),
   }));
   const storyboardBrief = storyboards.map((row: any) => ({
     id: row.id,
@@ -106,24 +150,34 @@ async function collectMusicContext(input: { projectId: number; scriptId?: number
     videoDesc: truncate(row.videoDesc, 500),
     row: truncate(row.tableRowJson, 700),
   }));
-  const trackBrief = videoTracks.map((row: any) => ({
-    id: row.id,
-    scriptId: row.scriptId,
-    name: row.name,
-    groupKey: row.groupKey,
-    groupName: row.groupName,
-    groupIntent: row.groupIntent,
-    duration: row.duration,
-    state: row.state,
-  }));
 
   return {
     project: { id: project.id, name: project.name, intro: project.intro, type: project.type, artStyle: project.artStyle },
     mode: input.mode,
     contextPack: contextPack ? truncate((contextPack as any).content, 10000) : "",
     scripts: scriptBrief,
+    directorPlans: directorPlans.filter(Boolean),
     storyboards: storyboardBrief,
-    videoTracks: trackBrief,
+    musicLibrary: libraryItems.map((item: any) => ({
+      id: item.id,
+      workKey: item.workKey,
+      workType: item.workType,
+      title: item.title,
+      narrativeRole: item.narrativeRole,
+      editions: editions
+        .filter((edition: any) => Number(edition.libraryItemId) === Number(item.id))
+        .map((edition: any) => ({
+          id: edition.id,
+          editionKey: edition.editionKey,
+          editionType: edition.editionType,
+          title: edition.title,
+          narrativePhase: edition.narrativePhase,
+          vocalMode: edition.vocalMode,
+          musicSpec: parseJsonValue(edition.musicSpecJson, {}),
+          selectedVersionId: edition.selectedVersionId,
+          completedVersions: versions.filter((version: any) => Number(version.editionId) === Number(edition.id)).map((version: any) => ({ id: version.id, version: version.version })),
+        })),
+    })),
   };
 }
 
@@ -192,8 +246,10 @@ export async function generateMusicPlan(input: {
     schema: musicPlanSchema,
     system: [
       "You are the scoring director creating an actionable music plan and cue sheet.",
-      "Support concept, project and episode modes. Episode mode must work for rolling serialized production.",
-      "Cues are split by musical purpose, dramatic beat and scene transition, not by every storyboard panel.",
+      "Mode contract: concept returns recommendations only; project returns libraryItems and no episode cues; episode returns semantic cues and never creates project libraryItems in the AI response.",
+      "Episode cues are split by sustained narrative and musical meaning, never by camera cuts or storyboard rows. One cue may cover many shots and scenes.",
+      "Every episode cue chooses usageMode reuse, new, or silence. Reuse existing library editions whenever they satisfy the narrative function.",
+      "All durations are pre-edit estimates. Use semantic script/director anchors, not final timecodes.",
       technique.content,
     ].join("\n\n"),
     messages: [
@@ -219,6 +275,19 @@ export async function generateMusicPlan(input: {
     ],
     fallbackTextParser: (text) => parseAiJsonWithSchema(text, musicPlanSchema, "Music plan"),
   });
+  if (input.mode === "episode" && input.scriptId == null) throw new Error("scriptId is required in episode mode");
+  if (input.mode !== "episode" && result.cues.length) throw new Error(`${input.mode} music plan must not create episode cues`);
+  if (input.mode === "episode" && result.libraryItems.length) throw new Error("Episode music plan must reuse the project library or mark cues as new; it must not create project works directly");
+  for (const cue of result.cues) {
+    const estimated = cue.estimatedDurationSec ?? cue.durationSec;
+    const minimum = cue.estimatedMinDurationSec ?? estimated;
+    const maximum = cue.estimatedMaxDurationSec ?? estimated;
+    if (estimated != null && (minimum == null || maximum == null || minimum > estimated || estimated > maximum)) {
+      throw new Error(`Cue ${cue.cueKey} has an invalid estimated duration range`);
+    }
+    if (cue.usageMode === "reuse" && cue.editionId == null) throw new Error(`Cue ${cue.cueKey} uses reuse but does not identify an existing edition`);
+    if (cue.usageMode === "silence" && (cue.editionId != null || cue.libraryVersionId != null)) throw new Error(`Silence cue ${cue.cueKey} cannot reference music assets`);
+  }
   const version = await nextVersion("o_musicPlan", {
     projectId: input.projectId,
     scriptId: input.scriptId ?? null,
@@ -235,13 +304,109 @@ export async function generateMusicPlan(input: {
       version,
       content: result.content,
       cueSheetJson: JSON.stringify(result.cues),
+      libraryPlanJson: JSON.stringify(result.libraryItems),
+      recommendedProductionJson: null,
       state: "complete",
       createTime: createdAt,
       updateTime: createdAt,
     });
+    const plannedItems: any[] = [];
+    const materializationWarnings: string[] = [];
+    if (input.mode === "project") {
+      const workIdByKey = new Map<string, number>();
+      for (const item of result.libraryItems) {
+        let savedItem = await trx("o_musicLibraryItem").where({ projectId: input.projectId, workKey: item.workKey }).first();
+        if (!savedItem) {
+          const [itemId] = await trx("o_musicLibraryItem").insert({
+            projectId: input.projectId,
+            bibleId: bible.id,
+            bibleVersion: bible.version,
+            workKey: item.workKey,
+            workType: item.workType,
+            title: item.title,
+            narrativeRole: item.narrativeRole || "",
+            reuseScope: item.reuseScope,
+            relatedItemId: null,
+            relationType: item.relationType || null,
+            state: "planned",
+            createTime: createdAt,
+            updateTime: createdAt,
+          });
+          savedItem = await trx("o_musicLibraryItem").where("id", itemId).first();
+        } else {
+          const existingEditions = await trx("o_musicLibraryEdition").where("libraryItemId", savedItem.id).select("id");
+          const hasVersions = existingEditions.length
+            ? Boolean(await trx("o_musicLibraryVersion").whereIn("editionId", existingEditions.map((row: any) => row.id)).first("id"))
+            : false;
+          if (savedItem.state === "planned" && !hasVersions) {
+            await trx("o_musicLibraryItem").where("id", savedItem.id).update({
+              bibleId: bible.id,
+              bibleVersion: bible.version,
+              workType: item.workType,
+              title: item.title,
+              narrativeRole: item.narrativeRole || "",
+              reuseScope: item.reuseScope,
+              updateTime: createdAt,
+            });
+            savedItem = await trx("o_musicLibraryItem").where("id", savedItem.id).first();
+          } else {
+            materializationWarnings.push(`Music work ${item.workKey} already has produced or protected material and was not overwritten`);
+          }
+        }
+        workIdByKey.set(item.workKey, Number(savedItem.id));
+        plannedItems.push(savedItem);
+        for (const edition of item.editions) {
+          const exists = await trx("o_musicLibraryEdition").where({ libraryItemId: savedItem.id, editionKey: edition.editionKey }).first();
+          if (exists) {
+            const hasVersion = Boolean(await trx("o_musicLibraryVersion").where("editionId", exists.id).first("id"));
+            if (exists.state === "planned" && !hasVersion) {
+              await trx("o_musicLibraryEdition").where("id", exists.id).update({
+                editionType: edition.editionType,
+                title: edition.title || edition.editionKey,
+                narrativePhase: edition.narrativePhase || "",
+                episodeStart: edition.episodeStart ?? null,
+                episodeEnd: edition.episodeEnd ?? null,
+                vocalMode: edition.vocalMode,
+                language: edition.language || "",
+                musicSpecJson: JSON.stringify(edition.musicSpec || {}),
+                updateTime: createdAt,
+              });
+            } else {
+              materializationWarnings.push(`Music edition ${item.workKey}/${edition.editionKey} already has produced or protected material and was not overwritten`);
+            }
+            continue;
+          }
+          await trx("o_musicLibraryEdition").insert({
+            projectId: input.projectId,
+            libraryItemId: savedItem.id,
+            parentEditionId: null,
+            editionKey: edition.editionKey,
+            editionType: edition.editionType,
+            title: edition.title || edition.editionKey,
+            narrativePhase: edition.narrativePhase || "",
+            episodeStart: edition.episodeStart ?? null,
+            episodeEnd: edition.episodeEnd ?? null,
+            vocalMode: edition.vocalMode,
+            language: edition.language || "",
+            musicSpecJson: JSON.stringify(edition.musicSpec || {}),
+            selectedVersionId: null,
+            state: "planned",
+            createTime: createdAt,
+            updateTime: createdAt,
+          });
+        }
+      }
+      for (const item of result.libraryItems) {
+        if (!item.relatedWorkKey) continue;
+        const itemId = workIdByKey.get(item.workKey);
+        const relatedItemId = workIdByKey.get(item.relatedWorkKey) || Number((await trx("o_musicLibraryItem").where({ projectId: input.projectId, workKey: item.relatedWorkKey }).first())?.id || 0);
+        if (itemId && relatedItemId) await trx("o_musicLibraryItem").where("id", itemId).update({ relatedItemId, relationType: item.relationType || "evolves_from", updateTime: createdAt });
+      }
+    }
     for (let index = 0; index < result.cues.length; index++) {
       const cue = result.cues[index];
-      await trx("o_musicCue").insert({
+      const estimated = cue.estimatedDurationSec ?? cue.durationSec ?? undefined;
+      const [cueId] = await trx("o_musicCue").insert({
         projectId: input.projectId,
         scriptId: input.scriptId ?? null,
         planId,
@@ -252,22 +417,100 @@ export async function generateMusicPlan(input: {
         narrativePurpose: cue.narrativePurpose || "",
         startRefJson: JSON.stringify(cue.startRef || {}),
         endRefJson: JSON.stringify(cue.endRef || {}),
-        durationSec: cue.durationSec ?? null,
+        durationSec: estimated ?? null,
+        durationMode: "estimated",
+        estimatedDurationSec: estimated ?? null,
+        estimatedMinDurationSec: cue.estimatedMinDurationSec ?? estimated ?? null,
+        estimatedMaxDurationSec: cue.estimatedMaxDurationSec ?? estimated ?? null,
+        durationConfidence: cue.durationConfidence,
         promptBrief: cue.promptBrief || "",
         musicSpecJson: JSON.stringify(cue.musicSpec || {}),
         state: "ready",
         createTime: createdAt,
         updateTime: createdAt,
       });
+      let editionId = cue.editionId ?? null;
+      let libraryVersionId = cue.libraryVersionId ?? null;
+      if (cue.usageMode === "new" && editionId == null) {
+        const workKey = `cue-${cueId}`;
+        const [itemId] = await trx("o_musicLibraryItem").insert({
+          projectId: input.projectId,
+          bibleId: bible.id,
+          bibleVersion: bible.version,
+          workKey,
+          workType: "score_theme",
+          title: cue.title || cue.cueKey,
+          narrativeRole: cue.narrativePurpose || "",
+          reuseScope: "project",
+          relatedItemId: null,
+          relationType: null,
+          state: "planned",
+          createTime: createdAt,
+          updateTime: createdAt,
+        });
+        const [newEditionId] = await trx("o_musicLibraryEdition").insert({
+          projectId: input.projectId,
+          libraryItemId: itemId,
+          parentEditionId: null,
+          editionKey: "master",
+          editionType: "master",
+          title: cue.title || cue.cueKey,
+          narrativePhase: "episode cue",
+          episodeStart: null,
+          episodeEnd: null,
+          vocalMode: "instrumental",
+          language: "",
+          musicSpecJson: JSON.stringify(cue.musicSpec || {}),
+          selectedVersionId: null,
+          state: "planned",
+          createTime: createdAt,
+          updateTime: createdAt,
+        });
+        editionId = Number(newEditionId);
+      }
+      if (editionId != null) {
+        const edition = await trx("o_musicLibraryEdition").where({ projectId: input.projectId, id: editionId }).first();
+        if (!edition) throw new Error(`Cue ${cue.cueKey} references a music edition that does not belong to this project`);
+      }
+      if (libraryVersionId != null) {
+        const libraryVersion = await trx("o_musicLibraryVersion").where({ projectId: input.projectId, id: libraryVersionId, editionId, state: "complete" }).first();
+        if (!libraryVersion) throw new Error(`Cue ${cue.cueKey} references an unavailable music version`);
+      }
+      await trx("o_musicCueBinding").insert({
+        projectId: input.projectId,
+        scriptId: input.scriptId ?? null,
+        cueId,
+        usageMode: cue.usageMode,
+        editionId: cue.usageMode === "silence" ? null : editionId,
+        libraryVersionId: cue.usageMode === "silence" ? null : libraryVersionId,
+        suggestedUseDurationSec: estimated ?? null,
+        state: cue.usageMode === "silence" || libraryVersionId != null ? "ready" : cue.usageMode === "reuse" ? "missing_asset" : "planned",
+        createTime: createdAt,
+        updateTime: createdAt,
+      });
     }
+    const recommendedProduction = result.recommendedProduction
+      ? await (async () => {
+          const item = await trx("o_musicLibraryItem").where({ projectId: input.projectId, workKey: result.recommendedProduction!.workKey }).first();
+          if (!item) return null;
+          const edition = await trx("o_musicLibraryEdition").where({ projectId: input.projectId, libraryItemId: item.id, editionKey: result.recommendedProduction!.editionKey }).first();
+          if (!edition) return null;
+          return { ...result.recommendedProduction!, libraryItemId: Number(item.id), editionId: Number(edition.id) };
+        })()
+      : null;
+    await trx("o_musicPlan").where("id", planId).update({ recommendedProductionJson: JSON.stringify(recommendedProduction) });
     return {
       plan: await trx("o_musicPlan").where("id", planId).first(),
       cues: await trx("o_musicCue").where("planId", planId).orderBy("id", "asc"),
+      libraryItems: plannedItems,
+      materializationWarnings,
+      recommendedProduction,
     };
   });
 }
 
 export async function listMusicCues(input: { projectId: number; scriptId?: number | null; planId?: number }) {
+  await ensureLegacyMusicLibraryMigration(input.projectId);
   const cues = await u
     .db("o_musicCue")
     .where({ projectId: input.projectId })
@@ -288,11 +531,28 @@ export async function listMusicCues(input: { projectId: number; scriptId?: numbe
     list.push(asset);
     assetsByCue.set(Number(asset.cueId), list);
   }
+  const bindings = await (u.db as any)("o_musicCueBinding").whereIn("cueId", cues.map((cue: any) => cue.id));
+  const bindingByCue = new Map<number, any>(bindings.map((binding: any) => [Number(binding.cueId), binding]));
+  const editionIds = bindings.map((binding: any) => Number(binding.editionId)).filter((id: number) => id > 0);
+  const versionIds = bindings.map((binding: any) => Number(binding.libraryVersionId)).filter((id: number) => id > 0);
+  const editions = editionIds.length ? await (u.db as any)("o_musicLibraryEdition").whereIn("id", editionIds) : [];
+  const versions = versionIds.length ? await (u.db as any)("o_musicLibraryVersion").whereIn("id", versionIds) : [];
+  const editionById = new Map(editions.map((edition: any) => [Number(edition.id), { ...edition, musicSpec: parseJsonValue(edition.musicSpecJson, {}) }]));
+  const versionById = new Map(versions.map((version: any) => [Number(version.id), { ...version, generationConfig: parseJsonValue(version.generationConfigJson, {}) }]));
+  const latestPrompts = await (u.db as any)("o_musicPromptVersion").where({ projectId: input.projectId, targetType: "cue", state: "active" }).whereIn("cueId", cues.map((cue: any) => cue.id)).orderBy("version", "desc");
+  const promptByCue = new Map<number, any>();
+  for (const prompt of latestPrompts) if (!promptByCue.has(Number(prompt.cueId))) promptByCue.set(Number(prompt.cueId), { ...prompt, generationConfig: parseJsonValue(prompt.generationConfigJson, {}) });
   return cues.map((cue: any) => ({
     ...cue,
     startRef: parseJsonValue(cue.startRefJson, {}),
     endRef: parseJsonValue(cue.endRefJson, {}),
     musicSpec: parseJsonValue(cue.musicSpecJson, {}),
     assets: assetsByCue.get(Number(cue.id)) || [],
+    binding: bindingByCue.get(Number(cue.id)) || null,
+    usageMode: bindingByCue.get(Number(cue.id))?.usageMode || "new",
+    edition: editionById.get(Number(bindingByCue.get(Number(cue.id))?.editionId)) || null,
+    libraryVersion: versionById.get(Number(bindingByCue.get(Number(cue.id))?.libraryVersionId)) || null,
+    latestPromptVersion: promptByCue.get(Number(cue.id)) || null,
+    needsGeneration: bindingByCue.get(Number(cue.id))?.usageMode === "new" && !bindingByCue.get(Number(cue.id))?.libraryVersionId,
   }));
 }

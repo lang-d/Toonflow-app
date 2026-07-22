@@ -12,9 +12,9 @@ export default router.post(
   validateFields({
     projectId: z.number(),
     cueId: z.number(),
-    model: z.string(),
-    instruction: z.string().optional(),
+    promptVersionId: z.number(),
     select: z.boolean().optional(),
+    acknowledgeWarnings: z.boolean().optional(),
   }),
   async (req, res) => {
     try {

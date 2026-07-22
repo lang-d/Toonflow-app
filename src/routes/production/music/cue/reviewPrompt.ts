@@ -12,9 +12,7 @@ export default router.post(
   validateFields({
     projectId: z.number(),
     cueId: z.number(),
-    model: z.string(),
-    prompt: z.string(),
-    compiledPromptJson: z.any().optional(),
+    promptVersionId: z.number(),
   }),
   async (req, res) => {
     try {

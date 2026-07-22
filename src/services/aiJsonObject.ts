@@ -162,6 +162,7 @@ export async function invokeAiObjectWithFallback<T>(input: {
   schema: z.ZodType<T>;
   label: string;
   fallbackTextParser?: (text: string) => T;
+  onLifecycle?: (event: "structured_fallback" | "repair") => void | Promise<void>;
 }): Promise<T> {
   const system = `${input.system}\nReturn valid JSON that matches the schema.`;
   try {
@@ -173,6 +174,7 @@ export async function invokeAiObjectWithFallback<T>(input: {
     return result.output as T;
   } catch (error) {
     if (!isStructuredOutputUnsupported(error) && !isAiObjectContractError(error)) throw error;
+    await input.onLifecycle?.("structured_fallback");
     const fallbackResult = await u.Ai.Text(input.modelKey).invoke({
       system: fallbackSystem(system),
       messages: input.messages,
@@ -187,6 +189,7 @@ export async function invokeAiObjectWithFallback<T>(input: {
       });
     } catch (fallbackError) {
       if (!isAiObjectContractError(fallbackError)) throw fallbackError;
+      await input.onLifecycle?.("repair");
       const repairResult = await u.Ai.Text(input.modelKey).invoke({
         system: fallbackSystem(system),
         messages: [

@@ -18,6 +18,8 @@ const external = [
   "sqlite3",
   "better-sqlite3",
   "sharp",
+  "ffmpeg-static",
+  "ffprobe-static",
   "mysql",
   "mysql2",
   "pg",

@@ -35,6 +35,8 @@ export interface StoryboardEditorInput {
   action?: string;
   shotSize?: string;
   cameraMove?: string;
+  cameraAngle?: string;
+  transitionFromPrevious?: string;
   dialogue?: string;
   sound?: string;
   visibleEmotion?: string;
@@ -241,6 +243,8 @@ export async function saveStoryboardEditor(input: StoryboardEditorInput) {
       action: input.action,
       shotSize: input.shotSize,
       cameraMove: input.cameraMove,
+      cameraAngle: input.cameraAngle,
+      transitionFromPrevious: input.transitionFromPrevious,
       visibleEmotion: input.visibleEmotion,
       groupKey: input.groupKey,
       groupName: input.groupName,
@@ -289,6 +293,8 @@ export async function saveStoryboardEditor(input: StoryboardEditorInput) {
       action: input.action || null,
       shotSize: input.shotSize || null,
       cameraMove: input.cameraMove || null,
+      cameraAngle: factObject.cameraAngle || null,
+      transitionFromPrevious: factObject.transitionFromPrevious || null,
       dialogue: input.dialogue || null,
       sound: input.sound || null,
       visibleEmotion: input.visibleEmotion || null,

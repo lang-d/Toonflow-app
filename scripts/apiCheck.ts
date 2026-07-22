@@ -18,6 +18,10 @@ interface BackendRoute {
 }
 
 const FRONTEND_PENDING_REMOVAL = new Map<string, string>([
+  ["/scriptAgent/getPlanData", "Script Agent migration: frontend must switch to /scriptAgent/workspace/detail"],
+  ["/scriptAgent/setPlanData", "Script Agent migration: frontend must switch to backend workspace APIs and stop XML full-workspace writeback"],
+  ["/scriptAgent/updateData", "Script Agent migration: frontend must switch to backend workspace APIs and stop legacy workspace updates"],
+  ["/production/music/stage/state", "Music module migration: frontend must switch to common Run, timeline, task snapshot, and music asset APIs"],
   ["/video/getVideo", "旧视频 store，改用 /production/workbench/getVideoList"],
   ["/video/getVideoConfigs", "旧视频 store，当前生产工作台不再使用"],
   ["/video/deleteVideoConfig", "旧视频 store，当前生产工作台不再使用"],

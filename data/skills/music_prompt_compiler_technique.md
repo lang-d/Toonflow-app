@@ -1,24 +1,11 @@
 # Music Prompt Compiler Technique
 
-Convert a cue into a target music generation prompt.
+Compile one confirmed cue or music edition into a provider-neutral direction or hand it to the selected model's Technique for executable formatting.
 
-The prompt should be model-friendly, not story-complete.
+Read formal musical facts, the target's confirmed mode, any confirmed lyrics version, and the user's latest instruction. Memory is conversational context only; it is not a source for model capability, version, lyric, or music-work facts.
 
-Keep:
-- duration
-- emotional arc
-- tempo or movement feel when needed
-- instrumentation and sonic palette
-- structure sections
-- vocal mode and lyrics instruction
-- loopability when needed
-- avoid or negative prompt
+Reduce story intent to audible intent: function, style family, pulse, instrumentation, harmonic color, texture, dynamics, silence, cadence, and emotional movement. Remove plot recap, biographies, camera language, symbolic explanation, and contradictory adjective piles. Translate narrative intent into rhythm, register, harmony, texture, dynamics, rests, or ending behavior.
 
-Remove:
-- full plot summaries
-- long character biographies
-- director prose that is not musical
-- contradictory mood lists
-- camera, lens, frame, or visual-only instructions
+For a model-specific prompt, let the selected model Profile and Technique own field names, mode rules, negative handling, and unavailable-feature boundaries. For a generic prompt, keep only portable musical intent and do not claim provider flags, exact duration control, formats, or advanced generation modes.
 
-Use the target model prompt profile as the authority for format, language, length, negative prompt handling, and section style.
+Preserve the resulting text in an immutable prompt version. A vocal target links the exact confirmed lyricsVersionId; never embed raw lyrics in generationConfig.

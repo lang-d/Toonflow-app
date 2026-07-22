@@ -602,7 +602,7 @@ test("failed draft validation is distinct from the unchanged formal storyboard v
     await service.appendStoryboardRows({
       generationId: formal.generationId,
       startIndex: 0,
-      rows: [0, 1, 2, 3].map((index) => ({ ...row(index, "G05"), durationSec: 3.2 })),
+      rows: [0, 1, 2, 3].map((index) => ({ ...row(index, "G05"), durationSec: 3 })),
     });
     assert.equal((await service.commitStoryboardGeneration(formal.generationId)).status, "committed");
 
@@ -612,7 +612,7 @@ test("failed draft validation is distinct from the unchanged formal storyboard v
       expectedRowCount: 5,
       groups: [plan("G05", [0, 1, 2, 3, 4])],
     });
-    const durations = [2.5, 3, 3.5, 3, 3.5];
+    const durations = [3, 3, 3, 3, 4];
     await service.appendStoryboardRows({
       generationId: draft.generationId,
       startIndex: 0,
@@ -623,7 +623,7 @@ test("failed draft validation is distinct from the unchanged formal storyboard v
     if (invalid.status !== "invalid") return;
 
     const formalRows = await db("o_storyboard").where({ projectId: 1, scriptId: 90 });
-    assert.equal(formalRows.reduce((sum: number, item: any) => sum + Number(item.duration || 0), 0), 12.8);
+    assert.equal(formalRows.reduce((sum: number, item: any) => sum + Number(item.duration || 0), 0), 12);
     const failedDraft = await service.readStoryboardGenerationDraft({
       generationId: draft.generationId,
       projectId: 1,
@@ -631,12 +631,12 @@ test("failed draft validation is distinct from the unchanged formal storyboard v
     });
     assert.equal(
       failedDraft.rows.reduce((sum: number, item: any) => sum + Number(item.row.durationSec || 0), 0),
-      15.5,
+      16,
     );
 
     const decision = service.storyboardValidationDecisionSummary(draft.generationId, invalid);
-    assert.match(decision.summary, /草稿分组 G01（第1-5镜）总时长 15\.5 秒/);
-    assert.match(decision.summary, /超过 Fifteen Second Video 上限 15 秒 0\.5 秒/);
+    assert.match(decision.summary, /草稿分组 G01（第1-5镜）总时长 16 秒/);
+    assert.match(decision.summary, /超过 Fifteen Second Video 上限 15 秒 1 秒/);
     assert.match(decision.summary, /当前正式分镜表未被覆盖/);
   } finally {
     await db("o_project").where({ id: 1 }).update({ videoModel: "" });

@@ -5,7 +5,7 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 
 # 阶段4：结构化分镜表写入
 
-本技能只定义执行流程、事实源边界、字段契约和禁止项。分镜设计方法、镜头连续性、资产选择、台词时长等细则放在 `storyboard_table_techniques` 与当前导演手册的 `director_storyboard_table_narrative` 中。
+本技能只定义执行流程、事实源边界、结构化写入契约和禁止项。拆镜方法、镜头连续性、机位串联、资产选择、台词时长、情绪表达等创作细则只看 `storyboard_table_techniques` 与当前导演手册的 `director_storyboard_table_narrative`。
 
 ## 规则优先级
 
@@ -13,7 +13,7 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 2. 本阶段的事实源边界和禁止项。
 3. `storyboard_table_techniques` 与当前导演手册 `director_storyboard_table_narrative` 中的创作方法。
 
-字段、工具、资产、状态、时长、`soundEffects`、分组契约以 `storyboard_table_techniques` 为准；题材拆镜、对话反应、节奏钩子以当前 `director_storyboard_table_narrative` 补充，但不得覆盖工程契约。
+工具、状态、唯一写入方式和失败处理以本技能为准；字段口径、资产锚定、时长、`soundEffects`、分组、机位串联和连续性以 `storyboard_table_techniques` 为准；题材拆镜、对话反应、节奏钩子以当前 `director_storyboard_table_narrative` 补充，但不得覆盖工程契约。
 
 如果技法内容与本阶段工具边界冲突，只吸收创作方法，不采用旧输出格式或旧事实源；题材方法只能来自当前加载的导演叙事手册。
 
@@ -24,16 +24,17 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 - `storyboard_table_techniques`
 - `director_storyboard_table_narrative`
 
-激活后按技法完成拆镜、导演规划对齐、视觉连续性、资产引用、台词时长、转场与分组设计。
+激活后按技法完成拆镜、导演规划对齐、镜头串联、视觉连续性、资产引用、台词时长、转场与分组设计。
 不得激活 `director_storyboard_table_style`；分镜表只继承 `scriptPlan` 中已确定的视觉方案。
 
 ## 唯一写入方式
 
-分镜事实只能通过以下工具写入：
+分镜事实只能通过以下工具写入；`prepare_storyboard_table` 只保存本轮内存预演，不写数据库：
 
-1. `begin_storyboard_table`
-2. `append_storyboard_rows`
-3. `commit_storyboard_table`
+1. `prepare_storyboard_table`
+2. `begin_storyboard_table`
+3. `append_storyboard_rows`
+4. `commit_storyboard_table`
 
 续接失败草稿时，先用只读工具 `get_storyboard_generation_draft` 按页读取原 generation；需要用户决定时调用 `await_user_decision`。这两个工具都不是分镜事实写入入口。
 
@@ -41,23 +42,37 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 
 ## 执行流程
 
+### 同一 Agent 内部预演
+
+预演与正式分镜必须由当前 `storyboardTableAgent` 在同一次流式运行、同一份上下文中完成。禁止启动独立模型重复分析剧本。预演调用 `prepare_storyboard_table`，只保存在本轮工具闭包中，不写数据库，也不是用户可见的额外阶段。
+
+- 先在内部建立剧情事实、情绪曲线、镜头功能、时长、轴线与连续性 ledger；`prepare_storyboard_table` 只提交正式写表必须锁定的紧凑结构，不重复提交完整画面、台词、动作、资产或情绪文本。
+- 预演镜头 index 必须严格为 `0..N-1`；分组必须按顺序完整覆盖这些 index，不能遗漏、重复或越界。
+- 仅当预演返回 `ready` 才能开始 generation；`begin_storyboard_table` 的总行数与 groups 必须原样使用工具返回值。
+- 若单条不可分割长镜头超过动态模型能力，提交 `needs_user`，等待用户选择更换模型或明确授权重新设计镜头；不得先写表、自动拆镜或默认建议后期拼接。
+- 写表期间若发现必须增加、删除、移动镜头或改变分组，停止追加，重新调用 `prepare_storyboard_table`，再重新 `begin_storyboard_table`。旧草稿由后端标记 superseded 并保留诊断；不得在旧 generation 上制造索引漂移。
+
 1. 调用 `get_flowData` 读取 `script`、`scriptPlan`、`assets`。
 2. 激活本阶段要求的通用分镜表技法与当前题材叙事技法。
-3. 先从 `scriptPlan` 建立“场次执行映射”：
-   - 表演出口 → `characters[].action` / `characters[].expression/gaze/handAction/posture/movement`；`visibleEmotion` 只写当前画面可见的情绪表现摘要。
-   - 空间关系 → `characters[].spatialPosition`。
-   - 镜头距离策略 → `shotSize` / `cameraMove`。
-   - 连续性锚点 → `location` / `timeOfDay` / `picture` / `requiredAssets`。
-   - 环境声 → `soundEffects`。
-4. 再完成全局规划：
-   - 总分镜数。
-   - 全部分镜组。
-   - 每组 `groupKey/groupName/groupIntent/storyboardIndexes`。
-5. 调用 `begin_storyboard_table` 创建 generation。
+3. 按 `storyboard_table_techniques` 建立剧情事实、情绪曲线、场景机位、站位连续性和镜头经济 ledger。
+4. 调用 `prepare_storyboard_table` 提交连续 index、事件标识覆盖、预计整数时长、轴线侧、连续性承接、可切点、不可拆长镜与完整分组计划。
+5. 使用准备工具返回的总行数与分组调用 `begin_storyboard_table`。
 6. 按 `index` 提交 5–10 条一批的 `StoryboardTableRow`。
 7. 如果工具调用中断，可重试完全相同内容；同一 generation 内不得用不同内容覆盖已写入 index。
 8. 全部 index 写满后调用 `commit_storyboard_table`。
-9. 成功后只回复简短结果：`分镜表已完成，共 N 条分镜、M 个分组。`
+9. 成功后只回复简短结果；系统会自动启动独立只读审核。
+
+## 审核后返修
+
+当用户针对分镜表审核报告提出自然语言调整意见时，当前正式分镜表是唯一返修基线，不是失败草稿：
+
+1. 先理解用户本轮自然语言。历史审核报告只作参考，不能把旧报告或上一次待办自动当成用户本轮的返修授权；语义不清时只追问，不创建 generation。
+2. 用户明确提出新的分镜工作时，按新的工作目标读取当前事实，不继承旧审核返修范围。
+3. 用户明确要求针对审核调整、指定某版为基线，或引用“刚才/上一份/那几个建议”时，先调用 `list_production_reviews` / `read_production_review` / `list_storyboard_generations` / `read_storyboard_generation` 定位并读取审核报告全文和基线版本。
+4. 再调用 `get_flowData` 读取当前 `storyboard`、`scriptPlan` 与 `assets`，核对当前正式事实、用户要求和被指定的基线差异。
+5. 新建 generation，并完整提交修订后的分镜表；不得用图片 Prompt、聊天文本、Memory 摘要、结构化 suggestion rows 或旧 `videoDesc` 恢复事实。
+6. 未被用户要求调整的分镜必须保留既有结构化事实；只有被点名镜头及为轴线、站位、动作终态承接所必需的相邻镜头可以改写。
+7. 不得自行扩大返修范围，不得在返修中启动分镜面板或分镜图生成；提交后由系统再次安排只读审核。
 
 ## 提交失败处理
 
@@ -71,9 +86,9 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
 - 不得在同一轮里新建 generation 试图绕过失败。
 - 遇到 `COMMIT_IN_PROGRESS` 时，只能回复：`提交仍被后端任务占用，请稍后重试或重新开始分镜表生成。`
 
-## StoryboardTableRow 契约
+## StoryboardTableRow 写入契约
 
-每条分镜必须完整符合以下字段：
+每条分镜必须通过工具写入完整 `StoryboardTableRow`。字段含义、填写边界和质量规则不在本执行层展开，统一遵守 `storyboard_table_techniques`。
 
 ```ts
 {
@@ -131,89 +146,6 @@ description: 阶段4执行规则：读取剧本、导演规划和资产，激活
   }>;
 }
 ```
-
-## 字段口径
-
-| 创作含义 | 结构字段 |
-|---|---|
-| 画面描述 | `picture` |
-| 场景 | `location` |
-| 时长 | `durationSec` |
-| 景别 | `shotSize` |
-| 运镜 | `cameraMove` |
-| 全局动作概述 | `action` |
-| 角色动作 | `characters[].action` |
-| 朝向 | `characters[].orientation` |
-| 空间关系 | `characters[].spatialPosition` |
-| 可见情绪 | `visibleEmotion` |
-| 台词 | `dialogue` |
-| 音效 | `soundEffects` |
-| 关联资产 | `requiredAssets` |
-
-## `visibleEmotion` 字段边界
-
-`visibleEmotion` 不是剧情解读栏，也不是关系变化栏。它只写当前这一帧画面中能直接看见的情绪表现。
-
-必须写：
-
-- 面部：嘴角、眉眼、眼眶、咬唇、绷脸、低头、回避视线等。
-- 身体：肩背、手部、呼吸、站姿、停顿、步伐、僵住、后退等。
-- 语气出口：哽住、压低、急促、停顿、吞字等。
-
-禁止写：
-
-- “从 A 到 B 的情绪转换”“形成反差”“关系破裂”“内心复杂”“沉默但不说”等剧情解释。
-- “安静——累了但不停”“王姨温和——和之前的大嗓门形成反差”这类带破折号的概括句。
-- 台词内容、事件因果、人物心理判断。
-
-示例：
-
-- 不合格：`安静——从嘈杂到空旷的情绪转换`
-- 合格：`脚步放慢，肩背松垮，视线落在空摊位上`
-- 不合格：`王姨认真关心；林若溪沉默——被戳中但不说`
-- 合格：`王姨身体前倾、眉心收紧；林若溪垂眼，嘴唇抿住`
-
-## `scriptPlan` 到分镜字段映射
-
-写入每条分镜前，必须先对齐导演规划：
-
-| 导演规划字段 | 分镜字段 |
-|---|---|
-| 表演出口 | `characters[].action`、`characters[].expression/gaze/handAction/posture/movement`、`visibleEmotion` |
-| 空间关系 | `characters[].spatialPosition`、`characters[].orientation` |
-| 镜头距离策略 | `shotSize`、`cameraMove`、`cameraAngle` |
-| 连续性锚点 | `location`、`timeOfDay`、`sceneContinuityId`、`picture`、`requiredAssets` |
-| 环境声 | `soundEffects` |
-
-不得把导演规划整段复制进 `picture` 或 `action`。分镜表要把导演规划拆成可拍摄的单镜事实。
-
-## `requiredAssets` 口径
-
-`requiredAssets` 不是“镜头主体列表”，而是画面生成需要保持一致的全部可辨识参考资产：
-
-- 主体资产：镜头主要拍摄的角色、场景、道具或片段。
-- 必要场景资产：画面所在空间可辨识时必须引用对应场景资产；有匹配场景衍生状态时优先引用衍生资产。
-- 可辨识背景资产：背景里能看清的角色、场景区域、道具、衍生状态需要引用。
-- 可辨识交互资产：角色手持、佩戴、触碰、遮挡、操作的道具或角色必须引用。
-
-边界：
-
-- 完全不可辨识的远景、模糊人群、抽象背景纹理、临时杂物不强制引用。
-- assets 中不存在的对象不能编造 `assetId`；可以作为剧本事实写入 `picture` 或 `action`，但不能进入 `requiredAssets`。
-- 同一父资产在单条分镜中不要同时引用父资产和匹配衍生资产；画面需要衍生状态时用衍生资产。
-- `requiredAssets.order` 从 0 开始，主体资产优先，其次场景/背景/交互资产；同类镜头尽量保持稳定顺序。
-
-## 分组硬规则
-
-- `groupKey` 是机器 ID，必须使用 ASCII 稳定格式：`G01`、`G02`、`G03`……按分镜组顺序从 1 开始两位补零递增。
-- 禁止把中文标题、动作词、事件名或分组名写入 `groupKey`；例如不得写 `围剿`、`反击`、`钩子`。
-- `groupName` 才能写中文事件名或展示名；例如 `groupKey: "G01", groupName: "围剿"`。
-- 分镜组是一次视频生成单元，不是场次。
-- 单个场次可以拆成多个分镜组。
-- 每组 `storyboardIndexes` 必须连续递增。
-- 每组 `durationSec` 总和必须小于等于后端注入的项目默认视频模型最大支持时长。
-- 跨场景、跨时间、跨连续事件目标或跨戏剧功能时必须新建分镜组。
-- `storyboardIndexes` 必须完整覆盖全部分镜，不能重复或缺失。
 
 ## 阶段禁止项
 

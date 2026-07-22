@@ -31,6 +31,16 @@ export default router.post(
     await u.db("o_script").where("projectId", id).delete();
     // 删除项目下的任务
     await u.db("o_tasks").where("projectId", id).delete();
+    await u.db("o_musicCueBinding").where("projectId", id).delete();
+    await u.db("o_musicPromptVersion").where("projectId", id).delete();
+    await u.db("o_musicLyricsVersion").where("projectId", id).delete();
+    await u.db("o_musicLibraryVersion").where("projectId", id).delete();
+    await u.db("o_musicLibraryEdition").where("projectId", id).delete();
+    await u.db("o_musicLibraryItem").where("projectId", id).delete();
+    await u.db("o_musicCueAsset").where("projectId", id).delete();
+    await u.db("o_musicCue").where("projectId", id).delete();
+    await u.db("o_musicPlan").where("projectId", id).delete();
+    await u.db("o_musicBible").where("projectId", id).delete();
     // 删除项目下的分镜
     const storyboardData = await u.db("o_storyboard").where("projectId", id).select("id");
     const storyboardIds = storyboardData.map((item: any) => item.id);

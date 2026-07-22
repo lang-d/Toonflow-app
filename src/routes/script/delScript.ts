@@ -33,6 +33,14 @@ export default router.post(
       await u.db("o_assets2Storyboard").whereIn("storyboardId", storyboardIds).delete();
     }
     await u.db("o_scriptAssets").whereIn("scriptId", ids).delete();
+    const cueIds = (await u.db("o_musicCue").whereIn("scriptId", ids).select("id")).map((row) => Number(row.id));
+    if (cueIds.length) {
+      await u.db("o_musicCueBinding").whereIn("cueId", cueIds).delete();
+      await u.db("o_musicPromptVersion").whereIn("cueId", cueIds).delete();
+      await u.db("o_musicCueAsset").whereIn("cueId", cueIds).delete();
+      await u.db("o_musicCue").whereIn("id", cueIds).delete();
+    }
+    await u.db("o_musicPlan").whereIn("scriptId", ids).delete();
     await u.db("o_script").whereIn("id", ids).delete();
     await u.db("o_storyboard").whereIn("scriptId", ids).delete();
     await u.db("o_video").whereIn("scriptId", ids).delete();

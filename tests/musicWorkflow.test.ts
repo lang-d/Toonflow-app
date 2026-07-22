@@ -13,31 +13,56 @@ let vendorModelSchema: any;
 let readMusicSkill: any;
 let formatUnifiedTaskEnvelope: typeof import("../src/services/taskCoordinator").formatUnifiedTaskEnvelope;
 let isAiObjectContractError: typeof import("../src/services/aiJsonObject").isAiObjectContractError;
-let musicProjectIsolationKey: typeof import("../src/services/musicStageState").musicProjectIsolationKey;
-let musicEpisodeIsolationKey: typeof import("../src/services/musicStageState").musicEpisodeIsolationKey;
-let resolveMusicIsolationKey: typeof import("../src/services/musicStageState").resolveMusicIsolationKey;
+let musicProjectIsolationKey: typeof import("../src/services/musicScope").musicProjectIsolationKey;
+let musicEpisodeIsolationKey: typeof import("../src/services/musicScope").musicEpisodeIsolationKey;
+let resolveMusicIsolationKey: typeof import("../src/services/musicScope").resolveMusicIsolationKey;
 let musicProductionToolNames: typeof import("../src/agents/musicProductionAgent/tools").musicProductionToolNames;
 let musicAiContractFailureMessage: typeof import("../src/services/musicTaskHandlers").musicAiContractFailureMessage;
+let resolveMusicGenerationDuration: typeof import("../src/services/musicModelCapability").resolveMusicGenerationDuration;
+let validateMusicGenerationConfig: typeof import("../src/services/musicModelCapability").validateMusicGenerationConfig;
+let assertMusicPromptGenerationAllowed: typeof import("../src/services/musicAsset").assertMusicPromptGenerationAllowed;
+let parseMusicModelProfile: typeof import("../src/services/musicPromptProfile").parseMusicModelProfile;
+let assertMusicProfileGenerationConfig: typeof import("../src/services/musicPromptProfile").assertMusicProfileGenerationConfig;
+let missingMusicProfileGenerationConfig: typeof import("../src/services/musicPromptProfile").missingMusicProfileGenerationConfig;
+let MusicPromptConfigValidationError: typeof import("../src/services/musicPromptProfile").MusicPromptConfigValidationError;
+let mergeMusicPromptGenerationConfig: typeof import("../src/services/musicLibrary").mergeMusicPromptGenerationConfig;
+let musicReviewIssueSchema: typeof import("../src/services/musicReviewer").musicReviewIssueSchema;
+let parseMusicModelKey: typeof import("../src/services/musicModelCapability").parseMusicModelKey;
 
 before(async () => {
-  const [vendorModel, musicDirector, taskCoordinator, aiJsonObject, musicStageState, musicTools, musicTaskHandlers] = await Promise.all([
+  const [vendorModel, musicDirector, taskCoordinator, aiJsonObject, musicScope, musicTools, musicTaskHandlers, musicCapabilities, musicAsset, musicPromptProfile, musicLibrary, musicReviewer] = await Promise.all([
     import("../src/lib/vendorModelSchema"),
     import("../src/services/musicDirector"),
     import("../src/services/taskCoordinator"),
     import("../src/services/aiJsonObject"),
-    import("../src/services/musicStageState"),
+    import("../src/services/musicScope"),
     import("../src/agents/musicProductionAgent/tools"),
     import("../src/services/musicTaskHandlers"),
+    import("../src/services/musicModelCapability"),
+    import("../src/services/musicAsset"),
+    import("../src/services/musicPromptProfile"),
+    import("../src/services/musicLibrary"),
+    import("../src/services/musicReviewer"),
   ]);
   vendorModelSchema = vendorModel.vendorModelSchema;
   readMusicSkill = musicDirector.readMusicSkill;
   formatUnifiedTaskEnvelope = taskCoordinator.formatUnifiedTaskEnvelope;
   isAiObjectContractError = aiJsonObject.isAiObjectContractError;
-  musicProjectIsolationKey = musicStageState.musicProjectIsolationKey;
-  musicEpisodeIsolationKey = musicStageState.musicEpisodeIsolationKey;
-  resolveMusicIsolationKey = musicStageState.resolveMusicIsolationKey;
+  musicProjectIsolationKey = musicScope.musicProjectIsolationKey;
+  musicEpisodeIsolationKey = musicScope.musicEpisodeIsolationKey;
+  resolveMusicIsolationKey = musicScope.resolveMusicIsolationKey;
   musicProductionToolNames = musicTools.musicProductionToolNames;
   musicAiContractFailureMessage = musicTaskHandlers.musicAiContractFailureMessage;
+  resolveMusicGenerationDuration = musicCapabilities.resolveMusicGenerationDuration;
+  validateMusicGenerationConfig = musicCapabilities.validateMusicGenerationConfig;
+  parseMusicModelKey = musicCapabilities.parseMusicModelKey;
+  assertMusicPromptGenerationAllowed = musicAsset.assertMusicPromptGenerationAllowed;
+  parseMusicModelProfile = musicPromptProfile.parseMusicModelProfile;
+  assertMusicProfileGenerationConfig = musicPromptProfile.assertMusicProfileGenerationConfig;
+  missingMusicProfileGenerationConfig = musicPromptProfile.missingMusicProfileGenerationConfig;
+  MusicPromptConfigValidationError = musicPromptProfile.MusicPromptConfigValidationError;
+  mergeMusicPromptGenerationConfig = musicLibrary.mergeMusicPromptGenerationConfig;
+  musicReviewIssueSchema = musicReviewer.musicReviewIssueSchema;
 });
 
 after(async () => {
@@ -56,6 +81,11 @@ test("vendor model schema accepts music models without provider-specific hardcod
 
   assert.equal(result.type, "music");
   assert.equal(result.promptDialect, "sectioned");
+});
+
+test("music model display names are rejected before model-specific work is queued", () => {
+  assert.deepEqual(parseMusicModelKey("t8star:chirp-fenix"), { vendorId: "t8star", modelName: "chirp-fenix" });
+  assert.throws(() => parseMusicModelKey("Suno V5.5"), /display names are not executable/);
 });
 
 test("music skill loader reads bundled defaults and falls back when missing", async () => {
@@ -96,6 +126,8 @@ test("task polling contracts accept only string task ids", () => {
   assert.doesNotMatch(snapshotRoute, /z\.union\(\[z\.string\(\),\s*z\.number\(\)\]\)/);
   assert.match(detailsRoute, /taskId:\s*z\.string\(\)\.min\(1\)/);
   assert.doesNotMatch(detailsRoute, /orWhere\("id"/);
+  assert.match(snapshotRoute, /targetTypes:\s*z\.array/);
+  assert.match(snapshotRoute, /includeTerminal:\s*z\.boolean/);
 });
 
 test("music production agent uses project and episode isolation keys", () => {
@@ -125,6 +157,247 @@ test("music production agent exposes only music tools", () => {
   );
   assert.ok(musicProductionToolNames.includes("generate_music_bible"));
   assert.ok(musicProductionToolNames.includes("generate_music_cue_audio"));
+  assert.ok(musicProductionToolNames.includes("list_music_library"));
+  assert.ok(musicProductionToolNames.includes("generate_music_lyrics_draft"));
+  assert.ok(musicProductionToolNames.includes("trim_music_library_audio"));
+  assert.ok(musicProductionToolNames.includes("list_available_music_models"));
+  assert.ok(musicProductionToolNames.includes("compile_generic_music_prompt"));
+  assert.ok(musicProductionToolNames.includes("compile_model_music_prompt"));
+  assert.ok(musicProductionToolNames.includes("update_agent_progress"));
+  assert.equal((musicProductionToolNames as readonly string[]).includes("get_music_stage_state"), false);
+});
+
+test("music duration keeps an effective cue shorter than the model master", () => {
+  assert.deepEqual(resolveMusicGenerationDuration({ effectiveMusicDurationSec: 22, capabilities: { durationRange: { min: 30, max: 360 } } }), {
+    effectiveMusicDurationSec: 22,
+    generationDurationSec: 30,
+    hasSilentTail: true,
+    durationControl: "exact",
+    durationRange: { min: 30, max: 360 },
+  });
+  assert.throws(
+    () => resolveMusicGenerationDuration({ effectiveMusicDurationSec: 400, capabilities: { durationRange: { min: 30, max: 360 } } }),
+    /360/,
+  );
+});
+
+test("target-only music duration preserves the cue target without promising provider precision", () => {
+  assert.deepEqual(resolveMusicGenerationDuration({
+    effectiveMusicDurationSec: 22,
+    capabilities: { durationRange: { max: 480 }, durationControl: "targetOnly" },
+  }), {
+    effectiveMusicDurationSec: 22,
+    generationDurationSec: 22,
+    hasSilentTail: false,
+    durationControl: "targetOnly",
+    durationRange: { min: undefined, max: 480 },
+  });
+  const compiler = fs.readFileSync(path.join(process.cwd(), "src", "services", "musicCueCompiler.ts"), "utf8");
+  assert.match(compiler, /provider does not support exact duration control/);
+});
+
+test("music generation enforces exact prompt review status", () => {
+  assert.doesNotThrow(() => assertMusicPromptGenerationAllowed("passed"));
+  assert.throws(() => assertMusicPromptGenerationAllowed("warning"), /acknowledgeWarnings/);
+  assert.doesNotThrow(() => assertMusicPromptGenerationAllowed("warning", true));
+  assert.throws(() => assertMusicPromptGenerationAllowed("blocked"), /must pass review/);
+  assert.throws(() => assertMusicPromptGenerationAllowed("unreviewed"), /must pass review/);
+});
+
+test("music generation config cannot bypass dynamic model capabilities", () => {
+  const capabilities = {
+    model: "test:model",
+    name: "Test",
+    durationRange: { min: 30, max: 60 },
+    outputFormats: ["mp3"],
+    vocal: false as const,
+    lyrics: false as const,
+    referenceAudio: false as const,
+    loop: false as const,
+  };
+  assert.equal(validateMusicGenerationConfig(capabilities, { durationSec: 30, outputFormat: "mp3" }, { vocalMode: "instrumental" }).durationSec, 30);
+  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 29 }, { vocalMode: "instrumental" }), /shorter/);
+  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 61 }, { vocalMode: "instrumental" }), /exceed/);
+  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 30, outputFormat: "wav" }, { vocalMode: "instrumental" }), /format/);
+  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 30, referenceList: [{}] }, { vocalMode: "instrumental" }), /reference audio/);
+  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 30, loop: true }, { vocalMode: "instrumental" }), /loop/);
+  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 30 }, { vocalMode: "vocal", lyrics: "text" }));
+});
+
+test("music Prompt Profile owns required generationConfig fields without vendor hardcoding", () => {
+  const profile = parseMusicModelProfile([
+    "---",
+    "requiredGenerationConfig: [title, tags]",
+    "---",
+    "# Test Profile",
+  ].join("\n"), "test:profile");
+  assert.deepEqual(profile.requiredGenerationConfig, ["title", "tags"]);
+  assert.deepEqual(missingMusicProfileGenerationConfig(profile, { title: "Take" }), ["tags"]);
+  assert.throws(
+    () => assertMusicProfileGenerationConfig(profile, { title: "Take" }),
+    (error: unknown) => error instanceof MusicPromptConfigValidationError
+      && error.code === "MUSIC_PROMPT_CONFIG_INVALID"
+      && error.missingRequiredConfigKeys.join(",") === "tags",
+  );
+  assert.doesNotThrow(() => assertMusicProfileGenerationConfig(profile, { title: "Take", tags: "piano, minimal" }));
+  assert.deepEqual(parseMusicModelProfile("# Plain Profile", "test:plain").requiredGenerationConfig, []);
+});
+
+test("same-model Prompt revisions retain profile configuration while model changes do not", () => {
+  const base = {
+    promptMode: "modelSpecific",
+    model: "vendor:model-a",
+    profileSource: "builtin:music/model-a.md",
+    generationConfigJson: JSON.stringify({ title: "Original take", tags: "piano, minimal", durationSec: 60 }),
+  };
+  assert.deepEqual(
+    mergeMusicPromptGenerationConfig({
+      base,
+      promptMode: "modelSpecific",
+      model: "vendor:model-a",
+      profileSource: "builtin:music/model-a.md",
+      submittedConfig: { durationSec: 90 },
+    }),
+    { title: "Original take", tags: "piano, minimal", durationSec: 90 },
+  );
+  assert.deepEqual(
+    mergeMusicPromptGenerationConfig({
+      base,
+      promptMode: "modelSpecific",
+      model: "vendor:model-b",
+      profileSource: "builtin:music/model-b.md",
+      submittedConfig: { durationSec: 90 },
+    }),
+    { durationSec: 90 },
+  );
+});
+
+test("blocking music review output requires model-supplied reason and proposed action", () => {
+  assert.equal(musicReviewIssueSchema.safeParse({
+    issueType: "missing_config",
+    severity: "blocking",
+    message: "Missing required config",
+    reason: "",
+    proposedAction: "",
+  }).success, false);
+  assert.equal(musicReviewIssueSchema.safeParse({
+    issueType: "missing_config",
+    severity: "blocking",
+    message: "Missing required config",
+    reason: "The selected Profile requires this field.",
+    proposedAction: "Recompile the exact model Prompt.",
+  }).success, true);
+});
+
+test("music skills separate project works, episode usage segments and exact prompt versions", () => {
+  const skillsRoot = path.join(process.cwd(), "data", "skills");
+  const plan = fs.readFileSync(path.join(skillsRoot, "music_plan_technique.md"), "utf8");
+  const agent = fs.readFileSync(path.join(skillsRoot, "music_production_agent.md"), "utf8");
+  const prompt = fs.readFileSync(path.join(skillsRoot, "music_prompt_compiler_technique.md"), "utf8");
+  assert.match(plan, /Concept mode:[\s\S]*libraryItems must be empty and cues must be empty/);
+  assert.match(plan, /Project mode:[\s\S]*cues must be empty/);
+  assert.match(plan, /Episode mode:[\s\S]*reuse, new, or silence/);
+  assert.match(plan, /Do not split by shot|number of shots/);
+  assert.match(agent, /Jianying/);
+  assert.match(agent, /Theme, opening, ending, and insert songs are opt-in/);
+  assert.match(prompt, /immutable prompt version/);
+  assert.ok(fs.existsSync(path.join(skillsRoot, "music_song_creation_technique.md")));
+  assert.ok(fs.existsSync(path.join(skillsRoot, "music_lyrics_technique.md")));
+});
+
+test("music schema, portable project and packaged trim dependencies cover the library hierarchy", () => {
+  const initSource = fs.readFileSync(path.join(process.cwd(), "src", "lib", "initDB.ts"), "utf8");
+  const portableSource = fs.readFileSync(path.join(process.cwd(), "src", "services", "projectPortable.ts"), "utf8");
+  const builder = fs.readFileSync(path.join(process.cwd(), "electron-builder.yml"), "utf8");
+  const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
+  for (const table of ["o_musicLibraryItem", "o_musicLibraryEdition", "o_musicLibraryVersion", "o_musicLyricsVersion", "o_musicPromptVersion", "o_musicCueBinding"]) {
+    assert.match(initSource, new RegExp(table));
+    assert.match(portableSource, new RegExp(table));
+  }
+  assert.match(initSource, /promptMode/);
+  assert.match(initSource, /profileSource/);
+  assert.equal(pkg.dependencies["ffmpeg-static"], "5.3.0");
+  assert.equal(pkg.dependencies["ffprobe-static"], "3.1.0");
+  assert.match(builder, /ffmpeg-static/);
+  assert.match(builder, /ffprobe-static/);
+});
+
+test("Suno profile and technique are model-specific while the default binding preserves user overrides", () => {
+  const profile = path.join(process.cwd(), "data", "modelPrompt", "music", "suno-v55.md");
+  const technique = path.join(process.cwd(), "data", "skills", "music_suno_v55_prompt_technique.md");
+  const bindingSource = fs.readFileSync(path.join(process.cwd(), "src", "lib", "dbFixes", "vendorConfigFixes.ts"), "utf8");
+  const profileSource = fs.readFileSync(path.join(process.cwd(), "src", "services", "musicPromptProfile.ts"), "utf8");
+  const compilerSource = fs.readFileSync(path.join(process.cwd(), "src", "services", "musicCueCompiler.ts"), "utf8");
+  const reviewerSource = fs.readFileSync(path.join(process.cwd(), "src", "services", "musicReviewer.ts"), "utf8");
+  assert.equal(fs.existsSync(profile), true);
+  assert.equal(fs.existsSync(technique), true);
+  assert.match(bindingSource, /vendorId:\s*"t8star"/);
+  assert.match(bindingSource, /model:\s*"chirp-fenix"/);
+  assert.match(bindingSource, /fileName:\s*"suno-v55\.md"/);
+  assert.match(bindingSource, /existing\.fileName === "t8star-suno-v55\.md"/);
+  assert.match(profileSource, /readBuiltinDataFile\("modelPrompt"/);
+  assert.match(profileSource, /modelTechnique/);
+  assert.match(profileSource, /requiredGenerationConfig/);
+  assert.match(profileSource, /readConfiguredSkill\(profile\.modelTechnique\)/);
+  assert.match(compilerSource, /readMusicModelTechnique\(profile\)/);
+  assert.match(reviewerSource, /readMusicModelTechnique\(profile\)/);
+  assert.match(fs.readFileSync(profile, "utf8"), /modelTechnique:\s*music_suno_v55_prompt_technique\.md/);
+  assert.match(fs.readFileSync(profile, "utf8"), /requiredGenerationConfig:\s*\[title, tags\]/);
+  assert.doesNotMatch(fs.readFileSync(profile, "utf8"), /T8Star|https?:\/\/|Bearer|\/suno\//i);
+  assert.doesNotMatch(fs.readFileSync(technique, "utf8"), /T8Star|https?:\/\/|Bearer|\/suno\//i);
+  assert.match(fs.readFileSync(profile, "utf8"), /do not write lyrics or imply a human utterance/i);
+  assert.match(fs.readFileSync(technique, "utf8"), /without a human utterance/i);
+  assert.match(fs.readFileSync(technique, "utf8"), /blocked speech -> broken rhythm, short motifs, rests/i);
+  assert.match(fs.readFileSync(technique, "utf8"), /Inputs And Priority/);
+  assert.match(fs.readFileSync(technique, "utf8"), /Output Contract/);
+  assert.match(fs.readFileSync(technique, "utf8"), /Instrumental Path/);
+  assert.match(fs.readFileSync(technique, "utf8"), /Vocal Path/);
+  assert.match(fs.readFileSync(technique, "utf8"), /Instrumental self-check/);
+  assert.match(fs.readFileSync(technique, "utf8"), /Vocal self-check/);
+  assert.match(fs.readFileSync(technique, "utf8"), /Core motif/);
+  assert.match(fs.readFileSync(technique, "utf8"), /Role map/);
+  assert.match(fs.readFileSync(technique, "utf8"), /Listening arc/);
+  assert.match(fs.readFileSync(technique, "utf8"), /never note names, a chord chart, bar counts, or MIDI data/i);
+  assert.match(fs.readFileSync(technique, "utf8"), /Do not claim timestamps, exact section lengths, tempo maps, beat counts/i);
+  assert.match(fs.readFileSync(technique, "utf8"), /every instrument role are musical functions/i);
+  assert.match(fs.readFileSync(profile, "utf8"), /motif gesture,[\s\S]*main instrument-role/i);
+  const review = fs.readFileSync(path.join(process.cwd(), "data", "skills", "music_review.md"), "utf8");
+  assert.match(review, /instrumental work[\s\S]*blocking mode conflict/i);
+  assert.match(review, /decorative instrument pile/i);
+  assert.match(review, /conflicting role assignments/i);
+  assert.match(review, /abstract emotion pile/i);
+  assert.match(review, /lacks an audible entry and close relationship/i);
+  assert.match(review, /A motif need not be written as notes, tempo, or fixed sections/i);
+  assert.match(review, /Review output contains only actual issues/);
+  assert.match(review, /Every blocking issue must include a non-empty reason/);
+  assert.match(reviewerSource, /musicReviewIssueSchema/);
+  assert.match(reviewerSource, /Blocking review issues require a reason/);
+  const genericTechnique = fs.readFileSync(path.join(process.cwd(), "data", "skills", "music_prompt_compiler_technique.md"), "utf8");
+  assert.match(genericTechnique, /selected model Profile and Technique own field names/);
+  assert.doesNotMatch(genericTechnique, /Instrumental self-check/);
+});
+
+test("music model Profile exposes model technique metadata without sending it to the compiler", () => {
+  const rawProfile = fs.readFileSync(path.join(process.cwd(), "data", "modelPrompt", "music", "suno-v55.md"), "utf8");
+  const profile = parseMusicModelProfile(rawProfile, "test:suno-v55");
+  assert.equal(profile.modelTechnique, "music_suno_v55_prompt_technique.md");
+  assert.deepEqual(profile.requiredGenerationConfig, ["title", "tags"]);
+  assert.doesNotMatch(profile.content, /^---/);
+  assert.doesNotMatch(profile.content, /modelTechnique:/);
+  assert.match(profile.content, /Suno V5\.5 Prompt Profile/);
+  assert.equal(parseMusicModelProfile("# Plain Profile", "test:plain").modelTechnique, null);
+});
+
+test("music Prompt save routes expose only structural missing-key errors", () => {
+  for (const route of [
+    path.join(process.cwd(), "src", "routes", "production", "music", "cue", "prompt", "save.ts"),
+    path.join(process.cwd(), "src", "routes", "production", "music", "library", "prompt", "save.ts"),
+  ]) {
+    const source = fs.readFileSync(route, "utf8");
+    assert.match(source, /MusicPromptConfigValidationError/);
+    assert.match(source, /missingRequiredConfigKeys/);
+    assert.doesNotMatch(source, /proposedAction|reason:/);
+  }
 });
 
 test("music production agent has its own model deployment key", () => {
@@ -149,4 +422,6 @@ test("unified task worker renews leases and wraps long music tasks with timeout"
   assert.match(workerSource, /renewUnifiedTaskLease\(Number\(task\.id\), TASK_LEASE_MS\)/);
   assert.match(workerSource, /runTaskHandlerWithTimeout\(task, handler\(payload, task\)\)/);
   assert.match(workerSource, /handler\.startsWith\("music-"\)/);
+  assert.match(workerSource, /"music-library-generate"/);
+  assert.match(workerSource, /"music-audio-trim"/);
 });

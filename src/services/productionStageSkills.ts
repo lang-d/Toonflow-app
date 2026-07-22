@@ -18,7 +18,8 @@ export type ProductionStage =
   | "storyboardPanel"
   | "storyboardGenerate"
   | "supervisionDirectorPlan"
-  | "supervisionStoryboardTable";
+  | "supervisionStoryboardTable"
+  | "supervisionStoryboardPanel";
 
 type SkillSpec =
   | { source: "manual"; kind: ManualKind; file: string; name: string }
@@ -37,17 +38,26 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
       { source: "manual", kind: "visual", file: "driector_skills/director_planning_style.md", name: "director_planning_style" },
       { source: "manual", kind: "director", file: "driector_skills/director_planning_narrative.md", name: "director_planning_narrative" },
     ],
-    tools: ["get_flowData", "begin_director_plan", "append_director_plan_section", "commit_director_plan"],
+    tools: [
+      "get_flowData",
+      "update_agent_progress",
+      "await_user_decision",
+      "list_director_plan_generations",
+      "read_director_plan_generation",
+      "begin_director_plan",
+      "append_director_plan_section",
+      "commit_director_plan",
+    ],
   },
   deriveAssets: {
     workflow: "production_execution_derive_assets.md",
     skills: [],
-    tools: ["get_flowData", "add_deriveAsset"],
+    tools: ["get_flowData", "update_agent_progress", "await_user_decision", "add_deriveAsset"],
   },
   generateAssets: {
     workflow: "production_execution_generate_assets.md",
     skills: [],
-    tools: ["get_flowData", "generate_deriveAsset"],
+    tools: ["get_flowData", "update_agent_progress", "await_user_decision", "generate_deriveAsset"],
   },
   storyboardTable: {
     workflow: "production_execution_storyboard_table.md",
@@ -62,11 +72,18 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
     ],
     tools: [
       "get_flowData",
+      "update_agent_progress",
+      "await_user_decision",
+      "list_storyboard_generations",
+      "read_storyboard_generation",
+      "list_production_reviews",
+      "read_production_review",
+      "read_text_asset",
       "get_storyboard_generation_draft",
+      "prepare_storyboard_table",
       "begin_storyboard_table",
       "append_storyboard_rows",
       "commit_storyboard_table",
-      "await_user_decision",
     ],
   },
   storyboardPanel: {
@@ -74,12 +91,22 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
     skills: [
       { source: "configured", file: "production_skills/storyboard_prompt_techniques.md", name: "storyboard_prompt_techniques" },
     ],
-    tools: ["get_flowData", "update_storyboard_panel_v2"],
+    tools: [
+      "get_flowData",
+      "update_agent_progress",
+      "await_user_decision",
+      "list_storyboard_generations",
+      "read_storyboard_generation",
+      "list_production_reviews",
+      "read_production_review",
+      "read_text_asset",
+      "update_storyboard_panel_v2",
+    ],
   },
   storyboardGenerate: {
     workflow: "production_execution_storyboard_gen.md",
     skills: [],
-    tools: ["get_flowData", "generate_storyboard"],
+    tools: ["get_flowData", "update_agent_progress", "await_user_decision", "generate_storyboard"],
   },
   supervisionDirectorPlan: {
     workflow: "production_agent_supervision.md",
@@ -87,7 +114,15 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
       { source: "manual", kind: "visual", file: "driector_skills/director_planning_style.md", name: "director_planning_style" },
       { source: "manual", kind: "director", file: "driector_skills/director_planning_narrative.md", name: "director_planning_narrative" },
     ],
-    tools: ["get_flowData", "get_director_plan_asset"],
+    tools: [
+      "get_flowData",
+      "update_agent_progress",
+      "await_user_decision",
+      "list_director_plan_generations",
+      "read_director_plan_generation",
+      "get_director_plan_asset",
+      "read_text_asset",
+    ],
   },
   supervisionStoryboardTable: {
     workflow: "production_agent_supervision.md",
@@ -100,7 +135,33 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
         name: "director_storyboard_table_narrative",
       },
     ],
-    tools: ["get_flowData"],
+    tools: [
+      "get_flowData",
+      "update_agent_progress",
+      "await_user_decision",
+      "list_storyboard_generations",
+      "read_storyboard_generation",
+      "list_production_reviews",
+      "read_production_review",
+      "read_text_asset",
+      "record_storyboard_table_review",
+    ],
+  },
+  supervisionStoryboardPanel: {
+    workflow: "production_agent_supervision.md",
+    skills: [
+      { source: "configured", file: "production_skills/storyboard_prompt_techniques.md", name: "storyboard_prompt_techniques" },
+    ],
+    tools: [
+      "get_flowData",
+      "update_agent_progress",
+      "await_user_decision",
+      "list_storyboard_generations",
+      "read_storyboard_generation",
+      "list_production_reviews",
+      "read_production_review",
+      "read_text_asset",
+    ],
   },
 };
 
@@ -165,6 +226,9 @@ export async function loadProductionStage(input: {
 }
 
 export function productionSupervisionStage(prompt: string): ProductionStage {
+  if (/(分镜面板|图片提示词|分镜图提示词|storyboard\s*panel|panel\s*prompt)/i.test(prompt)) {
+    return "supervisionStoryboardPanel";
+  }
   return /(分镜表|审核分镜|review storyboard)/i.test(prompt)
     ? "supervisionStoryboardTable"
     : "supervisionDirectorPlan";

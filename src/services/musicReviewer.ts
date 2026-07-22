@@ -7,21 +7,30 @@ import {
   ProductionReviewTargetType,
   upsertReviewSuggestion,
 } from "@/services/productionReview";
-import { resolveMusicPromptProfile } from "@/services/musicCueCompiler";
+import { readMusicModelTechnique, resolveMusicPromptProfile } from "@/services/musicPromptProfile";
+import { getMusicLibraryEdition, getMusicPromptVersion } from "@/services/musicLibrary";
 
-const reviewIssueSchema = z.object({
-  issueType: z.string(),
+export const musicReviewIssueSchema = z.object({
+  issueType: z.string().min(1),
   severity: z.enum(["info", "warning", "blocking"]).default("warning"),
-  message: z.string(),
+  message: z.string().min(1),
   reason: z.string().optional().default(""),
   proposedAction: z.string().optional().default(""),
+}).superRefine((issue, context) => {
+  if (issue.severity !== "blocking") return;
+  if (!issue.reason.trim()) {
+    context.addIssue({ code: "custom", path: ["reason"], message: "Blocking review issues require a reason" });
+  }
+  if (!issue.proposedAction.trim()) {
+    context.addIssue({ code: "custom", path: ["proposedAction"], message: "Blocking review issues require a proposed action" });
+  }
 });
 
 const reviewSchema = z.object({
-  issues: z.array(reviewIssueSchema).default([]),
+  issues: z.array(musicReviewIssueSchema).default([]),
 });
 
-type ReviewIssue = z.infer<typeof reviewIssueSchema>;
+type ReviewIssue = z.infer<typeof musicReviewIssueSchema>;
 
 function textTooGeneric(text: string) {
   const value = String(text || "").trim();
@@ -118,7 +127,8 @@ export async function reviewMusicPlan(input: { projectId: number; planId: number
   const bible = await u.db("o_musicBible").where({ projectId: input.projectId, id: plan.bibleId }).first();
   const skill = await readMusicSkill("music_review.md", "Review music bible, music plan and music prompt quality.");
   const localIssues: ReviewIssue[] = [];
-  if (!cues.length) {
+  const libraryPlan = parseJsonValue<any[]>(plan.libraryPlanJson, []);
+  if (plan.mode === "episode" && !cues.length) {
     localIssues.push({
       issueType: "music_plan_missing_cues",
       severity: "blocking",
@@ -127,7 +137,34 @@ export async function reviewMusicPlan(input: { projectId: number; planId: number
       proposedAction: "Regenerate the plan with a cue sheet.",
     });
   }
-  if (cues.length > 0) {
+  if (plan.mode !== "episode" && cues.length > 0) {
+    localIssues.push({
+      issueType: "music_plan_scope_leak",
+      severity: "blocking",
+      message: "Project or concept planning unexpectedly created episode cue records.",
+      reason: "Project planning defines reusable works and editions; episode planning defines semantic usage segments.",
+      proposedAction: "Regenerate in the correct mode and keep cue creation in episode scope.",
+    });
+  }
+  if (plan.mode === "project" && libraryPlan.length === 0) {
+    localIssues.push({
+      issueType: "music_library_plan_missing",
+      severity: "blocking",
+      message: "Project music planning did not produce a reusable music library plan.",
+      reason: "The project stage must define works and planned narrative editions before episode reuse decisions can be made.",
+      proposedAction: "Add a restrained set of reusable works and only the narrative editions justified by the series arc.",
+    });
+  }
+  if (plan.mode === "project" && libraryPlan.reduce((sum, item) => sum + Number(item?.editions?.length || 0), 0) > 20) {
+    localIssues.push({
+      issueType: "music_library_overplanned",
+      severity: "warning",
+      message: "The project plan contains an unusually large number of planned editions.",
+      reason: "Planning too many speculative arrangements creates work without proven episode demand.",
+      proposedAction: "Keep only editions tied to clear narrative phases and generate audio on demand.",
+    });
+  }
+  if (plan.mode === "episode" && cues.length > 0) {
     const storyboardCount = await u
       .db("o_storyboard")
       .where({ projectId: input.projectId })
@@ -163,6 +200,7 @@ export async function reviewMusicPlan(input: { projectId: number; planId: number
           }
         : null,
       plan,
+      libraryPlan,
       cues: cues.map((cue: any) => ({
         ...cue,
         startRef: parseJsonValue(cue.startRefJson, {}),
@@ -185,17 +223,26 @@ export async function reviewMusicPlan(input: { projectId: number; planId: number
 
 export async function reviewMusicPrompt(input: {
   projectId: number;
-  cueId: number;
-  model: string;
-  prompt: string;
-  compiledPromptJson?: unknown;
+  promptVersionId: number;
+  cueId?: number;
+  editionId?: number;
 }) {
-  const cue = await u.db("o_musicCue").where({ projectId: input.projectId, id: input.cueId }).first();
-  if (!cue) throw new Error("Music cue does not exist");
-  const profile = await resolveMusicPromptProfile(input.model);
+  const promptVersion = await getMusicPromptVersion(input.projectId, input.promptVersionId);
+  const cue = promptVersion.targetType === "cue"
+    ? await u.db("o_musicCue").where({ projectId: input.projectId, id: promptVersion.cueId }).first()
+    : null;
+  const edition = promptVersion.targetType === "edition"
+    ? await getMusicLibraryEdition(input.projectId, Number(promptVersion.editionId))
+    : null;
+  if (!cue && !edition) throw new Error("Music prompt target does not exist");
+  if (input.cueId != null && Number(promptVersion.cueId) !== input.cueId) throw new Error("Prompt version does not belong to this cue");
+  if (input.editionId != null && Number(promptVersion.editionId) !== input.editionId) throw new Error("Prompt version does not belong to this edition");
+  const isModelSpecific = promptVersion.promptMode === "modelSpecific";
+  const profile = isModelSpecific ? await resolveMusicPromptProfile(String(promptVersion.model)) : null;
+  const modelTechnique = profile ? await readMusicModelTechnique(profile) : null;
   const skill = await readMusicSkill("music_review.md", "Review music bible, music plan and music prompt quality.");
   const localIssues: ReviewIssue[] = [];
-  if (input.prompt.length > 1800) {
+  if (promptVersion.prompt.length > 1800) {
     localIssues.push({
       issueType: "music_prompt_too_long",
       severity: "warning",
@@ -206,35 +253,111 @@ export async function reviewMusicPrompt(input: {
   }
   const aiReview = await runAiReview({
     system: [
-      "Review only the compiled music prompt against the target model profile. Do not evaluate generated audio.",
+      isModelSpecific
+        ? "Review only the compiled music prompt against its target model profile. Do not evaluate generated audio."
+        : "Review only the provider-neutral music prompt for musical completeness and later model adaptation. Do not evaluate generated audio.",
       "Check duration, emotional arc, instrumentation, structure, vocal/lyrics mode and avoid/negative prompt.",
       skill.content,
-      "# Target Music Model Prompt Profile",
-      profile.content,
+      ...(profile ? ["# Target Music Model Prompt Profile", profile.content] : []),
+      ...(modelTechnique ? ["# Target Music Model Prompt Technique", modelTechnique.content] : []),
     ].join("\n\n"),
     payload: {
       targetType: "musicPrompt",
-      model: input.model,
-      cue: {
+      promptMode: promptVersion.promptMode,
+      model: promptVersion.model,
+      cue: cue ? {
         id: cue.id,
         cueKey: cue.cueKey,
         cueType: cue.cueType,
         title: cue.title,
         durationSec: cue.durationSec,
         musicSpec: parseJsonValue(cue.musicSpecJson, {}),
-      },
-      prompt: input.prompt,
-      compiledPromptJson: input.compiledPromptJson ?? {},
+      } : null,
+      edition: edition ? {
+        id: edition.id,
+        editionType: edition.editionType,
+        vocalMode: edition.vocalMode,
+        narrativePhase: edition.narrativePhase,
+        musicSpec: edition.musicSpec,
+      } : null,
+      prompt: promptVersion.prompt,
+      negativePrompt: promptVersion.negativePrompt,
+      generationConfig: promptVersion.generationConfig,
     },
   });
   const issues = [...localIssues, ...aiReview.issues];
   const saved = await saveIssues({
     projectId: input.projectId,
-    scriptId: cue.scriptId,
+    scriptId: cue?.scriptId ?? null,
     targetType: "musicPrompt",
-    targetId: input.cueId,
-    version: cue.planVersion,
+    targetId: Number(promptVersion.id),
+    parentId: null,
+    version: promptVersion.version,
     issues,
   });
-  return { issues, suggestions: saved };
+  const reviewStatus = issues.some((issue) => issue.severity === "blocking")
+    ? "blocked"
+    : issues.length
+      ? "warning"
+      : "passed";
+  await (u.db as any)("o_musicPromptVersion").where("id", promptVersion.id).update({ reviewStatus, updateTime: Date.now() });
+  return { promptVersionId: Number(promptVersion.id), reviewStatus, issues, suggestions: saved };
+}
+
+export async function reviewMusicLyrics(input: { projectId: number; editionId: number; lyricsVersionId: number }) {
+  const edition = await getMusicLibraryEdition(input.projectId, input.editionId);
+  const lyrics = await (u.db as any)("o_musicLyricsVersion").where({
+    projectId: input.projectId,
+    editionId: input.editionId,
+    id: input.lyricsVersionId,
+  }).first();
+  if (!lyrics) throw new Error("Lyrics version does not exist or does not belong to this edition");
+  const skill = await readMusicSkill("music_review.md", "Review music bible, music plan, lyrics and music prompt quality.");
+  const technique = await readMusicSkill("music_lyrics_technique.md", "Write singable lyrics with controlled story detail and a clear point of view.");
+  const localIssues: ReviewIssue[] = [];
+  if (!String(lyrics.content || "").trim()) {
+    localIssues.push({
+      issueType: "music_lyrics_empty",
+      severity: "blocking",
+      message: "Lyrics content is empty.",
+      reason: "A vocal generation cannot use an empty lyrics version.",
+      proposedAction: "Create or edit a complete lyrics draft before confirmation.",
+    });
+  }
+  const aiReview = await runAiReview({
+    system: [
+      "Review only the saved lyrics version. Do not rewrite it and do not evaluate generated audio.",
+      "Check point of view, singability, structure, repetition, language consistency and excessive plot exposition.",
+      technique.content,
+      skill.content,
+    ].join("\n\n"),
+    payload: {
+      targetType: "musicLyrics",
+      edition: {
+        id: edition.id,
+        title: edition.title,
+        editionType: edition.editionType,
+        vocalMode: edition.vocalMode,
+        language: edition.language,
+        narrativePhase: edition.narrativePhase,
+      },
+      lyrics: { id: lyrics.id, version: lyrics.version, title: lyrics.title, language: lyrics.language, content: lyrics.content },
+    },
+  });
+  const issues = [...localIssues, ...aiReview.issues];
+  const saved = await saveIssues({
+    projectId: input.projectId,
+    targetType: "musicLyrics",
+    targetId: Number(lyrics.id),
+    parentId: null,
+    version: lyrics.version,
+    issues,
+  });
+  const reviewStatus = issues.some((issue) => issue.severity === "blocking")
+    ? "blocked"
+    : issues.length
+      ? "warning"
+      : "passed";
+  await (u.db as any)("o_musicLyricsVersion").where("id", lyrics.id).update({ reviewStatus, updateTime: Date.now() });
+  return { lyricsVersionId: Number(lyrics.id), reviewStatus, issues, suggestions: saved };
 }

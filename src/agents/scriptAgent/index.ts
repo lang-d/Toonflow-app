@@ -1,15 +1,13 @@
 import { Socket } from "socket.io";
-import { tool, jsonSchema } from "ai";
+import { jsonSchema, tool } from "ai";
 import { z } from "zod";
 import u from "@/utils";
 import Memory from "@/utils/agent/memory";
 import useTools from "@/agents/scriptAgent/tools";
 import ResTool from "@/socket/resTool";
+import { recordAgentModelStreamFinished, type AgentRunContext } from "@/services/agentRun";
 import { readConfiguredSkill } from "@/services/skillResolver";
-import {
-  consumeFullStream as consumeAgentFullStream,
-  createAgentModelStreamScope,
-} from "@/agents/shared/streaming";
+import { consumeFullStream as consumeAgentFullStream, createAgentModelStreamScope } from "@/agents/shared/streaming";
 
 export interface AgentContext {
   socket: Socket;
@@ -19,67 +17,48 @@ export interface AgentContext {
   abortSignal?: AbortSignal;
   resTool: ResTool;
   msg: ReturnType<ResTool["newMessage"]>;
-  thinkConfig: {
-    think: boolean;
-    thinlLevel: 0 | 1 | 2 | 3;
-  };
+  thinkConfig: { think: boolean; thinlLevel: 0 | 1 | 2 | 3 };
+  runContext?: AgentRunContext | null;
 }
 
-function buildMemPrompt(mem: Awaited<ReturnType<Memory["get"]>>): string {
-  let memoryContext = "";
-  if (mem.rag.length) {
-    memoryContext += `[相关记忆]\n${mem.rag.map((r) => r.content).join("\n")}`;
-  }
-  if (mem.summaries.length) {
-    if (memoryContext) memoryContext += "\n\n";
-    memoryContext += `[历史摘要]\n${mem.summaries.map((s, i) => `${i + 1}. ${s.content}`).join("\n")}`;
-  }
-  if (mem.shortTerm.length) {
-    if (memoryContext) memoryContext += "\n\n";
-    memoryContext += `[近期对话]\n${mem.shortTerm.map((m) => `${m.role}: ${m.content}`).join("\n")}`;
-  }
-  return `## Memory\n以下是你对用户的记忆，可作为参考但不要主动提及：\n${memoryContext}`;
+function buildMemPrompt(mem: Awaited<ReturnType<Memory["get"]>>) {
+  const sections: string[] = [];
+  if (mem.rag.length) sections.push(`[相关记忆]\n${mem.rag.map((row) => row.content).join("\n")}`);
+  if (mem.summaries.length) sections.push(`[历史摘要]\n${mem.summaries.map((row, index) => `${index + 1}. ${row.content}`).join("\n")}`);
+  if (mem.shortTerm.length) sections.push(`[近期对话]\n${mem.shortTerm.map((row) => `${row.role}: ${row.content}`).join("\n")}`);
+  return `## Memory\n以下内容仅用于对话连续性，不是项目事实来源。涉及小说、工作台、剧本或审核时必须调用数据工具确认。\n${sections.join("\n\n")}`;
 }
 
 export async function runDecisionAI(ctx: AgentContext) {
-  const { isolationKey, text, userMessageTime, abortSignal, resTool } = ctx;
-  const memory = new Memory("scriptAgent", isolationKey);
-  await memory.add("user", text, { createTime: userMessageTime });
+  const memory = new Memory("scriptAgent", ctx.isolationKey);
+  await memory.add("user", ctx.text, { createTime: ctx.userMessageTime });
 
-  const prompt = (await readConfiguredSkill("script_agent_decision.md")).content;
+  const systemPrompt = (await readConfiguredSkill("script_agent_decision.md")).content;
+  const memoryPrompt = buildMemPrompt(await memory.get(ctx.text));
+  const modelStreamScope = createAgentModelStreamScope(ctx.abortSignal);
 
-  const mem = buildMemPrompt(await memory.get(text));
-
-  const projectData = await u.db("o_project").where("id", resTool.data.projectId).first();
-
-  const novelData = await u.db("o_novel").where("projectId", resTool.data.projectId).select("chapterIndex");
-
-  const projectInfo = [
-    "## 项目信息",
-    `小说名称：${projectData?.name ?? "未知"}`,
-    `小说类型：${projectData?.type ?? "未知"}`,
-    `小说简介：${projectData?.intro ?? "无"}`,
-    `目标改编影视视觉手册|画风：${projectData?.artStyle ?? "无"}`,
-    `目标改编视频画幅：${projectData?.videoRatio ?? "16:9"}`,
-    `章节数量：${novelData.length}章`,
-  ].join("\n");
-
-  const modelStreamScope = createAgentModelStreamScope(abortSignal);
   try {
     const { fullStream } = await u.Ai.Text("scriptAgent:decisionAgent", ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
       messages: [
-        { role: "system", content: prompt },
-        { role: "assistant", content: projectInfo + "\n" + mem },
-        { role: "user", content: text },
+        { role: "system", content: systemPrompt },
+        { role: "assistant", content: memoryPrompt },
+        { role: "user", content: ctx.text },
       ],
       abortSignal: modelStreamScope.signal,
       tools: {
         ...memory.getTools(),
-        ...useTools({ resTool: ctx.resTool, msg: ctx.msg, toolsNames: ["get_novel_events"] }),
-        ...createSubAgent(ctx),
+        ...useTools({ resTool: ctx.resTool, runContext: ctx.runContext }),
+        ...createSubAgents(ctx),
       },
       onFinish: async (completion) => {
-        await memory.add("assistant:decision", removeAllXmlTags(completion.text));
+        if (ctx.runContext) {
+          await recordAgentModelStreamFinished(ctx.runContext.runId, completion).catch((error) => {
+            console.warn("[scriptAgent] failed to record model stream completion:", u.error(error).message);
+          });
+        }
+        if (completion.text.trim()) {
+          await memory.add("assistant:decision", completion.text, { createTime: new Date(ctx.msg.datetime).getTime() });
+        }
       },
     });
 
@@ -88,9 +67,9 @@ export async function runDecisionAI(ctx: AgentContext) {
       agentName: "scriptAgent:decisionAgent",
       fullStream,
       initialMsg: currentMsg,
-      userAbortSignal: abortSignal,
+      userAbortSignal: ctx.abortSignal,
       abortModelStream: modelStreamScope.abort,
-      projectId: ctx.resTool.data.projectId,
+      projectId: Number(ctx.resTool.data.projectId),
       syncMsg: () => {
         if (ctx.msg === currentMsg) return currentMsg;
         currentMsg.complete();
@@ -103,169 +82,103 @@ export async function runDecisionAI(ctx: AgentContext) {
   }
 }
 
-function createSubAgent(parentCtx: AgentContext) {
-  const { resTool, abortSignal } = parentCtx;
+function createSubAgents(parentCtx: AgentContext) {
   const memory = new Memory("scriptAgent", parentCtx.isolationKey);
 
-  async function runAgent({
-    key,
-    prompt,
-    system,
-    name,
-    memoryKey,
-    tools: extraTools,
-    toolNames,
-    messages,
-  }: {
+  async function runAgent(input: {
     key: `${string}:${string}`;
     prompt: string;
-    system: string;
+    skillFile: string;
     name: string;
     memoryKey: string;
-    tools?: Record<string, any>;
     toolNames: string[];
-    messages?: { role: "user" | "assistant" | "system"; content: string }[];
   }) {
     parentCtx.msg.complete();
-    const subMsg = resTool.newMessage("assistant", name);
+    const subMsg = parentCtx.resTool.newMessage("assistant", input.name);
+    const system = (await readConfiguredSkill(input.skillFile)).content;
+    const modelStreamScope = createAgentModelStreamScope(parentCtx.abortSignal);
 
-    const modelStreamScope = createAgentModelStreamScope(abortSignal);
-    let fullResponse: string;
+    let fullResponse = "";
     try {
-      const { fullStream } = await u.Ai.Text(key, parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
+      const { fullStream } = await u.Ai.Text(input.key, parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
         system,
-        messages: messages ?? [{ role: "user", content: prompt }],
+        messages: [{ role: "user", content: input.prompt }],
         abortSignal: modelStreamScope.signal,
-        tools: { ...extraTools, ...useTools({ resTool, msg: subMsg, toolsNames: toolNames }) },
+        tools: useTools({ resTool: parentCtx.resTool, runContext: parentCtx.runContext, toolsNames: input.toolNames }),
       });
-
       fullResponse = await consumeAgentFullStream({
-        agentName: key,
+        agentName: input.key,
         fullStream,
         initialMsg: subMsg,
-        userAbortSignal: abortSignal,
+        userAbortSignal: parentCtx.abortSignal,
         abortModelStream: modelStreamScope.abort,
-        projectId: resTool.data.projectId,
+        projectId: Number(parentCtx.resTool.data.projectId),
       });
     } finally {
       modelStreamScope.dispose();
     }
 
     if (fullResponse.trim()) {
-      await memory.add(memoryKey, removeAllXmlTags(fullResponse), {
-        name,
-        createTime: new Date(subMsg.datetime).getTime(),
-      });
+      await memory.add(input.memoryKey, fullResponse, { name: input.name, createTime: new Date(subMsg.datetime).getTime() });
     }
-
-    parentCtx.msg = resTool.newMessage("assistant", "视频策划");
+    parentCtx.msg = parentCtx.resTool.newMessage("assistant", "剧本策划");
     return fullResponse;
   }
 
-  const promptInput = z
-    .object({
-      prompt: z.string().describe("交给子Agent的任务简约描述，100字以内"),
-    })
-    .toJSONSchema();
-
-  const run_sub_agent_storySkeleton = tool({
-    description: "运行执行subAgent来完成故事骨架相关任务",
-    inputSchema: jsonSchema<{ prompt: string }>(promptInput),
-    execute: async ({ prompt }) => {
-      const systemPrompt = (await readConfiguredSkill("script_execution_skeleton.md")).content;
-
-      const formatPrompt = "\n你必须使用如下XML格式写入工作区：\n<storySkeleton>故事骨架内容</storySkeleton>";
-
-      return runAgent({
-        key: "scriptAgent:storySkeletonAgent",
-        prompt,
-        system: systemPrompt + formatPrompt,
-        name: "编剧",
-        memoryKey: "assistant:execution:storySkeleton",
-        toolNames: ["get_planData", "get_novel_events"],
-        messages: [{ role: "user", content: prompt + formatPrompt }],
-      });
-    },
-  });
-
-  const run_sub_agent_adaptationStrategy = tool({
-    description: "运行执行subAgent来完成改编策略相关任务",
-    inputSchema: jsonSchema<{ prompt: string }>(promptInput),
-    execute: async ({ prompt }) => {
-      const systemPrompt = (await readConfiguredSkill("script_execution_adaptation.md")).content;
-
-      const formatPrompt = "\n你必须使用如下XML格式写入工作区：\n<adaptationStrategy>改编策略内容</adaptationStrategy>";
-
-      return runAgent({
-        key: "scriptAgent:adaptationStrategyAgent",
-        prompt,
-        system: systemPrompt + formatPrompt,
-        name: "编剧",
-        memoryKey: "assistant:execution:adaptationStrategy",
-        toolNames: ["get_planData", "get_novel_events"],
-        messages: [{ role: "user", content: prompt + formatPrompt }],
-      });
-    },
-  });
-
-  const run_sub_agent_script = tool({
-    description: "运行执行subAgent来完成剧本相关任务",
-    inputSchema: jsonSchema<{ prompt: string }>(promptInput),
-    execute: async ({ prompt }) => {
-      const systemPrompt = (await readConfiguredSkill("script_execution_script.md")).content;
-
-      const scriptList = await u.db("o_script").where("projectId", resTool.data.projectId).select("id", "name");
-      const scriptPrompt = ["## 可用剧本(ID:名称)", scriptList.map((s: any) => `${s.id}:${(s.name || "").replace(/[,:]/g, "")}`).join(","), ""].join(
-        "\n",
-      );
-
-      const novelData = await u.db("o_novel").where("projectId", resTool.data.projectId).select("chapterIndex");
-
-      const formatPrompt = `\n你必须使用如下XML格式写入工作区：\nXML不得添加任何额外标签<scriptItem name="剧本名称">剧本内容</scriptItem><scriptItem name="剧本名称">剧本内容</scriptItem><scriptItem name="剧本名称">剧本内容</scriptItem>`;
-
-      return runAgent({
-        key: "scriptAgent:scriptAgent",
-        prompt,
-        system: systemPrompt + formatPrompt,
-        messages: [
-          { role: "assistant", content: scriptPrompt + `章节数量：${novelData.length}章` },
-          { role: "user", content: prompt + formatPrompt },
-        ],
-        name: "编剧",
-        memoryKey: "assistant:execution:script",
-        toolNames: ["get_planData", "get_novel_events", "get_novel_text", "get_script_content"],
-      });
-    },
-  });
-
-  const run_supervision_agent = tool({
-    description: "运行监督层subAgent执行独立任务，完成后返回结果",
-    inputSchema: jsonSchema<{ prompt: string }>(promptInput),
-    execute: async ({ prompt }) => {
-      const systemPrompt = (await readConfiguredSkill("script_agent_supervision.md")).content;
-
-      return runAgent({
-        key: "scriptAgent:supervisionAgent",
-        prompt,
-        system: systemPrompt,
-        name: "编辑",
-        memoryKey: "assistant:supervision",
-        toolNames: ["get_planData", "get_novel_events", "get_novel_text", "get_script_content"],
-      });
-    },
-  });
+  const inputSchema = jsonSchema<{ prompt: string }>(z.object({ prompt: z.string().min(1) }).toJSONSchema());
 
   return {
-    run_sub_agent_storySkeleton,
-    run_sub_agent_adaptationStrategy,
-    run_sub_agent_script,
-    run_supervision_agent,
+    run_sub_agent_storySkeleton: tool({
+      description: "Run the story-skeleton specialist. It reads current facts and saves a complete skeleton with its backend tool.",
+      inputSchema,
+      execute: async ({ prompt }) =>
+        runAgent({
+          key: "scriptAgent:storySkeletonAgent",
+          prompt,
+          skillFile: "script_execution_skeleton.md",
+          name: "编剧",
+          memoryKey: "assistant:execution:storySkeleton",
+          toolNames: ["update_agent_progress", "get_script_project_context", "read_script_workspace", "list_novel_chapters", "read_novel_events", "save_story_skeleton", "await_user_decision"],
+        }),
+    }),
+    run_sub_agent_adaptationStrategy: tool({
+      description: "Run the adaptation-strategy specialist. It reads current facts and saves a complete strategy with its backend tool.",
+      inputSchema,
+      execute: async ({ prompt }) =>
+        runAgent({
+          key: "scriptAgent:adaptationStrategyAgent",
+          prompt,
+          skillFile: "script_execution_adaptation.md",
+          name: "编剧",
+          memoryKey: "assistant:execution:adaptationStrategy",
+          toolNames: ["update_agent_progress", "get_script_project_context", "read_script_workspace", "list_novel_chapters", "read_novel_events", "save_adaptation_strategy", "await_user_decision"],
+        }),
+    }),
+    run_sub_agent_script: tool({
+      description: "Run the script-writing specialist. It reads the selected source facts and saves each complete script with backend tools.",
+      inputSchema,
+      execute: async ({ prompt }) =>
+        runAgent({
+          key: "scriptAgent:scriptAgent",
+          prompt,
+          skillFile: "script_execution_script.md",
+          name: "编剧",
+          memoryKey: "assistant:execution:script",
+          toolNames: ["update_agent_progress", "get_script_project_context", "read_script_workspace", "list_project_scripts", "read_project_scripts", "list_novel_chapters", "read_novel_events", "read_novel_text", "upsert_project_script", "delete_project_script", "await_user_decision"],
+        }),
+    }),
+    run_supervision_agent: tool({
+      description: "Run the read-only script supervision specialist. It records review text and may await a user decision.",
+      inputSchema,
+      execute: async ({ prompt }) =>
+        runAgent({
+          key: "scriptAgent:supervisionAgent",
+          prompt,
+          skillFile: "script_agent_supervision.md",
+          name: "编剧监督",
+          memoryKey: "assistant:supervision",
+          toolNames: ["update_agent_progress", "get_script_project_context", "read_script_workspace", "list_project_scripts", "read_project_scripts", "list_novel_chapters", "read_novel_events", "read_novel_text", "list_script_reviews", "read_script_review", "record_script_review", "await_user_decision"],
+        }),
+    }),
   };
-}
-
-function removeAllXmlTags(text: string): string {
-  text = text.replace(/<([a-zA-Z][\w-]*)(\s+[^>]*)?>([\s\S]*?)<\/\1>/g, "");
-  text = text.replace(/<([a-zA-Z][\w-]*)(\s+[^>]*)?\/>/g, "");
-  text = text.replace(/<\/?[a-zA-Z][\w-]*(\s+[^>]*)?>/g, "");
-  return text.trim();
 }

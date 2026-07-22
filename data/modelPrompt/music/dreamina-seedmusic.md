@@ -1,34 +1,20 @@
 # Dreamina SeedMusic Prompt Profile
 
-Use this profile for Dreamina SeedMusic / SeedMusic 1.0 Preview style music generation.
+Write one compact Chinese natural-language paragraph for Dreamina SeedMusic. Do not output labeled cards, JSON, Markdown sections, or English field names.
 
-Preferred format:
-- concise natural-language prompt
-- Chinese is acceptable when the song/lyrics direction is Chinese; otherwise English is fine
-- one compact paragraph is preferred over a long structured brief
-- include only musical instructions, not full plot explanation
+Order information by audibility:
+1. music function and style family
+2. instrumental or vocal mode, language, vocal color and delivery
+3. core instruments and arrangement density
+4. tempo/BPM and groove
+5. one emotional arc and one structural arc
+6. ending behavior and a short avoid direction
 
-Recommended content:
-- genre and use case, such as Pop Ballad, ending theme, insert song, cue BGM
-- language and vocal direction, including gender, tone, and delivery
-- lyric mood or short lyric concept when vocal is needed
-- core instruments and arrangement, such as piano, acoustic guitar, light drums, strings
-- theme motif or emotional hook
-- tempo/BPM or speed band
-- emotional arc in one short phrase
-- avoid list only when necessary
+Use concrete musical verbs such as enter, thin out, hold, break, resolve, or leave a tail. Avoid plot summaries, names, camera descriptions, abstract phrases such as "strongly guide emotion", and long lists joined by slashes.
 
-Length:
-- 30-120 words is enough for most cues
-- avoid more than 2 character/story names
-- avoid dumping scene summaries, cue sheets, or long worldbuilding notes
+Keep most prompts around 60-180 Chinese characters. Mention no more than four core instrument families. If lyrics are supplied, the prompt describes delivery and arrangement; lyrics remain in the lyrics field rather than being repeated in the prompt.
 
-Generation config:
-- set durationSec only when the cue requires fixed timing
-- use lyrics when actual lyrics are provided
-- use vocalMode for vocal/instrumental preference when supported
-- use outputFormat only if requested
-- keep unsupported Dreamina CLI flags out of generationConfig
+Duration comes from dynamic model capabilities. When the generated master must be longer than the intended use, state that the main musical statement resolves by the intended second and the remainder is only a natural tail or silence.
 
 Example shape:
-Pop Ballad, Chinese lyrics. A slightly tired female vocal with restrained crying texture, piano + acoustic guitar + light drums. Main motif feels clear and memorable, late-night bittersweet warmth, emotional farewell but still hopeful, BPM around 70.
+Chinese urban social-drama score, instrumental. Muted piano carries a two-note hesitant motif, joined by low cello and very light brushed percussion, around 78 BPM. Begin restrained and routine, gradually tighten the harmony, then resolve abruptly by 22 seconds with only a short room-like tail. Avoid triumphant drums, lush strings, and melodramatic swells.

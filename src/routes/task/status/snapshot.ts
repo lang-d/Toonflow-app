@@ -12,6 +12,9 @@ export default router.post(
     projectId: z.number(),
     scriptId: z.number().optional(),
     taskIds: z.array(z.string().min(1)).max(500).optional(),
+    targetTypes: z.array(z.string().min(1)).max(100).optional(),
+    includeTerminal: z.boolean().optional(),
+    limit: z.number().int().min(1).max(500).optional(),
   }),
   async (req, res) => {
     const tasks = await getTaskSnapshot(req.body);

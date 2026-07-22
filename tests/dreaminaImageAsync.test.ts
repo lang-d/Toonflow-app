@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildImageArgs,
   buildMusicArgs,
+  discoverDreaminaMediaModels,
   discoverMusicCommandsFromHelp,
   extractMusicDurationRange,
   extractSupportedFlags,
@@ -46,13 +47,27 @@ test("Dreamina image async output keeps querying tasks pending", () => {
   assert.equal(mixed.imageUrl, undefined);
 });
 
-test("Dreamina image async submit args are built without synchronous polling", () => {
+test("Dreamina 5.0 image models are discovered from their CLI command help", () => {
+  const textToImageHelp = "--model_version string supported values: 3.0, 4.7, 5.0";
+  const imageToImageHelp = "--model_version string supported values: 4.7, 5.0";
+
+  const textToImage = discoverDreaminaMediaModels("text2image", textToImageHelp).find((model) => model.modelName === "text2image:5.0");
+  const imageToImage = discoverDreaminaMediaModels("image2image", imageToImageHelp).find((model) => model.modelName === "image2image:5.0");
+
+  assert.deepEqual(textToImage?.mode, ["text"]);
+  assert.deepEqual(imageToImage?.mode, ["singleImage", "multiReference"]);
+  assert.equal(textToImage?.type, "image");
+  assert.equal(imageToImage?.type, "image");
+});
+
+test("Dreamina 5.0 text-to-image args retain the CLI model key and remain asynchronous", () => {
   const imageArgs = buildImageArgs(
-    { prompt: "test", size: "2K", aspectRatio: "16:9", referenceList: [] },
+    { prompt: "test", size: "4K", aspectRatio: "16:9", referenceList: [] },
     { name: "image", modelName: "text2image:5.0", type: "image" } as any,
   );
   assert.equal(imageArgs.command, "text2image");
-  assert.equal(imageArgs.args.includes("--resolution_type=2k"), true);
+  assert.equal(imageArgs.args.includes("--resolution_type=4k"), true);
+  assert.equal(imageArgs.args.includes("--model_version=5.0"), true);
   assert.equal(imageArgs.args.some((arg) => arg.startsWith("--poll=")), false);
 });
 

@@ -3,6 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { enqueueNovelEventExtraction } from "@/services/novelEventExtraction";
 const router = express.Router();
 
 // 新增原文数据
@@ -39,16 +40,8 @@ export default router.post(
       });
       totalNovelId.push(id);
     }
-    const chapterAllList = await u.db("o_novel").where("projectId", projectId).whereIn("id", totalNovelId);
-    const novelClass = new u.cleanNovel();
-    novelClass.emitter.on("item", async (item) => {
-      await u
-        .db("o_novel")
-        .where("id", item.id)
-        .update({ event: item.event, eventState: item.event ? 1 : -1, errorReason: item?.errReason ?? null });
-    });
-    novelClass.start(chapterAllList, projectId);
+    const eventExtraction = await enqueueNovelEventExtraction({ projectId, novelIds: totalNovelId });
 
-    res.status(200).send(success({ message: "新增原文成功" }));
+    res.status(200).send(success({ message: "新增原文成功", eventExtraction }));
   },
 );

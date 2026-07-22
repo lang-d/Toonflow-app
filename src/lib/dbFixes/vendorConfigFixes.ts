@@ -104,6 +104,22 @@ export async function materializeVendorCodeFiles(knex: Knex) {
   }
 }
 
+async function ensureDefaultMusicPromptBindings(knex: Knex) {
+  if (!(await knex.schema.hasTable("o_modelPrompt"))) return;
+  const binding = {
+    vendorId: "t8star",
+    model: "chirp-fenix",
+    fileName: "suno-v55.md",
+    path: "music/suno-v55.md",
+  };
+  const existing = await knex("o_modelPrompt").where({ vendorId: binding.vendorId, model: binding.model }).first();
+  if (!existing) {
+    await knex("o_modelPrompt").insert(binding);
+  } else if (existing.fileName === "t8star-suno-v55.md" && existing.path === "music/t8star-suno-v55.md") {
+    await knex("o_modelPrompt").where({ vendorId: binding.vendorId, model: binding.model }).update(binding);
+  }
+}
+
 export async function insertDefaultVendorIfMissing(knex: Knex, tsCode: string) {
   if (!(await knex.schema.hasTable("o_vendorConfig"))) return;
   const vendor = readVendorFromCode(tsCode);
@@ -122,4 +138,5 @@ export async function insertDefaultVendorIfMissing(knex: Knex, tsCode: string) {
 export async function fixVendorConfigs(knex: Knex) {
   await materializeVendorCodeFiles(knex);
   await syncDefaultVendorConfigs(knex);
+  await ensureDefaultMusicPromptBindings(knex);
 }

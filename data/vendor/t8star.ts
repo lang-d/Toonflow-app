@@ -1,6 +1,6 @@
 /**
  * Toonflow AI供应商：T8Star
- * @version 2.2
+ * @version 2.6
  */
 
 // ============================================================
@@ -47,6 +47,19 @@ interface TTSModel {
   voices: { title: string; voice: string }[];
 }
 
+interface MusicModel {
+  name: string;
+  modelName: string;
+  type: "music";
+  durationRange?: { min?: number; max?: number };
+  durationControl?: "exact" | "targetOnly";
+  outputFormats?: string[];
+  vocal?: "optional" | boolean;
+  lyrics?: "optional" | boolean;
+  referenceAudio?: "optional" | boolean;
+  loop?: "optional" | boolean;
+}
+
 interface VendorConfig {
   id: string;
   version: string;
@@ -56,7 +69,7 @@ interface VendorConfig {
   icon?: string;
   inputs: { key: string; label: string; type: "text" | "password" | "url"; required: boolean; placeholder?: string }[];
   inputValues: Record<string, string>;
-  models: (TextModel | ImageModel | VideoModel | TTSModel)[];
+  models: (TextModel | ImageModel | VideoModel | TTSModel | MusicModel)[];
 }
 
 type ReferenceList =
@@ -90,10 +103,29 @@ interface TTSConfig {
   referenceList?: Extract<ReferenceList, { type: "audio" }>[];
 }
 
+interface MusicConfig {
+  prompt: string;
+  negativePrompt?: string;
+  lyrics?: string;
+  vocalMode?: "instrumental" | "vocal" | string;
+  title?: string;
+  tags?: string;
+}
+
 interface PollResult {
   completed: boolean;
-  data?: string;
+  data?: any;
   error?: string;
+}
+
+interface MusicOutputCandidate {
+  data?: string;
+  providerId?: string;
+  error?: string;
+}
+
+interface MusicRequestResult {
+  candidates: MusicOutputCandidate[];
 }
 
 // ============================================================
@@ -126,6 +158,7 @@ declare const exports: {
     providerTaskId: string,
     m: ImageModel,
   ) => Promise<PollResult & { progress?: number; nextPollMs?: number }>;
+  musicRequest?: (c: MusicConfig, m: MusicModel) => Promise<string | string[] | MusicRequestResult>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>;
   ttsRequest: (c: TTSConfig, m: TTSModel) => Promise<string>;
   checkForUpdates?: () => Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }>;
@@ -138,7 +171,7 @@ declare const exports: {
 
 const vendor: VendorConfig = {
   id: "t8star",
-  version: "2.2",
+  version: "2.6",
   author: "Toonflow",
   name: "T8Star",
   description:
@@ -146,8 +179,9 @@ const vendor: VendorConfig = {
   inputs: [
     { key: "apiKey", label: "API密钥", type: "password", required: true },
     { key: "baseUrl", label: "请求地址", type: "url", required: true, placeholder: "https://ai.t8star.org" },
+    { key: "musicBaseUrl", label: "Suno 音乐地址", type: "url", required: true, placeholder: "https://ai.t8star.org" },
   ],
-  inputValues: { apiKey: "", baseUrl: "https://ai.t8star.org" },
+  inputValues: { apiKey: "", baseUrl: "https://ai.t8star.org", musicBaseUrl: "https://ai.t8star.org" },
   models: [
     { name: "Claude Sonnet 4.6", modelName: "claude-sonnet-4-6", type: "text", think: false },
     { name: "Claude Sonnet 4.6 Thinking", modelName: "claude-sonnet-4-6-thinking", type: "text", think: true },
@@ -171,6 +205,18 @@ const vendor: VendorConfig = {
       mode: ["text", "singleImage", "multiReference"],
       associationSkills: "文本生图、参考图生图、多图参考",
     },
+    {
+      name: "Suno V5.5",
+      modelName: "chirp-fenix",
+      type: "music",
+      durationRange: { max: 480 },
+      durationControl: "targetOnly",
+      outputFormats: ["mp3"],
+      vocal: "optional",
+      lyrics: "optional",
+      referenceAudio: false,
+      loop: false,
+    },
   ],
 };
 
@@ -187,6 +233,8 @@ const getBaseUrl = (): string => {
   const baseUrl = (vendor.inputValues.baseUrl || "https://ai.t8star.org").replace(/\/+$/g, "");
   return baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
 };
+
+const getMusicBaseUrl = (): string => (vendor.inputValues.musicBaseUrl || "https://ai.t8star.org").replace(/\/+$/g, "");
 
 const getHeaders = (): Record<string, string> => {
   return {
@@ -245,6 +293,189 @@ const getTaskErrorFromResponse = (data: any): string => {
 
 const getErrorMessage = (err: any): string => {
   return err?.response?.data?.error?.message || err?.response?.data?.message || err?.response?.data?.msg || err?.message || "请求失败";
+};
+
+const firstText = (...values: unknown[]): string => {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+  return "";
+};
+
+const sunoPayload = (data: any): any => data?.data && typeof data.data === "object" ? data.data : data || {};
+
+const sunoTracks = (data: any): any[] => {
+  const payload = sunoPayload(data);
+  const candidates = [
+    Array.isArray(data) ? data : null,
+    Array.isArray(payload) ? payload : null,
+    payload?.data,
+    payload?.clips,
+    data?.clips,
+    data?.data?.clips,
+  ];
+  for (const candidate of candidates) if (Array.isArray(candidate)) return candidate;
+  return [];
+};
+
+const sunoTrackId = (track: any): string => firstText(track?.id, track?.clip_id, track?.clipId);
+
+const maskProviderId = (value: unknown): string => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= 8) return `${text.slice(0, 2)}***`;
+  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+};
+
+const selectSunoTrack = (data: any, expectedClipId?: string): any | null => {
+  const tracks = sunoTracks(data);
+  if (!tracks.length) return null;
+  if (!expectedClipId) return tracks[0];
+  return tracks.find((track) => sunoTrackId(track) === expectedClipId) || null;
+};
+
+const sunoTrackAudioUrl = (track: any): string => firstText(track?.audio_url, track?.audioUrl, track?.metadata?.audio_url);
+
+const sunoAudioUrl = (data: any, expectedClipId?: string): string => {
+  const payload = sunoPayload(data);
+  if (expectedClipId) {
+    const track = selectSunoTrack(data, expectedClipId);
+    if (track) return sunoTrackAudioUrl(track);
+    const directId = firstText(data?.id, data?.clip_id, payload?.id, payload?.clip_id);
+    if (directId !== expectedClipId) return "";
+  }
+  const direct = firstText(data?.audio_url, data?.audioUrl, payload?.audio_url, payload?.audioUrl);
+  if (direct) return direct;
+  const selected = selectSunoTrack(data, expectedClipId);
+  if (selected) return sunoTrackAudioUrl(selected);
+  return "";
+};
+
+const sunoTaskId = (data: any): string => {
+  const payload = sunoPayload(data);
+  const submittedTaskId = typeof data?.data === "string" ? data.data : "";
+  const clipId = sunoTracks(data)
+    .map((clip) => firstText(clip?.task_id, clip?.taskId, clip?.id, clip?.clip_id))
+    .find(Boolean);
+  return firstText(submittedTaskId, payload?.task_id, payload?.taskId, data?.task_id, data?.taskId, payload?.id, data?.id, clipId);
+};
+
+const sunoClipIds = (data: any): string[] => Array.from(
+  new Set(
+    sunoTracks(data)
+      .map(sunoTrackId)
+      .filter(Boolean),
+  ),
+);
+
+const sunoStatus = (data: any, expectedClipId?: string): string => firstText(
+  selectSunoTrack(data, expectedClipId)?.status,
+  selectSunoTrack(data, expectedClipId)?.state,
+  sunoPayload(data)?.status,
+  data?.status,
+).toLowerCase();
+
+const sunoFailure = (data: any): string => firstText(
+  sunoPayload(data)?.fail_reason,
+  sunoPayload(data)?.error?.message,
+  sunoPayload(data)?.error,
+  data?.message,
+);
+
+const sunoResponseSummary = (data: any): string => {
+  const payload = sunoPayload(data);
+  const submittedData = data?.data;
+  const dataSummary = submittedData == null
+    ? { type: submittedData === null ? "null" : "undefined" }
+    : Array.isArray(submittedData)
+      ? { type: "array", length: submittedData.length }
+      : typeof submittedData === "object"
+        ? { type: "object", keys: Object.keys(submittedData).slice(0, 12) }
+        : { type: typeof submittedData, length: typeof submittedData === "string" ? submittedData.length : undefined };
+  const clips = sunoTracks(data).slice(0, 3).map((clip) => ({
+    id: maskProviderId(firstText(clip?.id, clip?.clip_id, clip?.task_id, clip?.taskId)),
+    status: firstText(clip?.status, clip?.state),
+    hasAudio: Boolean(firstText(clip?.audio_url, clip?.audioUrl)),
+    model: firstText(clip?.model_name, clip?.major_model_version, clip?.metadata?.model_name),
+    duration: Number(clip?.duration || clip?.metadata?.duration || 0) || undefined,
+  }));
+  return JSON.stringify({
+    keys: data && typeof data === "object" ? Object.keys(data).slice(0, 12) : [],
+    payloadKeys: payload !== data && payload && typeof payload === "object" ? Object.keys(payload).slice(0, 12) : [],
+    code: firstText(data?.code, payload?.code).slice(0, 200),
+    message: firstText(data?.message, payload?.message).slice(0, 500),
+    data: dataSummary,
+    clips,
+  });
+};
+
+const sunoTerminalStatus = (status: string) => ["success", "succeeded", "completed", "complete", "done", "failed", "failure", "error", "cancelled", "canceled"].includes(status);
+
+const sunoCandidate = (input: { data?: string; providerId?: string; error?: string }): MusicOutputCandidate => {
+  const output: MusicOutputCandidate = {};
+  if (input.data) output.data = input.data;
+  if (input.providerId) output.providerId = input.providerId;
+  if (input.error) output.error = input.error;
+  return output;
+};
+
+const sunoCandidates = (data: any, expectedClipIds: string[] = []): { candidates: MusicOutputCandidate[]; pending: boolean } => {
+  const tracks = sunoTracks(data);
+  const selected = expectedClipIds.length
+    ? expectedClipIds.map((clipId) => selectSunoTrack(data, clipId)).filter(Boolean)
+    : tracks;
+  if (!selected.length && !expectedClipIds.length) {
+    const direct = sunoAudioUrl(data);
+    const status = sunoStatus(data);
+    return direct
+      ? { candidates: [sunoCandidate({ data: direct })], pending: false }
+      : { candidates: [], pending: !sunoTerminalStatus(status) };
+  }
+
+  const candidates: MusicOutputCandidate[] = [];
+  let pending = selected.length !== (expectedClipIds.length || selected.length);
+  for (const track of selected) {
+    const providerId = sunoTrackId(track) || undefined;
+    const audio = sunoTrackAudioUrl(track);
+    if (audio) {
+      candidates.push(sunoCandidate({ data: audio, providerId }));
+      continue;
+    }
+    const status = firstText(track?.status, track?.state, sunoStatus(data)).toLowerCase();
+    if (["failed", "failure", "error", "cancelled", "canceled"].includes(status)) {
+      candidates.push(sunoCandidate({ providerId, error: firstText(track?.fail_reason, track?.error?.message, track?.error, sunoFailure(data), "T8Star Suno 音乐生成失败") }));
+    } else if (["success", "succeeded", "completed", "complete", "done"].includes(status)) {
+      candidates.push(sunoCandidate({ providerId, error: "T8Star Suno 音乐任务已完成，但未返回可下载音频" }));
+    } else {
+      pending = true;
+    }
+  }
+  return { candidates, pending };
+};
+
+const pollSunoAudio = async (read: () => Promise<any>, taskLabel: string, expectedClipIds: string[] = []): Promise<MusicRequestResult> => {
+  const result = await pollTask(
+    async (): Promise<PollResult> => {
+      const data = await read();
+      const resolved = sunoCandidates(data, expectedClipIds);
+      if (!resolved.pending) {
+        logger(`T8Star Suno protocol result: ${sunoResponseSummary(data)}`);
+        return { completed: true, data: { candidates: resolved.candidates } };
+      }
+      const status = sunoStatus(data, expectedClipIds[0]);
+      logger(`T8Star Suno 音乐生成中，任务：${taskLabel}${status ? `，状态：${status}` : ""}`);
+      return { completed: false };
+    },
+    5000,
+    50 * 60 * 1000,
+  );
+  if (result.error) throw new Error(result.error);
+  const output = result.data as MusicRequestResult | undefined;
+  if (!output?.candidates?.some((candidate) => candidate.data)) {
+    throw new Error(output?.candidates?.map((candidate) => candidate.error).filter(Boolean).join("; ") || "T8Star Suno 音乐生成失败：未返回音频结果");
+  }
+  return output;
 };
 
 const parseAspectRatio = (aspectRatio: string): { width: number; height: number } => {
@@ -409,6 +640,78 @@ const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<str
   }
 };
 
+const musicRequest = async (config: MusicConfig, model: MusicModel): Promise<MusicRequestResult> => {
+  const lyrics = String(config.lyrics || "").trim();
+  const vocalMode = String(config.vocalMode || "").trim();
+  const musicPrompt = String(config.prompt || "").trim();
+  const title = String(config.title || "Toonflow Music").trim().slice(0, 200);
+  const tags = String(config.tags || "").trim();
+  if (vocalMode !== "instrumental" && vocalMode !== "vocal") {
+    throw new Error("T8Star Suno 生成前需要明确的 vocalMode：instrumental 或 vocal");
+  }
+
+  if (vocalMode === "instrumental") {
+    if (!tags) throw new Error("纯音乐需要模型编译出的 tags");
+    const body = {
+      prompt: "",
+      tags,
+      mv: model.modelName,
+      title,
+      continue_clip_id: null,
+      continue_at: null,
+      infill_start_s: null,
+      infill_end_s: null,
+    };
+    try {
+      logger(`提交 T8Star Suno 纯音乐任务，模型：${model.modelName}`);
+      const submitted = await axios.post(`${getMusicBaseUrl()}/suno/generate`, body, { headers: getHeaders() });
+      const clipIds = sunoClipIds(submitted.data);
+      if (!clipIds.length) {
+        throw new Error(`T8Star Suno 纯音乐接口未返回 clip ID 或音频结果; responseSummary=${sunoResponseSummary(submitted.data)}`);
+      }
+      const immediate = sunoCandidates(submitted.data, clipIds);
+      if (!immediate.pending) return { candidates: immediate.candidates };
+      logger(`T8Star Suno 纯音乐任务已提交，clips：${clipIds.map(maskProviderId).join(", ")}，responseSummary=${sunoResponseSummary(submitted.data)}`);
+      return pollSunoAudio(
+        async () => (await axios.get(`${getMusicBaseUrl()}/suno/feed/${clipIds.map(encodeURIComponent).join(",")}`, { headers: getHeaders() })).data,
+        clipIds.map(maskProviderId).join(", "),
+        clipIds,
+      );
+    } catch (err: any) {
+      throw new Error(getErrorMessage(err));
+    }
+  }
+
+  if (!lyrics) throw new Error("人声音乐需要已确认歌词");
+  const body = {
+    prompt: lyrics,
+    mv: model.modelName,
+    title,
+    tags: tags || musicPrompt,
+    negative_tags: String(config.negativePrompt || "").trim(),
+  };
+
+  try {
+    logger(`提交 T8Star Suno 人声音乐任务，模型：${model.modelName}`);
+    const submitted = await axios.post(`${getMusicBaseUrl()}/suno/submit/music`, body, { headers: getHeaders() });
+    const immediate = sunoCandidates(submitted.data);
+    if (!immediate.pending) return { candidates: immediate.candidates };
+
+    const taskId = sunoTaskId(submitted.data);
+    if (!taskId) {
+      const providerMessage = firstText(submitted.data?.message, submitted.data?.error?.message);
+      throw new Error(`T8Star Suno 音乐接口未返回任务 ID 或音频结果${providerMessage ? `; providerMessage=${providerMessage.slice(0, 500)}` : ""}; responseSummary=${sunoResponseSummary(submitted.data)}`);
+    }
+    logger(`T8Star Suno 音乐任务已提交，任务 ID：${maskProviderId(taskId)}`);
+    return pollSunoAudio(
+      async () => (await axios.get(`${getMusicBaseUrl()}/suno/fetch/${encodeURIComponent(taskId)}`, { headers: getHeaders() })).data,
+      taskId,
+    );
+  } catch (err: any) {
+    throw new Error(getErrorMessage(err));
+  }
+};
+
 const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<string> => {
   return "";
 };
@@ -418,7 +721,7 @@ const ttsRequest = async (config: TTSConfig, model: TTSModel): Promise<string> =
 };
 
 const checkForUpdates = async (): Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }> => {
-  return { hasUpdate: false, latestVersion: "2.2", notice: "## 当前已是最新版本" };
+  return { hasUpdate: false, latestVersion: "2.6", notice: "## 当前已是最新版本" };
 };
 
 const updateVendor = async (): Promise<string> => {
@@ -431,10 +734,8 @@ const updateVendor = async (): Promise<string> => {
 
 exports.vendor = vendor;
 exports.textRequest = textRequest;
-exports.imageRequest = legacyImageRequest;
-// 恢复旧异步通道时：将上一行改为 exports.imageRequest = legacyImageRequest，并取消下面两行注释。
-exports.imageSubmit = legacyImageSubmit;
-exports.imagePoll = legacyImagePoll;
+exports.imageRequest = imageRequest;
+exports.musicRequest = musicRequest;
 exports.videoRequest = videoRequest;
 exports.ttsRequest = ttsRequest;
 exports.checkForUpdates = checkForUpdates;

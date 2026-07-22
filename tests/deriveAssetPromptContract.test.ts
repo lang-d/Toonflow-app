@@ -17,11 +17,13 @@ test("derive asset tool requires prompt and writes it separately from describe",
   assert.doesNotMatch(toolsSource, /where\("id", deriveAsset\.id\)\.update\(data\)/);
 });
 
-test("derive asset image generation waits for socket ack and reports per-asset results", () => {
-  assert.match(toolsSource, /emitWithAckTimeout<GenerateDeriveAssetAck>\(socket,\s*"generateDeriveAsset"/);
+test("derive asset image generation submits tasks in the backend and reports per-asset results", () => {
+  assert.match(toolsSource, /submitImageGeneration<GenerateDeriveAssetAck>\(socket,\s*"generateDeriveAsset"/);
+  assert.match(toolsSource, /enqueueAssetImageGeneration/);
   assert.match(toolsSource, /ack\?\.success === false/);
   assert.match(toolsSource, /normalizeGenerateDeriveAssetResult/);
   assert.match(toolsSource, /summarizeGenerateDeriveAssetResult/);
+  assert.doesNotMatch(toolsSource, /emitWithAckTimeout<GenerateDeriveAssetAck>\(socket,\s*"generateDeriveAsset"/);
   assert.doesNotMatch(toolsSource, /new Promise\(\(resolve\) => socket\.emit\("generateDeriveAsset"/);
   assert.doesNotMatch(toolsSource, /return "开始生成衍生资产"/);
 });
@@ -40,12 +42,23 @@ test("derive asset skill keeps desc and prompt responsibilities separate", () =>
   assert.match(deriveSkill, /明确要求“重新写入、重做、修正、覆盖提示词”时必须使用 `replace`/);
 });
 
+test("derive asset skill preflights script facts against prompt coverage before writing", () => {
+  assert.match(deriveSkill, /先做只读 Prompt 覆核/);
+  assert.match(deriveSkill, /剧本关键事实 → 最终清单条目 → 覆盖资产 ID\/衍生 ID → Prompt 覆盖依据/);
+  assert.match(deriveSkill, /覆盖判断只读取父资产和衍生资产的 `prompt`/);
+  assert.match(deriveSkill, /不读取或分析图片内容/);
+  assert.match(deriveSkill, /`图片已生成`、`图片待生成` 或 `未知`/);
+  assert.match(deriveSkill, /立即停止本轮，\*\*不得调用\*\* `add_deriveAsset`/);
+  assert.match(deriveSkill, /调用 `await_user_decision`/);
+  assert.match(deriveSkill, /不得自行新增清单外衍生资产/);
+});
+
 test("derive asset skill describes typed asset sheets instead of storyboard frames", () => {
   assert.match(deriveSkill, /角色衍生资产/);
   assert.match(deriveSkill, /`assetsId` 必须等于顶层父资产 `assets\[i\]\.id`/);
   assert.match(deriveSkill, /不得等于 `derive\[j\]\.id`/);
   assert.match(deriveSkill, /只读取顶层父资产 `prompt` 中的版式事实/);
-  assert.match(deriveSkill, /禁止写三视图/);
+  assert.match(deriveSkill, /禁止写[“"]?三视图/);
   assert.match(deriveSkill, /父资产是四视图时写四视图/);
   assert.match(deriveSkill, /父资产是三视图时写三视图/);
   assert.match(deriveSkill, /保持同一角色身份一致/);
@@ -62,8 +75,8 @@ test("derive asset skill describes typed asset sheets instead of storyboard fram
 test("derive asset skill derives layout only from top-level parent prompt", () => {
   assert.match(deriveSkill, /`derive\[\]` 的 `name\/desc\/prompt\/src`/);
   assert.match(deriveSkill, /全部不能用来判断“三视图\/四视图”/);
-  assert.match(deriveSkill, /顶层父资产 `src` 或 `media` 只用于身份、五官、服装、材质参考/);
-  assert.match(deriveSkill, /不能作为三视图\/四视图判断依据/);
+  assert.match(deriveSkill, /顶层父资产 `src` 或 `media` 不参与本轮判断/);
+  assert.match(deriveSkill, /覆盖、身份状态和设定图版式都只以顶层父资产 `prompt` 为依据/);
   assert.match(deriveSkill, /人像特写\+正视图\+侧视图\+后视图/);
   assert.match(deriveSkill, /四视图一致性/);
   assert.match(deriveSkill, /禁止写“三视图”“3视图”“白底三视图版式”/);

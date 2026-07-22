@@ -546,6 +546,14 @@ interface MusicConfig {
   extra?: Record<string, unknown>;
 }
 
+export type MusicOutputCandidate = {
+  data?: string;
+  providerId?: string;
+  error?: string;
+};
+
+type MusicRequestResult = string | string[] | { candidates: MusicOutputCandidate[] };
+
 class AiVideo {
   private key: `${string}:${string}`;
   private result: string = "";
@@ -608,7 +616,7 @@ class AiAudio {
 }
 class AiMusic {
   private key: `${string}:${string}`;
-  private result: string = "";
+  private candidates: MusicOutputCandidate[] = [];
   constructor(key: `${string}:${string}`) {
     this.key = key;
   }
@@ -617,9 +625,22 @@ class AiMusic {
     const exec = async (mn: `${string}:${string}`) => {
       const fn = await getVendorTemplateFn("musicRequest", mn);
       await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
-      this.result = await fn(input);
-      if (!this.result) throw new Error("musicRequest did not return audio data");
-      if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
+      const rawResult = (await fn(input)) as MusicRequestResult;
+      const rawCandidates = typeof rawResult === "string"
+        ? [{ data: rawResult }]
+        : Array.isArray(rawResult)
+          ? rawResult.map((data) => ({ data }))
+          : rawResult && typeof rawResult === "object" && Array.isArray(rawResult.candidates)
+            ? rawResult.candidates
+            : [];
+      this.candidates = await Promise.all(
+        rawCandidates.map(async (candidate: MusicOutputCandidate) => ({
+          providerId: candidate.providerId,
+          error: candidate.error,
+          data: candidate.data?.startsWith("http") ? await urlToBase64(candidate.data) : candidate.data,
+        })),
+      );
+      if (!this.candidates.some((candidate) => candidate.data)) throw new Error("musicRequest did not return audio data");
       return this;
     };
     if (taskRecord) {
@@ -627,9 +648,18 @@ class AiMusic {
     }
     return await exec(modelName);
   }
-  async save(path: string) {
-    await u.oss.writeFile(path, this.result.replace(/^data:audio\/[^;]+;base64,/, ""));
+  getCandidates() {
+    return this.candidates.map((candidate) => ({ ...candidate }));
+  }
+  async saveCandidate(path: string, candidate: MusicOutputCandidate) {
+    if (!candidate.data) throw new Error(candidate.error || "music candidate did not return audio data");
+    await u.oss.writeFile(path, candidate.data.replace(/^data:audio\/[^;]+;base64,/, ""));
     return this;
+  }
+  async save(path: string) {
+    const candidate = this.candidates.find((item) => item.data);
+    if (!candidate) throw new Error("musicRequest did not return audio data");
+    return this.saveCandidate(path, candidate);
   }
 }
 

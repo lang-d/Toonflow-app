@@ -405,6 +405,25 @@ export async function cancelUnifiedTask(taskId: string, database: any = db) {
       // Best-effort compatibility update only; task cancellation has already succeeded.
     }
   }
+  if (task.handler === "novel-event") {
+    try {
+      const payload = parseJsonObject(task.payloadJson);
+      const novelIds = Array.isArray(payload?.novelIds)
+        ? payload.novelIds.map(Number).filter(Number.isFinite)
+        : payload?.novelId == null
+          ? []
+          : [Number(payload.novelId)].filter(Number.isFinite);
+      if (novelIds.length) {
+        await database("o_novel")
+          .where("projectId", task.projectId)
+          .whereIn("id", novelIds)
+          .where("eventState", 0)
+          .update({ eventState: -1, errorReason: "用户取消" });
+      }
+    } catch {
+      // Best-effort compatibility update only; task cancellation has already succeeded.
+    }
+  }
   taskLog.info("Unified task cancelled", {
     event: "task.cancelled",
     taskId,
@@ -437,12 +456,24 @@ export function formatTaskEvent(row: any): TaskEvent {
   };
 }
 
-export async function getTaskSnapshot(input: { projectId: number; scriptId?: number; taskIds?: string[] }, database: any = db) {
+export async function getTaskSnapshot(
+  input: {
+    projectId: number;
+    scriptId?: number;
+    taskIds?: string[];
+    targetTypes?: string[];
+    includeTerminal?: boolean;
+    limit?: number;
+  },
+  database: any = db,
+) {
   const query = database("o_tasks").where("projectId", input.projectId);
   if (input.scriptId != null) query.where((builder: any) => builder.where("scriptId", input.scriptId).orWhere("episode", input.scriptId));
   if (input.taskIds?.length) query.whereIn("taskId", input.taskIds);
-  else query.whereIn("status", ["pending", "queued", "submitting", "processing"]);
-  const rows = await query.orderBy("updateTime", "desc").limit(500);
+  else if (!input.includeTerminal) query.whereIn("status", ["pending", "queued", "submitting", "processing"]);
+  if (input.targetTypes?.length) query.whereIn("targetType", input.targetTypes);
+  const limit = Math.min(Math.max(Number(input.limit || 500), 1), 500);
+  const rows = await query.orderBy("updateTime", "desc").limit(limit);
   return rows.map((row: any) =>
     formatTaskEvent({
       id: 0,

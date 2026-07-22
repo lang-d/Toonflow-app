@@ -3,7 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { musicEpisodeIsolationKey, musicProjectIsolationKey } from "@/services/musicStageState";
+import { musicEpisodeIsolationKey, musicProjectIsolationKey } from "@/services/musicScope";
 const router = express.Router();
 
 export default router.post(

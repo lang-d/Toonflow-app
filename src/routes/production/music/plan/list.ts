@@ -11,6 +11,8 @@ function normalizePlan(row: any) {
   return {
     ...row,
     cueSheet: parseJsonValue(row.cueSheetJson, []),
+    libraryPlan: parseJsonValue(row.libraryPlanJson, []),
+    recommendedProduction: parseJsonValue(row.recommendedProductionJson, null),
   };
 }
 
