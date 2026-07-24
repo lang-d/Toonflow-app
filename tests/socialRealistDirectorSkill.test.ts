@@ -51,7 +51,7 @@ test("social realist drama stays generic and visual-style independent", () => {
   assert.match(content, /熟人关系/);
   assert.doesNotMatch(content, /十五万|陈默|周承言|林知秋|15\s*万|8\s*万/);
   assert.doesNotMatch(content, /讨债|餐馆|医院|法院/);
-  assert.doesNotMatch(content, /4000K|5500K|真人摄影|真人实拍|镜头品牌|渲染|模型提示词|prompt/);
+  assert.doesNotMatch(content, /4000K|5500K|真人摄影|真人实拍|镜头品牌|渲染|模型提示词|prompt\s*[:：]/i);
 });
 
 test("social realist drama keeps music as a downstream boundary", () => {

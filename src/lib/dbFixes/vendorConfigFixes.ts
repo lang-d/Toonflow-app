@@ -7,6 +7,119 @@ import rawVendorData from "@/lib/vendor.json";
 import getPath from "@/utils/getPath";
 
 const vendorData = rawVendorData as Record<string, string>;
+const BEST_MUSIC_UPGRADE_MARKER = "/* toonflow-best-suno-v55 */";
+
+export function upgradeBestMusicVendorCode(code: string) {
+  if (code.includes(BEST_MUSIC_UPGRADE_MARKER) || !/\bid\s*:\s*["']best["']/.test(code) || !/exports\.vendor\s*=\s*vendor/.test(code)) {
+    return code;
+  }
+
+  return `${code}\n\n${BEST_MUSIC_UPGRADE_MARKER}
+if (!vendor.inputs.some((item: any) => item.key === "musicKey")) {
+  vendor.inputs.push({ key: "musicKey", label: "音乐 API 密钥", type: "password", required: false, placeholder: "不填则使用 API 密钥" });
+}
+if (!vendor.models.some((item: any) => item.type === "music" && item.modelName === "chirp-fenix")) {
+  vendor.models.push({
+    name: "Suno V5.5",
+    modelName: "chirp-fenix",
+    type: "music",
+    durationRange: { max: 480 },
+    durationControl: "targetOnly",
+    outputFormats: ["mp3"],
+    vocal: "optional",
+    lyrics: "optional",
+    referenceAudio: false,
+    loop: false,
+  });
+}
+const bestMusicChars = (value: any) => Array.from(String(value || "")).length;
+const bestMusicKey = () => String(vendor.inputValues.musicKey || vendor.inputValues.apiKey || "").trim().replace(/^Bearer\\s+/i, "");
+const bestMusicHeaders = () => {
+  const key = bestMusicKey();
+  if (!key) throw new Error("请到 api.4022543.xyz 获取音乐 API Key");
+  return { Authorization: \`Bearer \${key}\`, "Content-Type": "application/json", Accept: "application/json" };
+};
+const bestMusicTracks = (payload: any) => {
+  const values = [payload?.data?.data, payload?.data?.tracks, payload?.data?.clips, payload?.data, payload?.tracks, payload?.clips, payload];
+  const rows = values.find((value) => Array.isArray(value)) || [];
+  return rows
+    .filter((item: any) => item && typeof item === "object" && item.audio_url)
+    .map((item: any) => ({ providerId: String(item.clip_id || item.id || item.audio_id || "") || undefined, data: String(item.audio_url) }));
+};
+const bestMusicTaskIds = (payload: any): string[] => {
+  if (typeof payload === "string") return payload ? [payload] : [];
+  if (Array.isArray(payload)) return payload.flatMap(bestMusicTaskIds);
+  if (!payload || typeof payload !== "object") return [];
+  const id = payload.task_id || payload.taskId;
+  if (typeof id === "string" && id) return [id];
+  return bestMusicTaskIds(payload.data);
+};
+const bestMusicStatus = (payload: any) => String(payload?.data?.status || payload?.status || payload?.data?.state || payload?.state || "").toUpperCase();
+const bestMusicFailure = (payload: any) => String(payload?.data?.fail_reason || payload?.data?.failReason || payload?.fail_reason || payload?.failReason || payload?.message || "音乐生成失败");
+const musicRequest = async (config: any, model: any) => {
+  const vocalMode = String(config?.vocalMode || "").trim();
+  const lyrics = String(config?.lyrics || "").trim();
+  const prompt = String(config?.prompt || "").trim();
+  const tags = String(config?.tags || "").trim();
+  const title = String(config?.title || "Toonflow Music").trim().slice(0, 200);
+  if (vocalMode !== "vocal" && vocalMode !== "instrumental") throw new Error("音乐生成需要明确的 vocalMode：vocal 或 instrumental");
+  if (!tags) throw new Error("音乐生成需要模型编译出的 tags");
+  if (bestMusicChars(tags) > 120) throw new Error("Suno tags 不能超过 120 个字符");
+  if (Array.isArray(config?.referenceList) && config.referenceList.length) throw new Error("当前 Suno 模型不支持参考音频");
+  if (config?.loop === true) throw new Error("当前 Suno 模型不支持循环生成");
+  if (Number(config?.durationSec || 0) > 480) throw new Error("当前 Suno 模型的目标时长不能超过 480 秒");
+  const body: any = {
+    custom_mode: vocalMode === "vocal" ? 1 : 0,
+    make_instrumental: vocalMode === "instrumental" ? 1 : 0,
+    prompt: vocalMode === "vocal" ? lyrics : prompt,
+    mv: model.modelName,
+    title,
+    tags,
+    negative_tags: String(config?.negativePrompt || "").trim(),
+  };
+  if (vocalMode === "vocal") {
+    if (!lyrics) throw new Error("人声音乐需要已确认的歌词");
+    if (bestMusicChars(lyrics) > 3000) throw new Error("Suno 歌词不能超过 3000 个字符");
+  } else {
+    if (!prompt) throw new Error("纯音乐需要已编译的音乐描述");
+    if (bestMusicChars(prompt) > 200) throw new Error("Suno 纯音乐描述不能超过 200 个字符");
+  }
+  const submitted = await axios.post(\`\${getBaseUrl()}/suno/submit/music\`, body, { headers: bestMusicHeaders() });
+  const immediate = bestMusicTracks(submitted.data);
+  if (immediate.length) return { candidates: immediate };
+  const taskIds = [...new Set(bestMusicTaskIds(submitted.data))];
+  if (!taskIds.length) throw new Error("Suno 音乐提交未返回任务 ID");
+  logger("[best music] Suno task submitted");
+  const resultGroups = await Promise.all(taskIds.map(async (taskId) => {
+    const result = await pollTask(async () => {
+      const response = await axios.get(\`\${getBaseUrl()}/suno/fetch/\${encodeURIComponent(taskId)}\`, { headers: bestMusicHeaders() });
+      const status = bestMusicStatus(response.data);
+      if (["FAILURE", "FAILED", "ERROR", "CANCELLED", "CANCELED"].includes(status)) return { completed: true, error: bestMusicFailure(response.data) };
+      const tracks = bestMusicTracks(response.data);
+      if (["SUCCESS", "SUCCEEDED", "COMPLETED", "COMPLETE", "DONE"].includes(status)) {
+        return tracks.length ? { completed: true, data: tracks } : { completed: true, error: "Suno 任务完成但未返回可下载音频" };
+      }
+      return { completed: false };
+    }, 5000, 3000000);
+    if (result.error) throw new Error(result.error);
+    return Array.isArray(result.data) ? result.data : [];
+  }));
+  const candidates = resultGroups.flat();
+  if (!candidates.length) throw new Error("Suno 任务未返回可下载音频");
+  return { candidates };
+};
+exports.musicRequest = musicRequest;
+`;
+}
+
+async function upgradeInstalledBestMusicVendor(knex: Knex) {
+  if (!(await knex.schema.hasTable("o_vendorConfig")) || !(await knex("o_vendorConfig").where("id", "best").first())) return;
+  const file = getVendorFile("best");
+  if (!fs.existsSync(file)) return;
+  const code = fs.readFileSync(file, "utf8");
+  const upgraded = upgradeBestMusicVendorCode(code);
+  if (upgraded !== code) fs.writeFileSync(file, upgraded);
+}
 
 function getVendorFile(id: string | number) {
   return path.join(getPath("vendor"), `${id}.ts`);
@@ -106,17 +219,17 @@ export async function materializeVendorCodeFiles(knex: Knex) {
 
 async function ensureDefaultMusicPromptBindings(knex: Knex) {
   if (!(await knex.schema.hasTable("o_modelPrompt"))) return;
-  const binding = {
-    vendorId: "t8star",
-    model: "chirp-fenix",
-    fileName: "suno-v55.md",
-    path: "music/suno-v55.md",
-  };
-  const existing = await knex("o_modelPrompt").where({ vendorId: binding.vendorId, model: binding.model }).first();
-  if (!existing) {
-    await knex("o_modelPrompt").insert(binding);
-  } else if (existing.fileName === "t8star-suno-v55.md" && existing.path === "music/t8star-suno-v55.md") {
-    await knex("o_modelPrompt").where({ vendorId: binding.vendorId, model: binding.model }).update(binding);
+  const bindings = [{ vendorId: "t8star", model: "chirp-fenix", fileName: "suno-v55.md", path: "music/suno-v55.md" }];
+  if (await knex("o_vendorConfig").where("id", "best").first()) {
+    bindings.push({ vendorId: "best", model: "chirp-fenix", fileName: "suno-v55.md", path: "music/suno-v55.md" });
+  }
+  for (const binding of bindings) {
+    const existing = await knex("o_modelPrompt").where({ vendorId: binding.vendorId, model: binding.model }).first();
+    if (!existing) {
+      await knex("o_modelPrompt").insert(binding);
+    } else if (binding.vendorId === "t8star" && existing.fileName === "t8star-suno-v55.md" && existing.path === "music/t8star-suno-v55.md") {
+      await knex("o_modelPrompt").where({ vendorId: binding.vendorId, model: binding.model }).update(binding);
+    }
   }
 }
 
@@ -137,6 +250,7 @@ export async function insertDefaultVendorIfMissing(knex: Knex, tsCode: string) {
 
 export async function fixVendorConfigs(knex: Knex) {
   await materializeVendorCodeFiles(knex);
+  await upgradeInstalledBestMusicVendor(knex);
   await syncDefaultVendorConfigs(knex);
   await ensureDefaultMusicPromptBindings(knex);
 }

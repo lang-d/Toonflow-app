@@ -1,10 +1,25 @@
 ---
-name: liveaction_urban_prop
-description: 真人都市道具图像生成 · 约束手册
-metaData: liveaction_urban_art_skills
+name: art_prop
+description: 真人现代都市道具基础图视觉手册。将资产事实与视觉设计推导编译为可复用的图片提示词。
+metaData: art_skills
 ---
-
 # 真人都市道具图像生成 · 约束手册
+
+## 职责与输入契约
+
+本手册负责把已确认事实编译为真人现代都市道具基础图提示词，不负责创作剧情、身份、关系、地点、品牌、能力或世界规则。
+
+- **assetFoundation**：读取道具的稳定事实、结构、归属和连续性锚点；不得反向改写事实。
+- **visualDesignRationale**：读取识别度策略、审美修正和允许设计的空间；设计理由必须落实成可画特征。
+- **基础/衍生边界**：生成可反复复用的道具设定图，只表达默认稳定状态，不把单集事件、临时动作或后续剧情状态固化为基础资产。
+- **类型视觉语法**：使用本手册原有的造型、色彩、光影、材质和分类矩阵，不得用通用“高质量”词替代。
+- **占位项处理**：模板中的花括号是编译顺序提示，必须用输入事实和设计结论填实，最终不得残留花括号。
+
+### 输出模式优先级
+
+1. 外层流程要求 `<assetResult>` XML 时，遵守外层契约，并把编译后的纯图片提示词写入 `<assetImagePrompt>`。
+2. 直接润色或后台任务调用本手册时，只输出最终提示词正文；不输出 XML、Markdown、代码围栏、分析、表格或方案说明。
+
 
 ---
 
@@ -141,28 +156,19 @@ metaData: liveaction_urban_art_skills
 
 ---
 
-## 五、提示词模板
+## 提示词模板（编译顺序）
 
-真人都市道具实物产品摄影，单张静物展示，非3D渲染非CG非建模，
-{道具类型}，{材质描述}，{外观细节——使用痕迹、中文标识、日常状态}，
-道具独立展示，{背景描述：素灰背景纸 #B0B0B0 / 浅木纹桌面 / 米白台面}，
-{光源描述：自然窗光45°侧入 / 柔光箱顶光+侧补光}，浅景深 f/2.8-f/5.6，柔和自然阴影，
-{材质真实质感描述：金属拉丝/玻璃通透/陶瓷釉面/纸质纹理/皮革肌理/织物编织}，
-日常使用痕迹可见、非全新样板品相、中国当代都市日常物品，
-画面干净无文字无水印无签名无边框，
-真人写实摄影画质、35mm全画幅摄影质感
+按下列顺序选择并填实信息；不得照抄占位项，不得把模板说明输出给调用方。
 
-### 负面规避提示词
-
-3D render, 3D modeling, CGI, Unreal Engine, Blender, PBR material, 8K modeling, game engine, cartoon, anime, 2D, illustration, hand drawn,
-brand new, unboxed, pristine, showroom, sample product, perfect condition, unused,
-floating, shadowless, cut out, white background isolation, clipping path,
-multiple views, grid layout, four views, turnaround, orthographic view, blueprint,
-古风, 古代, 仙侠, 武侠, 民国, 赛博朋克, 科幻, 西方奇幻, 中世纪, 非中国物品,
-person, hand, finger, holding, wearing, using, interacting,
-text on image, watermark, signature, logo, border, frame
-
----
+```text
+真人现代都市道具设定图，prop design sheet，object reference sheet，
+{来自 assetFoundation 的名称、用途、尺寸、核心轮廓、结构、材质、标识和默认磨损事实}，
+{来自 visualDesignRationale 的识别度策略、审美修正和可设计细节}，
+现代日常物件具有真实材质、比例、中文环境语境和使用痕迹，但不虚构品牌与可读信息，
+同一画面展示正面 + 侧面 + 背面或底部 + 材质细节特写，完整物体可见，不裁边，
+独立静物设定图，无人物、无手、非握持、非穿戴、非剧情使用现场、非商品广告，
+类型表现：真人现代都市实拍摄影，真实面孔与皮肤纹理、自然身体比例、生活化服装褶皱和可信城市实景；光线：窗光、顶灯、台灯、路灯和屏幕反射等动机光可追溯，曝光重点与空间关系一致；严禁：影楼磨皮、网红滤镜、无来源轮廓光、奢侈品广告感、供应商专用引用语法与平台参数；画面无水印、无签名、无无依据可读文字
+```
 
 ## 六、约束规则
 

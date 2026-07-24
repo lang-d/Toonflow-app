@@ -1,10 +1,25 @@
 ---
-name: liveaction_urban_scene
-description: 真人都市场景图像生成 · 约束手册
-metaData: liveaction_urban_art_skills
+name: art_scene
+description: 真人现代都市场景基础图视觉手册。将资产事实与视觉设计推导编译为可复用的图片提示词。
+metaData: art_skills
 ---
-
 # 真人都市场景图像生成 · 约束手册
+
+## 职责与输入契约
+
+本手册负责把已确认事实编译为真人现代都市场景基础图提示词，不负责创作剧情、身份、关系、地点、品牌、能力或世界规则。
+
+- **assetFoundation**：读取场景的稳定事实、结构、归属和连续性锚点；不得反向改写事实。
+- **visualDesignRationale**：读取识别度策略、审美修正和允许设计的空间；设计理由必须落实成可画特征。
+- **基础/衍生边界**：生成可反复复用的场景设定图，只表达默认稳定状态，不把单集事件、临时动作或后续剧情状态固化为基础资产。
+- **类型视觉语法**：使用本手册原有的造型、色彩、光影、材质和分类矩阵，不得用通用“高质量”词替代。
+- **占位项处理**：模板中的花括号是编译顺序提示，必须用输入事实和设计结论填实，最终不得残留花括号。
+
+### 输出模式优先级
+
+1. 外层流程要求 `<assetResult>` XML 时，遵守外层契约，并把编译后的纯图片提示词写入 `<assetImagePrompt>`。
+2. 直接润色或后台任务调用本手册时，只输出最终提示词正文；不输出 XML、Markdown、代码围栏、分析、表格或方案说明。
+
 
 ---
 
@@ -142,30 +157,19 @@ metaData: liveaction_urban_art_skills
 
 ---
 
-## 六、提示词模板
+## 提示词模板（编译顺序）
 
-真人都市场景全景摄影，单张广角全景，非3D渲染非CG非建模，
-{室内/室外}场景，中国当代都市真实{场景类型}，
-{季节}，{时段}，{天气}，
-{光源逻辑：窗光方向+人工光源/日光方向+城市光源}、光的方向和色温可追溯、非全局均匀光，
-广角24-28mm镜头、全景深f/8-f/11、空间纵深完整、前景到后景全部清晰，
-前景{画框元素}、中景{空间主体结构}、后景{空间延伸/窗外/远景}，
-{材质与表面：墙面/地面/家具的真实使用痕迹}，
-{都市瑕疵：磨损/斑驳/灰尘/落叶/积水——被使用过的痕迹}，
-场景无人——{空场叙事线索}、严禁出现任何人物人影人体轮廓，
-真实摄影画质、35mm全画幅摄影质感、单张全景空间摄影，
-画面干净无文字无水印无签名无边框
+按下列顺序选择并填实信息；不得照抄占位项，不得把模板说明输出给调用方。
 
-### 负面规避提示词
-
-3D render, 3D modeling, CGI, Unreal Engine, Blender, PBR material, volumetric lighting, ambient occlusion, ray tracing, game engine, cartoon, anime, 2D, illustration, hand drawn, painting,
-four views, grid layout, 2x2, turnaround, orthographic view, blueprint, multiple angles,
-showroom, brand new, pristine, perfect, unrealistically clean, sterile, empty without story,
-people, person, human figure, silhouette, shadow figure, body, crowd,
-古风, 古代, 仙侠, 武侠, 民国, 赛博朋克, 科幻, 西方奇幻, 中世纪, 异世界, 非中国城市,
-text, watermark, signature, logo, border, frame, UI element, HUD
-
----
+```text
+真人现代都市场景设定图，environment design sheet，location reference，single image，
+{来自 assetFoundation 的场景名称、功能、固定布局、入口出口、功能分区、关键物件和默认状态}，
+{来自 visualDesignRationale 的识别锚点、空间层级和审美修正}，
+前景{引导或框景元素}，中景{主要活动区与固定结构}，后景{空间延伸、出口或地标}，
+住宅、办公室、街道和商业空间保留真实布局、玻璃反射、磨损、杂物秩序与通行路径，{已确认时段、天气和实际光源}，
+空间结构完整可读，无人物、无人影、无人体轮廓，不出现单集剧情事件或临时证据物，
+类型表现：真人现代都市实拍摄影，真实面孔与皮肤纹理、自然身体比例、生活化服装褶皱和可信城市实景；光线：窗光、顶灯、台灯、路灯和屏幕反射等动机光可追溯，曝光重点与空间关系一致；严禁：影楼磨皮、网红滤镜、无来源轮廓光、奢侈品广告感、供应商专用引用语法与平台参数；画面无水印、无签名、无无依据可读文字
+```
 
 ## 七、约束规则
 

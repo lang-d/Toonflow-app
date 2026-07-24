@@ -29,6 +29,7 @@ import {
 } from "@/services/storagePaths";
 import { isStorageMaintenanceActive } from "@/services/storageMigration";
 import { skillRootCandidates } from "@/services/skillResolver";
+import { syncBuiltinStyleSkills } from "@/services/builtinSkillSync";
 import { initLogger, createLogger } from "@/logger";
 
 const app = express();
@@ -65,6 +66,8 @@ async function startServeOnce(options: { startQueue?: boolean; portRetryMs?: num
   process.env.PORT = String(RUNTIME_API_PORT);
   await checkPermissions();
   await dbReady;
+  const skillSync = syncBuiltinStyleSkills();
+  apiLog.info("Builtin style skills synchronized", { event: "skills.builtin-style-sync", ...skillSync });
   if (options.startQueue !== false) startVideoGenerationQueue();
 
   await u.writeVersion();

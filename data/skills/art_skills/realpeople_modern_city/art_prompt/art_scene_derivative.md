@@ -1,10 +1,25 @@
 ---
-name: liveaction_urban_scene_derivative
-description: 真人都市场景衍生资产生成 · 约束手册
-metaData: liveaction_urban_art_skills
+name: art_scene_derivative
+description: 真人现代都市场景衍生图视觉手册。将资产事实与视觉设计推导编译为可复用的图片提示词。
+metaData: art_skills
 ---
-
 # 真人都市场景衍生资产生成 · 约束手册
+
+## 职责与输入契约
+
+本手册负责把已确认事实编译为真人现代都市场景衍生图提示词，不负责创作剧情、身份、关系、地点、品牌、能力或世界规则。
+
+- **assetFoundation**：读取场景的稳定事实、结构、归属和连续性锚点；不得反向改写事实。
+- **visualDesignRationale**：读取识别度策略、审美修正和允许设计的空间；设计理由必须落实成可画特征。
+- **基础/衍生边界**：以父级场景和参考图为连续性基准，只实现调用方明确指定的变化；未被指定的身份、结构、材质、颜色和识别锚点全部锁定。
+- **类型视觉语法**：使用本手册原有的造型、色彩、光影、材质和分类矩阵，不得用通用“高质量”词替代。
+- **占位项处理**：模板中的花括号是编译顺序提示，必须用输入事实和设计结论填实，最终不得残留花括号。
+
+### 输出模式优先级
+
+1. 外层流程要求 `<assetResult>` XML 时，遵守外层契约，并把编译后的纯图片提示词写入 `<assetImagePrompt>`。
+2. 直接润色或后台任务调用本手册时，只输出最终提示词正文；不输出 XML、Markdown、代码围栏、分析、表格或方案说明。
+
 
 ---
 
@@ -108,53 +123,19 @@ metaData: liveaction_urban_art_skills
 
 ---
 
-## 六、提示词模板
+## 提示词模板（编译顺序）
 
-### 焦段变体
+按下列顺序选择并填实信息；不得照抄占位项，不得把模板说明输出给调用方。
 
-真人都市场景衍生摄影，基于原场景{场景名}的同一空间，单张静物空间摄影，非3D渲染非CG，
-{广角全貌/标准全景/中景聚焦/近景细节}，{24mm/35mm/50mm/85mm}，
-保持原场景空间结构、陈设位置、光源逻辑不变，
-{焦段描述}，{景深描述}，{构图聚焦区域描述}，
-{时段+天气}，{光源行为描述}，
-空间无人——严禁出现任何人物人影人体轮廓，
-真实摄影画质、35mm全画幅摄影质感、单张空间摄影
-
-### 时段变体
-
-真人都市场景衍生摄影，基于原场景{场景名}的同一空间，
-同一机位、同一焦段、仅时段变化——从原时段变为{新时段}，
-保持空间结构、物品位置完全不变，
-{新时段的光：光的方向、色温、强度}，
-{新时段的空间情绪：静谧/温暖/孤独/诗意}，
-{人工光源的开关和亮度变化}，
-空间无人——严禁出现任何人物人影人体轮廓，
-真实摄影画质、单张空间摄影
-
-### 天候变体
-
-真人都市场景衍生摄影，基于原场景{场景名}的同一空间，
-同一机位、同一焦段、同一时段——仅天气变化为{新天候}，
-保持空间结构、物品位置完全不变，
-{新天候的视觉特征：雨丝/雪/雾/湿地面/雨痕}，
-{材质表面因天候产生的真实变化：金属水膜/玻璃雨痕/地面积水反光/植被挂水/积雪}，
-{天候带来的情绪变化}，
-空间无人——严禁出现任何人物人影人体轮廓，
-真实摄影画质、单张空间摄影
-
-> **使用说明**：焦段变体、时段变体、天候变体可单独使用也可组合使用（如"午后+小雨+中景"）。未涉及的维度在该条提示词中省略对应字段。
-
-### 负面规避提示词
-
-3D render, 3D modeling, CGI, Unreal Engine, Blender, PBR material, volumetric lighting, ambient occlusion, ray tracing, game engine, cartoon, anime, 2D, illustration, hand drawn, painting,
-four views, grid layout, 2x2, turnaround, orthographic view, blueprint, multiple angles,
-showroom, brand new, pristine, perfect, unrealistically clean, sterile, empty without reason,
-people, person, human figure, silhouette, shadow figure, body, crowd,
-dramatic sky replacement, unrealistic sky, composite, fake weather, Photoshop effect, filter effect,
-古风, 古代, 仙侠, 武侠, 民国, 赛博朋克, 科幻, 西方奇幻, 中世纪, 异世界, 非中国城市,
-text, watermark, signature, logo, border, frame, UI element, HUD
-
----
+```text
+真人现代都市场景衍生设定图，based on the reference scene design，same location，single image，
+{必须保持的 assetFoundation 空间结构、入口出口、固定布局、关键物件、材质和识别锚点}，
+{必须保持的 visualDesignRationale 空间策略与色彩逻辑}，
+{本次唯一变化：角度/景别/时间/天气/允许的空间状态}，其余布局和世界事实不变，
+住宅、办公室、街道和商业空间保留真实布局、玻璃反射、磨损、杂物秩序与通行路径，保持一致的材质响应和可追溯光源，
+无人物、无人影、无新地点、无空间重构、无剧情动作、无临时证据物，
+类型表现：真人现代都市实拍摄影，真实面孔与皮肤纹理、自然身体比例、生活化服装褶皱和可信城市实景；光线：窗光、顶灯、台灯、路灯和屏幕反射等动机光可追溯，曝光重点与空间关系一致；严禁：影楼磨皮、网红滤镜、无来源轮廓光、奢侈品广告感、供应商专用引用语法与平台参数；画面无水印、无签名、无无依据可读文字
+```
 
 ## 七、约束规则
 

@@ -1,10 +1,25 @@
 ---
-name: liveaction_urban_character_derivative
-description: 真人都市人物衍生资产生成 · 约束手册
-metaData: liveaction_urban_art_skills
+name: art_character_derivative
+description: 真人现代都市角色衍生图视觉手册。将资产事实与视觉设计推导编译为可复用的图片提示词。
+metaData: art_skills
 ---
-
 # 真人都市人物衍生资产生成 · 约束手册
+
+## 职责与输入契约
+
+本手册负责把已确认事实编译为真人现代都市角色衍生图提示词，不负责创作剧情、身份、关系、地点、品牌、能力或世界规则。
+
+- **assetFoundation**：读取角色的稳定事实、结构、归属和连续性锚点；不得反向改写事实。
+- **visualDesignRationale**：读取识别度策略、审美修正和允许设计的空间；设计理由必须落实成可画特征。
+- **基础/衍生边界**：以父级角色和参考图为连续性基准，只实现调用方明确指定的变化；未被指定的身份、结构、材质、颜色和识别锚点全部锁定。
+- **类型视觉语法**：使用本手册原有的造型、色彩、光影、材质和分类矩阵，不得用通用“高质量”词替代。
+- **占位项处理**：模板中的花括号是编译顺序提示，必须用输入事实和设计结论填实，最终不得残留花括号。
+
+### 输出模式优先级
+
+1. 外层流程要求 `<assetResult>` XML 时，遵守外层契约，并把编译后的纯图片提示词写入 `<assetImagePrompt>`。
+2. 直接润色或后台任务调用本手册时，只输出最终提示词正文；不输出 XML、Markdown、代码围栏、分析、表格或方案说明。
+
 
 ---
 
@@ -276,47 +291,19 @@ metaData: liveaction_urban_art_skills
 
 ---
 
-## 九、提示词模板
+## 提示词模板（编译顺序）
 
-### 输出格式约束
+按下列顺序选择并填实信息；不得照抄占位项，不得把模板说明输出给调用方。
 
-| 项目 | 约束 |
-|---|---|
-| 输出内容 | **仅输出提示词文本**，不输出分析过程、方案对比、速查表、约束说明 |
-| 禁止场景 | 不包含任何场景/环境/天气/背景描述 |
-| 禁止道具 | 不包含任何手持物/交互物（道具属于独立资产） |
-| 禁止姿态变化 | 不改变底模站姿，不输出任何动作/体态变化 |
-| 格式 | 直接输出可用的完整提示词 |
-
-### 完整造型叠加提示词模板
-
-以角色基础形象图为底图，img2img叠加造型，
-真人都市人物造型肖像系列，真人实拍摄影，棚拍柔光，中灰无缝背景纸，
-{性别}人物肖像系列，实拍风格，非3D非渲染非CG，
-character portrait series, live-action photography, studio soft lighting,
-保持基础形象面容不变，{整体气质}，
-【L1·妆容】{妆容强度——素肌级/日常级/场合级/盛典级}，{妆容描述}，妆容与真实皮肤融合、粉底不假面、皮肤毛孔纹理仍可见，
-【L2·发型】{发型描述}，真实发质纹理，{碎发/发根/发尾真实状态描述}，非假发套非CG发丝，
-【L3+L4·穿搭】{穿搭风格}，{上装描述}+{下装描述}，{颜色}，{面料自然质感}，衣物自然垂坠、有真实穿着褶皱、非样板衣，
-【L5·配饰】{配饰描述}，日常佩戴质感、有使用痕迹、自然贴合身体，
-同一画面从左至右并排：近景特写+正面全身+侧面全身+背面全身，
-自然日常站姿（重心偏移），中灰无缝背景纸 #B0B0B0，棚拍均匀柔光，光比柔和，
-四角度为同一次造型拍摄的连续摄影记录，
-画面干净无文字无水印无签名无边框，
-真人写实摄影画质、35mm全画幅摄影质感
-
-### 负面规避提示词
-
-3D render, 3D modeling, CGI, Unreal Engine, Blender, PBR material, 8K modeling, game engine, cartoon, anime, 2D, illustration, hand drawn, painting,
-plastic skin, wax face, silicone skin, airbrushed skin, perfect smooth skin, poreless, doll-like, mannequin,
-symmetrical pose, mannequin pose, runway pose, model stance, military stance, exaggerated pose, action pose,
-heavy makeup, dramatic makeup, makeup mask, foundation mask, fake lashes, colored contacts,
-wig, fake hair, helmet hair, stiff hair, perfect hairline, CG hair strands,
-brand new clothes, showroom clothes, stiff fabric, unrealistically clean, no wrinkles, mannequin clothes,
-古风, 古装, 汉服, 仙侠, 武侠, 民国, 赛博朋克, 科幻, 西方奇幻, 中世纪,
-text, watermark, signature, logo, border, frame
-
----
+```text
+真人现代都市角色衍生设定图，same person as reference image，based on the parent character design，
+{必须保持的 assetFoundation 身份、面容、体态、发型基准与连续性锚点}，
+{visualDesignRationale 确认的衍生目的、识别度策略与变化边界}，
+{本次唯一变化：服装/发型/妆容/配饰/表情或状态}，面孔、发量、体态、职业着装与生活状态具有个体差异，避免同模、磨皮和样板衣，
+同一画面从左至右：正面头像特写 + 正面全身 + 侧面全身 + 背面全身，四视图保持同一身份与同一次衍生造型，
+中性设定图背景，不换人、不改变未指定体态、不添加场景、剧情动作、手持道具或无依据配件，
+类型表现：真人现代都市实拍摄影，真实面孔与皮肤纹理、自然身体比例、生活化服装褶皱和可信城市实景；光线：窗光、顶灯、台灯、路灯和屏幕反射等动机光可追溯，曝光重点与空间关系一致；严禁：影楼磨皮、网红滤镜、无来源轮廓光、奢侈品广告感、供应商专用引用语法与平台参数；画面无水印、无签名、无无依据可读文字
+```
 
 ## 十、约束规则
 

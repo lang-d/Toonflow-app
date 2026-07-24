@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import u from "@/utils";
 import { updateUnifiedTask } from "@/services/taskCoordinator";
 import { createLogger } from "@/logger";
+import { shouldForwardTemperature } from "@/lib/textModelCapabilities";
 
 type AiType =
   | "scriptAgent"
@@ -229,25 +230,32 @@ class AiText {
     ];
     return mws.length > 0 ? wrapLanguageModel({ model: baseModel, middleware: mws.length === 1 ? mws[0] : mws }) : baseModel;
   }
+  private async getTextModelDefinition() {
+    const modelName = await resolveModelName(this.AiType);
+    const [vendorId, modelId] = modelName.split(/:(.+)/);
+    return (await u.vendor.getModelList(vendorId)).find((item: any) => item.modelName === modelId) as { supportsTemperature?: boolean } | undefined;
+  }
   async invoke(input: Omit<Parameters<typeof generateText>[0], "model">) {
     const config = await getModelConfig(this.AiType);
+    const textModel = await this.getTextModelDefinition();
 
     return generateText({
       ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
       ...input,
       model: await this.resolveModel(),
-      ...(config?.temperature && { temperature: config.temperature }),
+      ...(shouldForwardTemperature(textModel, config?.temperature) && { temperature: config?.temperature }),
       ...(config?.maxOutputTokens && { maxOutputTokens: config.maxOutputTokens }),
     } as Parameters<typeof generateText>[0]);
   }
   async stream(input: Omit<Parameters<typeof streamText>[0], "model">) {
     const config = await getModelConfig(this.AiType);
+    const textModel = await this.getTextModelDefinition();
 
     return streamText({
       ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
       ...input,
       model: await this.resolveModel(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" })),
-      ...(config?.temperature && { temperature: config.temperature }),
+      ...(shouldForwardTemperature(textModel, config?.temperature) && { temperature: config?.temperature }),
       ...(config?.maxOutputTokens && { maxOutputTokens: config.maxOutputTokens }),
     } as Parameters<typeof streamText>[0]);
   }

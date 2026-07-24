@@ -7,6 +7,7 @@ export const vendorModelSchema = z.discriminatedUnion("type", [
     modelName: z.string(),
     type: z.literal("text"),
     think: z.boolean(),
+    supportsTemperature: z.boolean().optional(),
   }),
   z.object({
     name: z.string(),

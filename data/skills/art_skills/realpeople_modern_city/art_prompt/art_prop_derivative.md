@@ -1,10 +1,25 @@
 ---
-name: liveaction_urban_prop_derivative
-description: 真人都市道具衍生状态生成 · 约束手册
-metaData: liveaction_urban_art_skills
+name: art_prop_derivative
+description: 真人现代都市道具衍生图视觉手册。将资产事实与视觉设计推导编译为可复用的图片提示词。
+metaData: art_skills
 ---
-
 # 真人都市道具衍生状态生成 · 约束手册
+
+## 职责与输入契约
+
+本手册负责把已确认事实编译为真人现代都市道具衍生图提示词，不负责创作剧情、身份、关系、地点、品牌、能力或世界规则。
+
+- **assetFoundation**：读取道具的稳定事实、结构、归属和连续性锚点；不得反向改写事实。
+- **visualDesignRationale**：读取识别度策略、审美修正和允许设计的空间；设计理由必须落实成可画特征。
+- **基础/衍生边界**：以父级道具和参考图为连续性基准，只实现调用方明确指定的变化；未被指定的身份、结构、材质、颜色和识别锚点全部锁定。
+- **类型视觉语法**：使用本手册原有的造型、色彩、光影、材质和分类矩阵，不得用通用“高质量”词替代。
+- **占位项处理**：模板中的花括号是编译顺序提示，必须用输入事实和设计结论填实，最终不得残留花括号。
+
+### 输出模式优先级
+
+1. 外层流程要求 `<assetResult>` XML 时，遵守外层契约，并把编译后的纯图片提示词写入 `<assetImagePrompt>`。
+2. 直接润色或后台任务调用本手册时，只输出最终提示词正文；不输出 XML、Markdown、代码围栏、分析、表格或方案说明。
+
 
 ---
 
@@ -95,30 +110,19 @@ metaData: liveaction_urban_art_skills
 
 ---
 
-## 五、提示词模板
+## 提示词模板（编译顺序）
 
-真人都市道具状态摄影，单张静物产品摄影，非3D渲染非CG非建模，
-基于原道具设定图的同一机位和光线条件，{道具类型}，{材质描述}，
-当前状态：{状态名}，
-{状态视觉核心描述}，{表面/材质变化细节描述}，
-道具独立静物陈列，{背景：素灰背景纸 #B0B0B0 / 浅木纹桌面 / 米白台面}，
-{光源：与原图一致的窗光/柔光箱}，浅景深 f/2.8-f/5.6，柔和自然阴影，
-日常真实使用/损伤/时间痕迹、中国当代都市物品、单张静物摄影，
-画面干净无文字无水印无签名无边框，
-真人写实摄影画质、35mm全画幅摄影质感
+按下列顺序选择并填实信息；不得照抄占位项，不得把模板说明输出给调用方。
 
-### 负面规避提示词
-
-3D render, 3D modeling, CGI, Unreal Engine, Blender, PBR material, game engine, cartoon, anime, 2D, illustration, hand drawn,
-multiple views, four views, grid layout, 2x2, turnaround, orthographic view, blueprint,
-brand new, unboxed, pristine, showroom, sample product, unused,
-unrealistic damage, illogical wear, magic transformation, glowing, energy effect, sci-fi effect,
-古风, 古代, 仙侠, 武侠, 民国, 赛博朋克, 科幻, 西方奇幻, 中世纪, 非中国物品,
-person, hand, finger, holding, wearing, using, interacting,
-floating, shadowless, cut out, white background isolation, clipping path,
-text on image, watermark, signature, logo, border, frame
-
----
+```text
+真人现代都市道具衍生设定图，based on the reference prop design，same object，
+{必须保持的 assetFoundation 用途、尺寸关系、核心轮廓、结构、材质、颜色、标识和归属痕迹}，
+{必须保持的 visualDesignRationale 识别度策略}，
+{本次唯一变化：角度/使用状态/陈旧程度/轻微损伤/维修后状态}，变化符合材料和受力的物理因果，
+现代日常物件具有真实材质、比例、中文环境语境和使用痕迹，但不虚构品牌与可读信息，完整物体可见，保持同一道具身份，
+无人物、无手、非握持、非穿戴，不换物、不新增功能、隐藏能力、品牌或剧情信息，
+类型表现：真人现代都市实拍摄影，真实面孔与皮肤纹理、自然身体比例、生活化服装褶皱和可信城市实景；光线：窗光、顶灯、台灯、路灯和屏幕反射等动机光可追溯，曝光重点与空间关系一致；严禁：影楼磨皮、网红滤镜、无来源轮廓光、奢侈品广告感、供应商专用引用语法与平台参数；画面无水印、无签名、无无依据可读文字
+```
 
 ## 六、约束规则
 
