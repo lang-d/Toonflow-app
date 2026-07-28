@@ -10,6 +10,7 @@ import {
 } from "@/services/scriptAssetBinding";
 import { updateUnifiedTask } from "@/services/taskCoordinator";
 import type { o_script } from "@/types/database";
+import { readScriptContent } from "@/services/scriptWorkspaceText";
 
 const NewAssetSchema = z.object({
   name: z.string().describe("Asset name from the script."),
@@ -54,10 +55,12 @@ export function chunkScriptAssetExtractionIds(scriptIds: number[], groupSize = 5
   return chunks;
 }
 
-function formatScriptsForPrompt(scripts: o_script[]) {
-  return scripts
-    .map((script) => `===== Script ID: ${script.id} ${script.name || ""} =====\n${script.content || ""}`)
-    .join("\n\n");
+async function formatScriptsForPrompt(scripts: o_script[]) {
+  return (
+    await Promise.all(
+      scripts.map(async (script) => `===== Script ID: ${script.id} ${script.name || ""} =====\n${await readScriptContent(script)}`),
+    )
+  ).join("\n\n");
 }
 
 function buildAssetExtractionRules() {
@@ -225,7 +228,7 @@ export async function executeScriptAssetExtractionTask(payload: ScriptAssetExtra
         },
         {
           role: "user",
-          content: `Existing asset context:${existingHint}\n\nExtract assets for these ${scripts.length} scripts:\n\n${formatScriptsForPrompt(scripts)}`,
+          content: `Existing asset context:${existingHint}\n\nExtract assets for these ${scripts.length} scripts:\n\n${await formatScriptsForPrompt(scripts)}`,
         },
       ],
       tools: { resultTool },

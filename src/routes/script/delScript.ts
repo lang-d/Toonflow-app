@@ -4,6 +4,7 @@ import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { deleteMergedReferences } from "@/services/workbenchReference";
+import { deleteScriptContentAssets } from "@/services/scriptWorkspaceText";
 const router = express.Router();
 
 // 删除剧本
@@ -42,6 +43,9 @@ export default router.post(
     }
     await u.db("o_musicPlan").whereIn("scriptId", ids).delete();
     await u.db("o_script").whereIn("id", ids).delete();
+    for (const projectId of new Set(scriptData.map((item: any) => Number(item.projectId)))) {
+      await deleteScriptContentAssets({ projectId, scriptIds: scriptData.filter((item: any) => Number(item.projectId) === projectId).map((item: any) => Number(item.id)) });
+    }
     await u.db("o_storyboard").whereIn("scriptId", ids).delete();
     await u.db("o_video").whereIn("scriptId", ids).delete();
     res.status(200).send(success({ message: "删除剧本成功" }));

@@ -1,0 +1,53 @@
+const SCRIPT_FACT_READER_TOOLS = [
+  "get_script_project_context",
+  "read_script_workspace",
+  "list_project_materials",
+  "read_project_material",
+  "get_project_context_pack",
+] as const;
+
+export const SCRIPT_SUB_AGENT_TOOL_NAMES = {
+  storySkeleton: [
+    "update_agent_progress",
+    ...SCRIPT_FACT_READER_TOOLS,
+    "list_novel_chapters",
+    "read_novel_events",
+    "read_novel_text",
+    "save_story_skeleton",
+    "await_user_decision",
+  ],
+  adaptationStrategy: [
+    "update_agent_progress",
+    ...SCRIPT_FACT_READER_TOOLS,
+    "list_novel_chapters",
+    "read_novel_events",
+    "read_novel_text",
+    "save_adaptation_strategy",
+    "await_user_decision",
+  ],
+  script: [
+    "update_agent_progress",
+    ...SCRIPT_FACT_READER_TOOLS,
+    "list_project_scripts",
+    "read_project_scripts",
+    "list_novel_chapters",
+    "read_novel_events",
+    "read_novel_text",
+    "upsert_project_script",
+    "delete_project_script",
+    "await_user_decision",
+  ],
+  supervision: [
+    "update_agent_progress",
+    ...SCRIPT_FACT_READER_TOOLS,
+    "list_project_scripts",
+    "read_project_scripts",
+    "list_novel_chapters",
+    "read_novel_events",
+    "read_novel_text",
+    "list_script_reviews",
+    "read_script_review",
+    "record_script_review",
+    "await_user_decision",
+  ],
+} as const;

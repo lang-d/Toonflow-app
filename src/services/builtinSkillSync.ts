@@ -7,6 +7,16 @@ import { builtinDataCandidates } from "@/services/builtinData";
 // Known official predecessors for the active Director and Art manuals. Runtime files are updated only when their hash matches one of these values; every other file is treated as a user override.
 export type BuiltinSkillPreviousHashes = Record<string, string | readonly string[]>;
 
+// Every distinct official predecessor found in repository history for the five root Script Agent skills.
+// These entries are intentionally independent from the active Director/Art upgrade inventory below.
+export const SCRIPT_SKILL_PREVIOUS_HASHES: BuiltinSkillPreviousHashes = {
+  "script_agent_decision.md": ["ba12aa107c3d0868139003d8b4c8aab7bb748e988cd01d073cab036e5257b43c","d0a2d092f35276101bcab55458502acfe941b5d95a1c5ef7fdde1e6db0868fe5","d3f5cc18e4a1d251d486692b99757990e066d32e40cedda94eaea6971c9a6f02","abd502ab884452bf2dcdce66b496e4ef8139c5f95af1b35aba73d8ba41496b62","0ea9fbd4ecbd62c303bb9fc01fe757c7d42580d6d6edabd71a9c23120294b61f","6c1481168aa3e3d637403815be744920dfac99111af46197c662dd6cc45cce19","a042a5be2be4bb55cd759b76fd90ccae106867adc99d61530e0078f4dd45eb26","caa8b7517da465f854025880ba0fab6c11c8fd9f1126d55b6c4963c513df6fb6","84163b64dbe73b84fac2bc24c1a317b2844d54706d5865eda74d4723e3db95c4","295082f3c6fe0e7d85b1d0009aff50f5f0eef7b09f3b36bd1d06e53448e017cd","34c58232102190125f5c0ca608e700dc89ea53f40cf207fc49ffe4a88675ef38","e1e794a467328adadd8bbd39374afdc60653c08844347e3145fe9e4917849705"],
+  "script_agent_supervision.md": ["7993e227bdf59d1b09f2fc196ba759c6ddc5a9696407a4065d071da1bf5a929e","d3ccc7df3ef5c113e202e54c80035e5ac1af823c79555c311c4484fac7708bf0","a315d5a950b835ff04d744c400df07682c4bcc67a280a705ac0e8c6e01f1f678","6c59468b1a5abfd56caa40a60c464f66c0fb0784a5c5ab45cd8f382e07ac5a1d","0d30feeecc9538b2047bf6a6d0a2d58d271e01051778d3677d99d6920684ef58","2057e73483b14e7a1c9aed92ddb9201bc0df3c01da0f1ef95159f037502628f3","4097bceadf13470249a63dd626d706efb7b97c2b205a87de19e387b964f32cf3","41472a15402c28273397ae34ce0f7c0cd2f38e1bc766759e21ea23efb56d2aa8","1893a843d263c3f2e92a0bc5e0074204205beccb579cf7ab96e6b66b0c23ee0c"],
+  "script_execution_adaptation.md": ["ce1c83a38aeb4d04e79bbf13a5d5a429cb17dea00ae5055c5d25bc42bc8107b7","81d0bc1a2df03674371885ff437d11abf1a65ce3fe3af3770f9da262affe6931","db814b8b41fc40b3b69a7b7235549139f79996d170cad46cad5abaf828a22f1c","642d8cc2541d4321209c9ebb67171d1de7be07a23f88efc1169ed1d33173aefd","29d32363dc835b2e89c711040413907f934618a702fcd777ecc53dbb906f212c","73547ec397489a793cbe75793b3c2909aed4d6b72a56f25a92f0cb819a37f093","ce98a5448c8bd3f28d2db670840fedd94f6ebc39b5282625776e83958499794f","6ff701cfa55db2c7ddedf4d6ccadeba727e52a14de14f8d3016d57fc5429fc8d","0d30feeecc9538b2047bf6a6d0a2d58d271e01051778d3677d99d6920684ef58"],
+  "script_execution_script.md": ["3b8bdfc9fe025b6d38457aa8bac65a1cc642ad4557b46728bc67e9f5a9302baf","391c68f649eeb9e6a4003c08b8e8b602f4a7c8d55ef0a1dffd41dab29bed2abe","bb1b9f3ec6519d7353c8ea3472b90ac92ff2ac1e9bd61800480359824a5dd7f4","7dd23384d6f77cccdc13485d01f2b86842e001251b04efb3ba89ec5f3614276b","9195a36fbdc19781216e629de84f4179a05ec60d5f957f4aee83436f31f86c54","bdf9137faa06a7c2f33a6f0d6ce93bf1776b42a04482b84aac40e68904a29903","62b7b08ec3cf35d13e194a4b8e439fc3981ce645502cbe0af2a62eb69135b5ef","26d8b89b2a842d7ad14969e76ee36bad0dc2ea79294dbe90de47f8ee0e49cdc4","b8754d565a6fa99816215a4fd662f117c67f73b6e0cf7a4e2857d0416af08dd1","f8d3562c44a73d3009c38c91df215dde040565c421002c24e4587a06568d1f4d"],
+  "script_execution_skeleton.md": ["76a2fcd6fa81de64e1a2ff1079d09610e8aac137c6437490e74242a5cf50856b","d23b6e86e36b74ad0df8ebba1971535801b2da007323b13f9d3bebc7ee45e353","36bc3cc1ab9d8ac3713aae05d764e74b328a961517510b9911c01cbb329b4260","4290cdf4e0e5ce13c193dcbefac2d24741b0e6ef9bba6026c1192049cfa72af9","1c0c5ba244104f829f2261b765c8c661107c17f9864575f1942d729f6861aa3e","69a63244ec1634eace0dbd467d494075df7436a451587e5e542fd28be4aab00c","e946e1688e15ae9f13276610a3a10d0bc40ac8a011d48140697eb78d0731395a","3b550b7303afccfe50f40e9b3903d77a2ab57eeb4e51f775de6f27d56a7eab90","9ab7115657bbe60205a7fa95d1fb2c4780ab454626cade6819408c19f9f9f366","0d30feeecc9538b2047bf6a6d0a2d58d271e01051778d3677d99d6920684ef58"],
+};
+
 export const STYLE_SKILL_PREVIOUS_HASHES: BuiltinSkillPreviousHashes = {
   "art_skills/2D_90s_japanese_anime/art_prompt/art_character_derivative.md": ["eff88f883ba87d21f4e74e4b2fce79d107b37ecba7241faf8391085ffdfc8f8b","1cb85a5b797e4aab58b2789d76e14541fd6be1c794e44c99cc71f3e38493ab4c"],
   "art_skills/2D_90s_japanese_anime/art_prompt/art_character.md": ["349a42ebd569875c8a96760fbe0e4b53a57c16d1a2c71056491a2b2cde3d48c8","b5d152cf9d3d2fae4767fc9c680facb13bed0bfde7eb467745916e11be2cc408"],
@@ -128,12 +138,16 @@ function sourceFileFor(relativePath: string, roots: string[]) {
     .find((file) => fs.existsSync(file) && fs.statSync(file).isFile());
 }
 
-export function syncBuiltinStyleSkills(options: BuiltinSkillSyncOptions = {}): BuiltinSkillSyncResult {
+function syncBuiltinSkills(
+  options: BuiltinSkillSyncOptions,
+  defaultPreviousHashes: BuiltinSkillPreviousHashes,
+  event: string,
+): BuiltinSkillSyncResult {
   const configuredRoot = path.resolve(options.configuredRoot || getPath(["skills"]));
   const builtinRoots = options.builtinRoots || builtinDataCandidates("skills");
   const result: BuiltinSkillSyncResult = { updated: 0, skippedCustomized: 0, skippedMissing: 0, skippedSourceMissing: 0 };
 
-  for (const [relativePath, previousHash] of Object.entries(options.previousHashes || STYLE_SKILL_PREVIOUS_HASHES)) {
+  for (const [relativePath, previousHash] of Object.entries(options.previousHashes || defaultPreviousHashes)) {
     const target = path.resolve(configuredRoot, relativePath);
     if (!fs.existsSync(target)) {
       result.skippedMissing += 1;
@@ -155,6 +169,14 @@ export function syncBuiltinStyleSkills(options: BuiltinSkillSyncOptions = {}): B
     result.updated += 1;
   }
 
-  options.log?.("skills.builtin-style-sync", result);
+  options.log?.(event, result);
   return result;
+}
+
+export function syncBuiltinStyleSkills(options: BuiltinSkillSyncOptions = {}): BuiltinSkillSyncResult {
+  return syncBuiltinSkills(options, STYLE_SKILL_PREVIOUS_HASHES, "skills.builtin-style-sync");
+}
+
+export function syncBuiltinScriptSkills(options: BuiltinSkillSyncOptions = {}): BuiltinSkillSyncResult {
+  return syncBuiltinSkills(options, SCRIPT_SKILL_PREVIOUS_HASHES, "skills.builtin-script-sync");
 }

@@ -7,6 +7,7 @@ import { getDeriveAssetPromptSnapshot } from "@/services/imageFlow";
 import { getFullTextAssetContent } from "@/services/textAsset";
 import { VISUAL_ASSET_TYPES } from "@/services/assetTypes";
 import { getDirectorPlanGenerationState } from "@/services/directorPlanGeneration";
+import { readScriptContent } from "@/services/scriptWorkspaceText";
 
 const ACTIVE_IMAGE_TASK_STATUSES = new Set(["queued", "submitting", "processing"]);
 
@@ -94,6 +95,7 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
     u.db("o_script").where({ projectId, id: episodesId }).first(),
     u.db("o_scriptAssets").where("scriptId", episodesId),
   ]);
+  const scriptContent = scriptData ? await readScriptContent(scriptData) : "";
   const assetIds = [...new Set(scriptAssets.map((item: any) => Number(item.assetId)).filter(Number.isFinite))];
   const boundAudioRows = assetIds.length
     ? await u.db("o_assetsRole2Audio").whereIn("assetsRoleId", assetIds).select("assetsRoleId", "assetsAudioId")
@@ -363,7 +365,7 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
           mode: projectData.mode || "",
         }
       : null,
-    script: scriptData?.content ?? "",
+    script: scriptContent,
     scriptPlan: persistedScriptPlan || stored.scriptPlan || "",
     directorPlanGeneration,
     assets,

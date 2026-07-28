@@ -1,5 +1,6 @@
 import u from "@/utils";
 import { replaceScriptAssetBindings } from "@/services/scriptAssetBinding";
+import { createScriptWithContent, readScriptContent, replaceScriptContent } from "@/services/scriptWorkspaceText";
 
 export const STORY_ARTIFACT_TYPES = ["idea", "bible", "outline", "episodeOutline", "sceneCard", "script", "review", "research"] as const;
 export const STORY_ARTIFACT_STATUSES = ["draft", "active", "archived", "published"] as const;
@@ -228,18 +229,9 @@ export async function publishArtifactToScript(input: {
   if (scriptId) {
     const row = await u.db("o_script").where({ id: scriptId, projectId: input.projectId }).first();
     if (!row) throw new Error("Target script not found");
-    await u.db("o_script").where({ id: scriptId, projectId: input.projectId }).update({
-      name,
-      content: artifact.content,
-    });
+    await replaceScriptContent({ projectId: input.projectId, scriptId, name, content: artifact.content });
   } else {
-    const inserted = await u.db("o_script").insert({
-      projectId: input.projectId,
-      name,
-      content: artifact.content,
-      createTime: now,
-    });
-    scriptId = Number(inserted[0]);
+    scriptId = (await createScriptWithContent({ projectId: input.projectId, name, content: artifact.content, createTime: now })).id;
   }
   if (input.assets) {
     await replaceScriptAssetBindings({
@@ -256,9 +248,16 @@ export async function publishArtifactToScript(input: {
 export async function getStoryContext(projectId: number) {
   const [project, scripts, novels, artifacts] = await Promise.all([
     u.db("o_project").where("id", projectId).first(),
-    u.db("o_script").where("projectId", projectId).select("id", "name", "content").orderBy("id", "asc"),
+    u.db("o_script").where("projectId", projectId).select("id", "name", "projectId", "content", "contentTextAssetId").orderBy("id", "asc"),
     u.db("o_novel").where("projectId", projectId).select("id", "chapterIndex", "chapter", "event").orderBy("chapterIndex", "asc"),
     listArtifacts({ projectId, includeArchived: false }),
   ]);
-  return { project, scripts, novels, artifacts };
+  return {
+    project,
+    scripts: await Promise.all(
+      scripts.map(async (script: any) => ({ id: script.id, name: script.name, content: await readScriptContent(script) })),
+    ),
+    novels,
+    artifacts,
+  };
 }

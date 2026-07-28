@@ -11,6 +11,18 @@ const TERMINAL_GENERATION_STATES = ["committed", "expired", "superseded", "inval
 let activeCleanup: Promise<RetentionCleanupResult> | null = null;
 let lastCleanupAt = 0;
 
+function scriptWorkspaceTextReferences(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    return [parsed.storySkeletonTextAssetId, parsed.adaptationStrategyTextAssetId]
+      .map(Number)
+      .filter((id) => Number.isFinite(id) && id > 0);
+  } catch {
+    return [];
+  }
+}
+
 export interface RetentionCleanupResult {
   skipped: boolean;
   storyboardDraftRows: number;
@@ -18,6 +30,8 @@ export interface RetentionCleanupResult {
   generationDiagnostics: number;
   agentOutputs: number;
   agentOutputFailures: number;
+  scriptWorkspaceAssets: number;
+  scriptWorkspaceAssetFailures: number;
 }
 
 async function hasTables(database: any, names: string[]) {
@@ -27,6 +41,15 @@ async function hasTables(database: any, names: string[]) {
     result[name] = Boolean(row);
   }
   return result;
+}
+
+async function hasColumn(database: any, table: string, column: string) {
+  try {
+    const columns = await database(table).columnInfo();
+    return Boolean(columns?.[column]);
+  } catch {
+    return false;
+  }
 }
 
 async function cleanupGenerationContent(input: {
@@ -78,6 +101,8 @@ async function performRetentionCleanup(database: any, now: number): Promise<Rete
     "o_directorPlanGeneration",
     "o_directorPlanGenerationChunk",
     "o_textAsset",
+    "o_script",
+    "o_agentWorkData",
   ]);
   const contentCutoff = now - GENERATION_CONTENT_TTL_MS;
   const diagnosticCutoff = now - DIAGNOSTIC_RETENTION_MS;
@@ -116,6 +141,8 @@ async function performRetentionCleanup(database: any, now: number): Promise<Rete
 
   let agentOutputs = 0;
   let agentOutputFailures = 0;
+  let scriptWorkspaceAssets = 0;
+  let scriptWorkspaceAssetFailures = 0;
   if (tables.o_textAsset) {
     const rows = await database("o_textAsset")
       .where({ targetType: "agentOutput" })
@@ -124,6 +151,41 @@ async function performRetentionCleanup(database: any, now: number): Promise<Rete
     const result = await deleteTextAssetRecords(rows, database);
     agentOutputs = result.deletedIds.length;
     agentOutputFailures = result.failedIds.length;
+
+    const referencedIds = new Set<number>();
+    if (
+      tables.o_textAsset &&
+      tables.o_script &&
+      (await hasColumn(database, "o_script", "contentTextAssetId"))
+    ) {
+      const scripts = await database("o_script").whereNotNull("contentTextAssetId").select("contentTextAssetId");
+      for (const script of scripts) {
+        const id = Number(script.contentTextAssetId);
+        if (Number.isFinite(id) && id > 0) referencedIds.add(id);
+      }
+    }
+    if (tables.o_agentWorkData) {
+      const workspaces = await database("o_agentWorkData")
+        .where({ key: "scriptAgent" })
+        .orderBy("projectId", "asc")
+        .orderBy("id", "asc")
+        .select("projectId", "data");
+      const projects = new Set<number>();
+      for (const workspace of workspaces) {
+        const projectId = Number(workspace.projectId);
+        if (projects.has(projectId)) continue;
+        projects.add(projectId);
+        for (const id of scriptWorkspaceTextReferences(workspace.data)) referencedIds.add(id);
+      }
+    }
+    const staleQuery = database("o_textAsset")
+      .whereIn("targetType", ["scriptContent", "scriptWorkspaceStage"])
+      .andWhere("updateTime", "<", contentCutoff);
+    if (referencedIds.size) staleQuery.whereNotIn("id", [...referencedIds]);
+    const staleRows = await staleQuery.select("id", "filePath");
+    const staleResult = await deleteTextAssetRecords(staleRows, database);
+    scriptWorkspaceAssets = staleResult.deletedIds.length;
+    scriptWorkspaceAssetFailures = staleResult.failedIds.length;
   }
 
   return {
@@ -133,6 +195,8 @@ async function performRetentionCleanup(database: any, now: number): Promise<Rete
     generationDiagnostics,
     agentOutputs,
     agentOutputFailures,
+    scriptWorkspaceAssets,
+    scriptWorkspaceAssetFailures,
   };
 }
 
@@ -150,6 +214,8 @@ export async function runLazyRetentionCleanup(input: {
       generationDiagnostics: 0,
       agentOutputs: 0,
       agentOutputFailures: 0,
+      scriptWorkspaceAssets: 0,
+      scriptWorkspaceAssetFailures: 0,
     };
   }
   if (activeCleanup) return activeCleanup;

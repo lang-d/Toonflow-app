@@ -8,6 +8,8 @@ import { legacyDataRoot, storageMode, workspaceRoot } from "@/services/storagePa
 export type TextAssetTargetType =
   | "storyboardTable"
   | "scriptPlan"
+  | "scriptContent"
+  | "scriptWorkspaceStage"
   | "projectContextPack"
   | "agentOutput"
   | "videoPromptDraft"
@@ -31,6 +33,13 @@ export interface TextAssetContent {
   content: string;
   size: number;
   eof: boolean;
+}
+
+export interface TextAssetReference {
+  id: number;
+  size: number;
+  hash: string;
+  updateTime: number;
 }
 
 const TEXT_ASSET_ROOT = "textAssets";
@@ -134,10 +143,19 @@ export async function createTextAsset(input: CreateTextAssetInput, database: any
   const absolutePath = resolveTextAssetPath(relativePath);
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   const tempPath = `${absolutePath}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tempPath, content, "utf8");
-  await fs.rename(tempPath, absolutePath);
   const size = Buffer.byteLength(content, "utf8");
   const hash = sha256(content);
+  try {
+    await fs.writeFile(tempPath, content, "utf8");
+    const written = await fs.readFile(tempPath, "utf8");
+    if (Buffer.byteLength(written, "utf8") !== size || sha256(written) !== hash) {
+      throw new Error("Text asset verification failed");
+    }
+    await fs.rename(tempPath, absolutePath);
+  } catch (error) {
+    await fs.unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
   const summary =
     input.summary === undefined ? content.replace(/\s+/g, " ").slice(0, 500).slice(0, 1000) : input.summary.slice(0, 1000);
   try {
@@ -185,8 +203,8 @@ export async function getTextAssetContent(input: {
 }, database: any = u.db): Promise<TextAssetContent> {
   const row = await database("o_textAsset").where({ id: input.id, projectId: input.projectId }).first();
   if (!row) throw new Error("Text asset not found");
-  const absolutePath = resolveTextAssetPath(String(row.filePath || ""));
-  const content = await fs.readFile(absolutePath, "utf8");
+  await assertTextAssetBusinessReference(row, input.projectId, database);
+  const content = await readTextAssetFile(row);
   const offset = Math.max(0, Number(input.offset || 0));
   const limit = Math.max(1, Math.min(Number(input.limit || DEFAULT_PAGE_LIMIT), MAX_PAGE_LIMIT));
   const slice = content.slice(offset, offset + limit);
@@ -197,29 +215,54 @@ export async function getTextAssetContent(input: {
   };
 }
 
+async function assertTextAssetBusinessReference(row: any, projectId: number, database: any) {
+  if (row.targetType === "scriptContent") {
+    const script = await database("o_script")
+      .where({ id: row.scriptId, projectId, contentTextAssetId: row.id })
+      .first("id");
+    if (!script) throw new Error("Text asset not found");
+  }
+  if (row.targetType === "scriptWorkspaceStage") {
+    const workspace = await database("o_agentWorkData")
+      .where({ projectId, key: "scriptAgent" })
+      .orderBy("id", "asc")
+      .first("data");
+    let referenced = false;
+    try {
+      const data = JSON.parse(String(workspace?.data || "{}"));
+      referenced = [data.storySkeletonTextAssetId, data.adaptationStrategyTextAssetId].some(
+        (id) => Number(id) === Number(row.id),
+      );
+    } catch {
+      referenced = false;
+    }
+    if (!referenced) throw new Error("Text asset not found");
+  }
+}
+
 export async function getFullTextAssetContent(
   input: { id: number; projectId: number },
   database: any = u.db,
 ): Promise<TextAssetContent> {
-  let offset = 0;
-  let size = 0;
-  let content = "";
-  for (;;) {
-    const page = await getTextAssetContent(
-      {
-        id: input.id,
-        projectId: input.projectId,
-        offset,
-        limit: MAX_PAGE_LIMIT,
-      },
-      database,
-    );
-    content += page.content;
-    size = page.size;
-    offset += page.content.length;
-    if (page.eof) break;
+  const row = await database("o_textAsset").where({ id: input.id, projectId: input.projectId }).first();
+  if (!row) throw new Error("Text asset not found");
+  await assertTextAssetBusinessReference(row, input.projectId, database);
+  const content = await readTextAssetFile(row);
+  return { content, size: Buffer.byteLength(content, "utf8"), eof: true };
+}
+
+async function readTextAssetFile(row: any) {
+  const absolutePath = resolveTextAssetPath(String(row.filePath || ""));
+  const content = await fs.readFile(absolutePath, "utf8");
+  if (["scriptContent", "scriptWorkspaceStage"].includes(String(row.targetType))) {
+    const actualSize = Buffer.byteLength(content, "utf8");
+    const expectedSize = Number(row.size);
+    const expectedHash = String(row.hash || "");
+    if ((Number.isFinite(expectedSize) && expectedSize !== actualSize) || (expectedHash && expectedHash !== sha256(content))) {
+      throw new Error("Text asset content is corrupted");
+    }
   }
-  return { content, size, eof: true };
+  return content;
 }
 
 export async function deleteTextAssetFiles(rows: Array<{ filePath: string }>) {
@@ -247,6 +290,17 @@ export async function deleteTextAssetRecords(rows: Array<{ id: number; filePath:
   }
   if (deletedIds.length) await database("o_textAsset").whereIn("id", deletedIds).delete();
   return { deletedIds, failedIds };
+}
+
+export function toTextAssetReference(row: any): TextAssetReference | null {
+  const id = Number(row?.id);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  return {
+    id,
+    size: Number(row?.size || 0),
+    hash: String(row?.hash || ""),
+    updateTime: Number(row?.updateTime || row?.createTime || 0),
+  };
 }
 
 export function summarizeLongText(content: string, textAssetId: number) {

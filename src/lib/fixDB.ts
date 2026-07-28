@@ -897,6 +897,7 @@ export default async (knex: Knex): Promise<void> => {
   }
   await addColumn("o_textAsset", "scriptId", "integer");
   await addColumn("o_textAsset", "targetId", "string");
+  await addColumn("o_script", "contentTextAssetId", "integer");
   await knex.raw("CREATE INDEX IF NOT EXISTS idx_text_asset_target ON o_textAsset(projectId, scriptId, targetType, targetId)");
   await knex.raw("CREATE INDEX IF NOT EXISTS idx_text_asset_state ON o_textAsset(state, updateTime)");
 

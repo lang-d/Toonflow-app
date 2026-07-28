@@ -557,6 +557,7 @@ export default async (
         table.integer("id").notNullable();
         table.text("name");
         table.text("content");
+        table.integer("contentTextAssetId");
         table.integer("projectId");
         table.integer("extractState");
         table.integer("createTime");

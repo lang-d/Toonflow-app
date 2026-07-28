@@ -16,6 +16,7 @@ import {
 } from "@/services/musicScope";
 import { listMusicCues, parseJsonValue, type MusicScopeMode } from "@/services/musicDirector";
 import { recordAgentModelStreamFinished, type AgentRunContext } from "@/services/agentRun";
+import { readScriptContent } from "@/services/scriptWorkspaceText";
 
 export interface AgentContext {
   socket: Socket;
@@ -109,7 +110,7 @@ async function buildReadOnlyProductionContext(input: Required<Pick<MusicScopeInp
     : await u
         .db("o_script")
         .where({ projectId: input.projectId, id: input.scriptId })
-        .first("id", "name", "content");
+        .first("id", "name", "projectId", "content", "contentTextAssetId");
   const contextPack = await getProjectContextPack(input.projectId).catch(() => null);
   const storyboardCount = await u
     .db("o_storyboard")
@@ -149,7 +150,7 @@ async function buildReadOnlyProductionContext(input: Required<Pick<MusicScopeInp
       directorManual: truncate(project.directorManual, 1200),
     },
     script: script
-      ? { id: script.id, name: script.name, content: truncate(script.content, 4000) }
+      ? { id: script.id, name: script.name, content: truncate(await readScriptContent(script), 4000) }
       : null,
     contextPack: contextPack ? truncate((contextPack as any).content, 3000) : "",
     productionReadOnlySummary: {

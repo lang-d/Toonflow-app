@@ -4,6 +4,7 @@ import { z } from "zod";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { validateScriptAssetIds } from "@/services/scriptAssetBinding";
+import { createScriptWithContent } from "@/services/scriptWorkspaceText";
 const router = express.Router();
 
 // 新增剧本
@@ -21,12 +22,8 @@ export default router.post(
     if (invalidAssetIds.length) {
       return res.status(400).send(error(`Invalid script asset ids: ${invalidAssetIds.join(", ")}`));
     }
-    const [scriptId] = await u.db("o_script").insert({
-      name,
-      content,
-      projectId,
-      createTime: Date.now(),
-    });
+    const script = await createScriptWithContent({ name, content, projectId });
+    const scriptId = script.id;
     if (validAssetIds.length) {
       await u.db("o_scriptAssets").insert(validAssetIds.map((assetId) => ({ scriptId, assetId })));
     }

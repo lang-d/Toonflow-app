@@ -50,7 +50,8 @@ export default ({ resTool, runContext, toolsNames }: ToolConfig) => {
     read_script_workspace: tool({
       description: "Read the current Script Agent workspace. This is the source of truth for story skeleton and adaptation strategy.",
       inputSchema: jsonSchema<Record<string, never>>(z.object({}).toJSONSchema()),
-      execute: async () => getScriptAgentWorkspace(projectIdOf(resTool)),
+      execute: async () =>
+        getScriptAgentWorkspace(projectIdOf(resTool), u.db, { includeContent: true, includeScriptContent: false }),
     }),
     save_story_skeleton: tool({
       description: "Persist the complete current story skeleton for this project.",

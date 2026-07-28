@@ -8,6 +8,7 @@ import ResTool from "@/socket/resTool";
 import { recordAgentModelStreamFinished, type AgentRunContext } from "@/services/agentRun";
 import { readConfiguredSkill } from "@/services/skillResolver";
 import { consumeFullStream as consumeAgentFullStream, createAgentModelStreamScope } from "@/agents/shared/streaming";
+import { SCRIPT_SUB_AGENT_TOOL_NAMES } from "@/agents/scriptAgent/toolPolicy";
 
 export interface AgentContext {
   socket: Socket;
@@ -138,7 +139,7 @@ function createSubAgents(parentCtx: AgentContext) {
           skillFile: "script_execution_skeleton.md",
           name: "编剧",
           memoryKey: "assistant:execution:storySkeleton",
-          toolNames: ["update_agent_progress", "get_script_project_context", "read_script_workspace", "list_novel_chapters", "read_novel_events", "save_story_skeleton", "await_user_decision"],
+          toolNames: [...SCRIPT_SUB_AGENT_TOOL_NAMES.storySkeleton],
         }),
     }),
     run_sub_agent_adaptationStrategy: tool({
@@ -151,7 +152,7 @@ function createSubAgents(parentCtx: AgentContext) {
           skillFile: "script_execution_adaptation.md",
           name: "编剧",
           memoryKey: "assistant:execution:adaptationStrategy",
-          toolNames: ["update_agent_progress", "get_script_project_context", "read_script_workspace", "list_novel_chapters", "read_novel_events", "save_adaptation_strategy", "await_user_decision"],
+          toolNames: [...SCRIPT_SUB_AGENT_TOOL_NAMES.adaptationStrategy],
         }),
     }),
     run_sub_agent_script: tool({
@@ -164,7 +165,7 @@ function createSubAgents(parentCtx: AgentContext) {
           skillFile: "script_execution_script.md",
           name: "编剧",
           memoryKey: "assistant:execution:script",
-          toolNames: ["update_agent_progress", "get_script_project_context", "read_script_workspace", "list_project_scripts", "read_project_scripts", "list_novel_chapters", "read_novel_events", "read_novel_text", "upsert_project_script", "delete_project_script", "await_user_decision"],
+          toolNames: [...SCRIPT_SUB_AGENT_TOOL_NAMES.script],
         }),
     }),
     run_supervision_agent: tool({
@@ -177,7 +178,7 @@ function createSubAgents(parentCtx: AgentContext) {
           skillFile: "script_agent_supervision.md",
           name: "编剧监督",
           memoryKey: "assistant:supervision",
-          toolNames: ["update_agent_progress", "get_script_project_context", "read_script_workspace", "list_project_scripts", "read_project_scripts", "list_novel_chapters", "read_novel_events", "read_novel_text", "list_script_reviews", "read_script_review", "record_script_review", "await_user_decision"],
+          toolNames: [...SCRIPT_SUB_AGENT_TOOL_NAMES.supervision],
         }),
     }),
   };

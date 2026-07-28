@@ -169,3 +169,7 @@ Run detail 的 timeline 还可能包含：
 - 流完成时调用 `/scriptAgent/setPlanData`。
 - `/scriptAgent/updateData`、`/scriptAgent/setPlanData` 的请求封装。
 - 通过聊天文本、XML 是否到达或本地 loading 状态推断 Agent 完成度。
+
+## 7. 大文本存储更新
+
+剧本正文、故事骨架和改编策略已改为文件型文本资产。新前端应使用 `includeContent: false` 获取工作区元数据，并通过 `/textAsset/getContent` 按需读取正文。完整请求、响应及移除 5000 字限制的方法见 [frontend-script-large-text-integration.md](./frontend-script-large-text-integration.md)。省略 `includeContent` 时仍返回旧版完整正文，仅用于兼容现有构建物。

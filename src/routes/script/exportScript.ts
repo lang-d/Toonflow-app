@@ -4,6 +4,7 @@ import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import compressing from "compressing";
 import { validateFields } from "@/middleware/middleware";
+import { readScriptContent } from "@/services/scriptWorkspaceText";
 const router = express.Router();
 
 export default router.post(
@@ -14,7 +15,7 @@ export default router.post(
   async (req, res) => {
     const { id } = req.body;
     const scripts = await u.db("o_script").whereIn("id", id);
-    const textList = scripts.map((s) => ({ name: s.name, text: s.content }));
+    const textList = await Promise.all(scripts.map(async (s) => ({ name: s.name, text: await readScriptContent(s) })));
     //压缩为zip文件
     const zipStream = new compressing.zip.Stream();
     textList.forEach((item) => {

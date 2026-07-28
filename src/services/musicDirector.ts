@@ -5,6 +5,7 @@ import { readConfiguredSkill } from "@/services/skillResolver";
 import { getProjectContextPack } from "@/services/projectMaterial";
 import { getFullTextAssetContent, latestTextAsset } from "@/services/textAsset";
 import { ensureLegacyMusicLibraryMigration } from "@/services/musicLibrary";
+import { readScriptContent } from "@/services/scriptWorkspaceText";
 
 export type MusicScopeMode = "concept" | "project" | "episode";
 
@@ -108,8 +109,8 @@ async function collectMusicContext(input: { projectId: number; scriptId?: number
 
   const contextPack = await getProjectContextPack(input.projectId).catch(() => null);
   const scripts = input.scriptId
-    ? await u.db("o_script").where({ projectId: input.projectId, id: input.scriptId }).select("id", "name", "content")
-    : await u.db("o_script").where({ projectId: input.projectId }).select("id", "name", "content").orderBy("id", "asc");
+    ? await u.db("o_script").where({ projectId: input.projectId, id: input.scriptId }).select("id", "name", "projectId", "content", "contentTextAssetId")
+    : await u.db("o_script").where({ projectId: input.projectId }).select("id", "name", "projectId", "content", "contentTextAssetId").orderBy("id", "asc");
   const storyboards = input.mode === "episode" && input.scriptId
     ? await u
         .db("o_storyboard")
@@ -132,11 +133,11 @@ async function collectMusicContext(input: { projectId: number; scriptId?: number
     ? await (u.db as any)("o_musicLibraryVersion").where({ projectId: input.projectId, state: "complete" }).whereIn("editionId", editions.map((item: any) => item.id))
     : [];
 
-  const scriptBrief = scripts.map((script: any) => ({
+  const scriptBrief = await Promise.all(scripts.map(async (script: any) => ({
     id: script.id,
     name: script.name,
-    contentChunks: chunkText(script.content),
-  }));
+    contentChunks: chunkText(await readScriptContent(script)),
+  })));
   const storyboardBrief = storyboards.map((row: any) => ({
     id: row.id,
     scriptId: row.scriptId,

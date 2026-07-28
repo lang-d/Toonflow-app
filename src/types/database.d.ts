@@ -1,4 +1,4 @@
-// @db-hash 53e7a226b0f9d6674b6d06b06b5a66f0
+// @db-hash e11b0e8e83bc3dfde92bbc155ad30ebd
 //该文件由脚本自动生成，请勿手动修改
 
 export interface memories {
@@ -467,6 +467,7 @@ export interface o_prompt {
 }
 export interface o_script {
   'content'?: string | null;
+  'contentTextAssetId'?: number | null;
   'createTime'?: number | null;
   'errorReason'?: string | null;
   'extractState'?: number | null;

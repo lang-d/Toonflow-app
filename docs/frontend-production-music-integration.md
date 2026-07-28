@@ -81,6 +81,26 @@ Music Agent 使用下列数据与执行工具：
 - 任务 `result` 可含 `libraryVersionIds`、`musicCueAssetIds`、`candidateCount` 与 `failedCandidates`。页面在任务终态后仍要重新读音乐库详情，以它作为最终版本列表。
 - 候选版本应供用户试听和显式“选为当前版本”。严格时长由用户显式发起裁剪；裁剪面板的默认选区应为 `0 ~ min(目标秒数, 实际秒数)`，不应自动生成、裁剪或选中衍生版本。
 
+### 下载候选音频
+
+项目音乐库候选和分集 Cue 候选均使用同一个二进制下载接口：
+
+```ts
+POST /production/music/download
+
+{
+  projectId: number;
+  targetType: "libraryVersion" | "cueAsset";
+  targetId: number;
+}
+```
+
+- `libraryVersion` 适用于原始生成版本，也适用于裁剪后生成的版本；裁剪完成后重新读取音乐库详情，并将新版本作为普通 `libraryVersion` 下载，不需要根据 `derivationType` 分支。
+- `cueAsset` 适用于分集 Cue 的直接生成候选。仅当候选为 `complete` 且具备可播放音频时显示下载入口。
+- 响应是音频二进制流，包含 `Content-Type`、`Content-Length` 与 `Content-Disposition`；服务端会暴露这些响应头供跨域 Web 页面读取。前端用认证请求获取 Blob，优先使用 `Content-Disposition` 中的 `filename*` 作为保存名；缺失时可按候选版本号和响应 `Content-Type` 生成回退名。
+- 当前 `@/utils/axios` 响应拦截器只返回 `response.data`，无法读取下载文件名。下载逻辑应使用原生 `fetch` 或独立 Axios 实例发送同样的 `Authorization` 请求头，以同时取得 Blob 与响应头；错误响应仍按现有 `{ code, message, data }` 解析。
+- 创建临时对象 URL 后触发浏览器下载，并在触发后释放该 URL。不要直接依赖 OSS/媒体 URL 的 `download` 属性，也不要把下载操作视为选择版本、绑定 Cue 或裁剪操作。
+
 ## Socket
 
 - 会话必须使用上表中的 isolation key，并使用独立 Socket Manager（`isolated: true`）。

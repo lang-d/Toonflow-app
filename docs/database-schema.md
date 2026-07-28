@@ -583,3 +583,10 @@ erDiagram
 - `o_editImageTask` 是图片画布任务和历史结果的事实来源；历史结果按 `targetType + targetId` 隔离。
 - `o_videoGenerationTask` 是视频异步队列事实来源；前端视频状态展示仍以 `o_video` 为兼容读取入口。
 - 多数表没有严格外键约束，删除/迁移时必须由业务代码同步清理关联数据。
+
+## 剧本工作区大文本
+
+- `o_script.contentTextAssetId` 指向当前 `o_textAsset`，其 `targetType` 为 `scriptContent`；`o_script.content` 仅作为旧数据迁移回退，新写入保持为空。
+- Script Agent 的 `o_agentWorkData.data` 只保存 `storySkeletonTextAssetId` 和 `adaptationStrategyTextAssetId`，对应 `scriptWorkspaceStage` 文本资产，不保存完整正文。
+- 剧本文本资产的 `summary` 为空，数据库只保留路径、UTF-8 字节数、SHA-256、状态和时间等元数据。
+- 当前引用属于长期业务事实，不参与 TTL 过期。被替换或写入失败且未被任何业务记录引用的资产，在 24 小时后由统一 Retention 服务清理。

@@ -9,6 +9,8 @@ import {
   storageMode,
   legacyDataRoot,
 } from "@/services/storagePaths";
+import { resolveTextAssetPath } from "@/services/textAsset";
+import { migrateScriptWorkspaceTextStorage } from "@/services/scriptWorkspaceText";
 
 const FORMAT = "toonflow-project";
 const VERSION = 1;
@@ -27,6 +29,7 @@ export interface PortableProjectSnapshot {
   tables: SnapshotTables;
   media: Array<{ path: string; size: number; sha256: string }>;
   materials?: Array<{ path: string; size: number; sha256: string }>;
+  text?: Array<{ path: string; size: number; sha256: string }>;
 }
 
 function mediaRoot(projectId: number) {
@@ -37,6 +40,15 @@ function mediaRoot(projectId: number) {
 
 function materialRoot(projectId: number) {
   return path.join(projectDirectory(projectId), "materials");
+}
+
+function portableTextRelativePath(filePath: unknown, projectId: number) {
+  const normalized = String(filePath || "").replace(/\\/g, "/");
+  const workspacePrefix = `projects/${projectId}/text/`;
+  const legacyPrefix = `textAssets/${projectId}/`;
+  if (normalized.startsWith(workspacePrefix)) return normalized.slice(workspacePrefix.length);
+  if (normalized.startsWith(legacyPrefix)) return normalized.slice(legacyPrefix.length);
+  throw new Error("Portable project contains an invalid text asset path");
 }
 
 async function listFiles(root: string, current = root): Promise<string[]> {
@@ -119,6 +131,7 @@ async function collectProjectTables(database: any, projectId: number): Promise<S
       "o_productionReviewFeedback",
       "o_projectMaterial",
       "o_textAsset",
+      "o_agentWorkData",
       "o_editImageTask",
     ];
     tables.o_project = await read("o_project", (query) => query.where("id", projectId));
@@ -168,6 +181,33 @@ function sanitizeSnapshot(tables: SnapshotTables) {
   for (const row of tables.o_editImageTask || []) {
     row.reason = row.reason ? String(row.reason).slice(0, 4096) : row.reason;
   }
+  const referencedScriptTextIds = new Set<number>();
+  for (const row of tables.o_script || []) {
+    const id = Number(row.contentTextAssetId);
+    if (Number.isFinite(id) && id > 0) referencedScriptTextIds.add(id);
+  }
+  const canonicalScriptWorkspaces = new Map<number, any>();
+  for (const row of tables.o_agentWorkData || []) {
+    if (row.key !== "scriptAgent") continue;
+    const projectId = Number(row.projectId);
+    const current = canonicalScriptWorkspaces.get(projectId);
+    if (!current || Number(row.id) < Number(current.id)) canonicalScriptWorkspaces.set(projectId, row);
+  }
+  for (const row of canonicalScriptWorkspaces.values()) {
+    if (typeof row.data !== "string") continue;
+    try {
+      const data = JSON.parse(row.data);
+      for (const value of [data.storySkeletonTextAssetId, data.adaptationStrategyTextAssetId]) {
+        const id = Number(value);
+        if (Number.isFinite(id) && id > 0) referencedScriptTextIds.add(id);
+      }
+    } catch {
+      // Legacy inline workspace data remains in the snapshot and is migrated after import.
+    }
+  }
+  tables.o_textAsset = (tables.o_textAsset || []).filter(
+    (row) => !["scriptContent", "scriptWorkspaceStage"].includes(String(row.targetType)) || referencedScriptTextIds.has(Number(row.id)),
+  );
 }
 
 export async function generateProjectSnapshot(
@@ -195,6 +235,10 @@ export async function generateProjectSnapshot(
   try {
     const tables = await collectProjectTables(database, projectId);
     sanitizeSnapshot(tables);
+    const directory = options.workspaceRoot
+      ? path.join(options.workspaceRoot, "projects", String(storage.storageKey || projectId))
+      : projectDirectory(storage.storageKey || projectId);
+    await fs.mkdir(directory, { recursive: true });
     const root = options.mediaRoot || mediaRoot(projectId);
     const files = await listFiles(root);
     const media = [];
@@ -211,6 +255,19 @@ export async function generateProjectSnapshot(
       const stat = await fs.stat(fullPath);
       materials.push({ path: relativePath, size: stat.size, sha256: await fileDigest(fullPath) });
     }
+    const text = [];
+    for (const row of tables.o_textAsset || []) {
+      const relativePath = portableTextRelativePath(row.filePath, projectId);
+      const fullPath = resolveTextAssetPath(String(row.filePath));
+      const stat = await fs.stat(fullPath);
+      const item = { path: relativePath, size: stat.size, sha256: await fileDigest(fullPath) };
+      text.push(item);
+      const portablePath = path.join(directory, "text", ...relativePath.split("/"));
+      if (path.resolve(portablePath) !== path.resolve(fullPath)) {
+        await fs.mkdir(path.dirname(portablePath), { recursive: true });
+        await fs.copyFile(fullPath, portablePath);
+      }
+    }
     const snapshot: PortableProjectSnapshot = {
       format: FORMAT,
       version: VERSION,
@@ -221,11 +278,8 @@ export async function generateProjectSnapshot(
       tables,
       media,
       materials,
+      text,
     };
-    const directory = options.workspaceRoot
-      ? path.join(options.workspaceRoot, "projects", String(storage.storageKey || projectId))
-      : projectDirectory(storage.storageKey || projectId);
-    await fs.mkdir(directory, { recursive: true });
     const snapshotPath = path.join(directory, "project.toonflow");
     const temporaryPath = `${snapshotPath}.tmp`;
     await fs.writeFile(temporaryPath, JSON.stringify(snapshot), "utf8");
@@ -243,6 +297,8 @@ export async function generateProjectSnapshot(
       mediaBytes: media.reduce((total, item) => total + item.size, 0),
       materialCount: materials.length,
       materialBytes: materials.reduce((total, item) => total + item.size, 0),
+      textCount: text.length,
+      textBytes: text.reduce((total, item) => total + item.size, 0),
     };
     const manifestPath = path.join(directory, "manifest.json");
     await fs.writeFile(`${manifestPath}.tmp`, JSON.stringify(manifest, null, 2), "utf8");
@@ -264,6 +320,8 @@ export async function generateProjectSnapshot(
       snapshotRevision: snapshot.revision,
       mediaCount: media.length,
       mediaBytes: manifest.mediaBytes,
+      textCount: text.length,
+      textBytes: manifest.textBytes,
       size: snapshotStat.size,
     };
   } catch (error: any) {
@@ -372,6 +430,13 @@ export async function importPortableProject(sourceDirectory: string, database: a
     const stat = await fs.stat(filePath);
     if (!stat.isFile() || stat.size !== Number(material.size) || (await fileDigest(filePath)) !== material.sha256) {
       throw new Error(`Portable project material validation failed: ${material.path}`);
+    }
+  }
+  for (const item of snapshot.text || []) {
+    const filePath = path.join(sourceDirectory, "text", ...item.path.split("/"));
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile() || stat.size !== Number(item.size) || (await fileDigest(filePath)) !== item.sha256) {
+      throw new Error(`Portable project text validation failed: ${item.path}`);
     }
   }
   const oldProjectId = Number(snapshot.projectId);
@@ -529,6 +594,7 @@ export async function importPortableProject(sourceDirectory: string, database: a
       ["childAssetId", "o_assets"],
       ["taskCenterId", "o_tasks"],
       ["legacyTaskId", "o_tasks"],
+      ["contentTextAssetId", "o_textAsset"],
     ];
     for (const [field, targetTable] of fields) if (row[field] != null) row[field] = mapId(targetTable, row[field]);
     if (row.parentId != null) {
@@ -589,9 +655,24 @@ export async function importPortableProject(sourceDirectory: string, database: a
       }
     }
     if (row.taskId && taskIds.has(row.taskId)) row.taskId = taskIds.get(row.taskId);
-    if (row.filePath) row.filePath = rewritePath(row.filePath, oldProjectId, newProjectId);
+    if (table === "o_textAsset" && row.filePath) {
+      row.filePath = `projects/${newProjectId}/text/${portableTextRelativePath(source.filePath, oldProjectId)}`;
+    } else if (row.filePath) {
+      row.filePath = rewritePath(row.filePath, oldProjectId, newProjectId);
+    }
     if (row.textPath) row.textPath = rewritePath(row.textPath, oldProjectId, newProjectId);
     if (row.url) row.url = rewritePath(row.url, oldProjectId, newProjectId);
+    if (table === "o_agentWorkData" && row.key === "scriptAgent" && typeof row.data === "string") {
+      try {
+        const data = JSON.parse(row.data);
+        for (const key of ["storySkeletonTextAssetId", "adaptationStrategyTextAssetId"]) {
+          if (data[key] != null) data[key] = mapId("o_textAsset", data[key]);
+        }
+        row.data = JSON.stringify(data);
+      } catch {
+        // Legacy inline workspace content is intentionally preserved for migration.
+      }
+    }
     for (const jsonField of [
       "flowData",
       "referenceImages",
@@ -746,6 +827,7 @@ export async function importPortableProject(sourceDirectory: string, database: a
   await fs.cp(sourceMaterials, targetMaterials, { recursive: true, force: false }).catch((error: any) => {
     if (error?.code !== "ENOENT") throw error;
   });
+  await migrateScriptWorkspaceTextStorage(database);
   const result = await generateProjectSnapshot(newProjectId, database);
   const importedProject = await database("o_project").where("id", newProjectId).first();
   const vendorIds = [

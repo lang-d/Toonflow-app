@@ -6,6 +6,7 @@ import { validateFields } from "@/middleware/middleware";
 import { deleteMergedReferences } from "@/services/workbenchReference";
 import fs from "node:fs/promises";
 import { projectDirectory, storageMode } from "@/services/storagePaths";
+import { deleteScriptContentAssets, deleteScriptWorkspaceStageAssets } from "@/services/scriptWorkspaceText";
 const router = express.Router();
 
 // 删除项目
@@ -29,6 +30,8 @@ export default router.post(
       await u.db("o_scriptAssets").whereIn("scriptId", scriptIds).delete();
     }
     await u.db("o_script").where("projectId", id).delete();
+    await deleteScriptContentAssets({ projectId: id, scriptIds });
+    await deleteScriptWorkspaceStageAssets(id);
     // 删除项目下的任务
     await u.db("o_tasks").where("projectId", id).delete();
     await u.db("o_musicCueBinding").where("projectId", id).delete();

@@ -6,9 +6,16 @@ import { getScriptAgentWorkspace } from "@/services/scriptAgentWorkspace";
 
 const router = express.Router();
 
-export default router.post("/", validateFields({ projectId: z.number().int().positive() }), async (req, res, next) => {
+export default router.post("/", validateFields({ projectId: z.number().int().positive(), includeContent: z.boolean().optional() }), async (req, res, next) => {
   try {
-    res.status(200).send(success(await getScriptAgentWorkspace(req.body.projectId)));
+    res.status(200).send(
+      success(
+        await getScriptAgentWorkspace(req.body.projectId, undefined, {
+          includeContent: req.body.includeContent !== false,
+          includeScriptContent: req.body.includeContent !== false,
+        }),
+      ),
+    );
   } catch (error) {
     next(error);
   }

@@ -22,10 +22,14 @@ test("workspace paths, portable snapshot and copy import use project media direc
     await dbModule.dbReady;
     const paths = await import("../src/services/storagePaths");
     const portable = await import("../src/services/projectPortable");
+    const scriptText = await import("../src/services/scriptWorkspaceText");
+    const scriptWorkspace = await import("../src/services/scriptAgentWorkspace");
 
     const projectId = 1700000000001;
     await database("o_project").insert({ id: projectId, name: "Portable project", createTime: Date.now() });
-    await database("o_script").insert({ id: 2001, projectId, name: "Episode 1", content: "content" });
+    await database("o_script").insert({ id: 2001, projectId, name: "Episode 1", content: "" });
+    await scriptText.replaceScriptContent({ projectId, scriptId: 2001, content: "content" }, database);
+    await scriptWorkspace.saveScriptAgentStage({ projectId, stage: "storySkeleton", content: "portable skeleton" }, database);
     await database("o_image").insert({ id: 4001, assetsId: 3001, filePath: `/${projectId}/storyboard/frame.png` });
     await database("o_assets").insert({ id: 3001, projectId, scriptId: 2001, name: "Role", imageId: 4001 });
     const mediaPath = path.join(paths.projectMediaDirectory(projectId), "storyboard", "frame.png");
@@ -42,7 +46,8 @@ test("workspace paths, portable snapshot and copy import use project media direc
     assert.equal(snapshot.tables.o_tasks, undefined);
     assert.equal(snapshot.tables.o_taskEvent, undefined);
     assert.equal(snapshot.tables.o_videoGenerationTask, undefined);
-    assert.equal(snapshot.tables.o_agentWorkData, undefined);
+    assert.equal(snapshot.tables.o_agentWorkData.length, 1);
+    assert.equal(snapshot.text.length, 2);
 
     const readyStorage = await database("o_projectStorage").where("projectId", projectId).first();
     await database("o_tasks").insert({
@@ -90,6 +95,10 @@ test("workspace paths, portable snapshot and copy import use project media direc
       await fs.readFile(path.join(paths.projectMediaDirectory(imported.projectId), "storyboard", "frame.png"), "utf8"),
       "original-media",
     );
+    const importedScript = await database("o_script").where({ projectId: imported.projectId }).first();
+    assert.equal(await scriptText.readScriptContent(importedScript, database), "content");
+    const importedWorkspace = await scriptWorkspace.getScriptAgentWorkspace(imported.projectId, database);
+    assert.equal(importedWorkspace.storySkeleton, "portable skeleton");
     const importedProject = await database("o_project").where("id", imported.projectId).first();
     assert.equal(importedProject.name, "Portable project");
 

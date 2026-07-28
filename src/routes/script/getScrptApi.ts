@@ -4,6 +4,7 @@ import { z } from "zod";
 import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { VISUAL_ASSET_TYPES } from "@/services/assetTypes";
+import { readScriptContent, scriptContentMetadata } from "@/services/scriptWorkspaceText";
 const router = express.Router();
 
 function parseTaskPayloadScriptIds(payloadJson: unknown) {
@@ -22,9 +23,11 @@ export default router.post(
   validateFields({
     projectId: z.number(),
     name: z.string().optional(),
+    includeContent: z.boolean().optional(),
   }),
   async (req, res) => {
     const { projectId, name } = req.body;
+    const includeContent = req.body.includeContent !== false;
     let query = u.db("o_script").where("projectId", projectId).select("*");
     if (name) {
       query = query.andWhere("name", "like", `%${name}%`);
@@ -50,15 +53,18 @@ export default router.post(
         scriptAssetsMap[i.scriptId] = [{ id: i.id, name: i.name }];
       }
     });
-    const returnData = data.map((i) => ({
-      id: i.id,
-      name: i.name,
-      content: i.content,
-      extractState: i.extractState,
-      errorReason: i.errorReason,
-      createTime: i.createTime,
-      relatedAssets: scriptAssetsMap[i.id!] || [],
-    }));
+    const returnData = await Promise.all(
+      data.map(async (i) => ({
+        id: i.id,
+        name: i.name,
+        ...(includeContent ? { content: await readScriptContent(i) } : {}),
+        contentAsset: await scriptContentMetadata(i),
+        extractState: i.extractState,
+        errorReason: i.errorReason,
+        createTime: i.createTime,
+        relatedAssets: scriptAssetsMap[i.id!] || [],
+      })),
+    );
     const activeTasks = await u
       .db("o_tasks")
       .where({ projectId, handler: "script-asset-extract" })

@@ -1,5 +1,13 @@
 import u from "@/utils";
 import { getActiveAgentRun } from "@/services/agentRun";
+import {
+  deleteScriptContentAssets,
+  readScriptContent,
+  readWorkspaceStageText,
+  replaceScriptContent,
+  replaceWorkspaceStageText,
+  scriptContentMetadata,
+} from "@/services/scriptWorkspaceText";
 
 export const SCRIPT_AGENT_KEY = "scriptAgent";
 export const SCRIPT_AGENT_SCRIPT_ID = 0;
@@ -17,27 +25,7 @@ export class ScriptAgentWorkspaceError extends Error {
   }
 }
 
-type WorkspaceData = {
-  storySkeleton: string;
-  adaptationStrategy: string;
-};
-
 const workspaceCreationLocks = new WeakMap<object, Map<number, Promise<void>>>();
-
-function parseWorkspaceData(value: unknown): WorkspaceData {
-  if (typeof value !== "string" || !value.trim()) {
-    return { storySkeleton: "", adaptationStrategy: "" };
-  }
-  try {
-    const parsed = JSON.parse(value) as Partial<WorkspaceData>;
-    return {
-      storySkeleton: typeof parsed.storySkeleton === "string" ? parsed.storySkeleton : "",
-      adaptationStrategy: typeof parsed.adaptationStrategy === "string" ? parsed.adaptationStrategy : "",
-    };
-  } catch {
-    return { storySkeleton: "", adaptationStrategy: "" };
-  }
-}
 
 async function assertProject(projectId: number, database: any) {
   const project = await database("o_project").where({ id: projectId }).first("id");
@@ -88,9 +76,9 @@ async function ensureWorkspaceRow(projectId: number, database: any) {
 
     const [id] = await database("o_agentWorkData").insert({
       projectId,
-    key: SCRIPT_AGENT_KEY,
-    data: JSON.stringify({ storySkeleton: "", adaptationStrategy: "" }),
-  });
+      key: SCRIPT_AGENT_KEY,
+      data: JSON.stringify({}),
+    });
     row = await database("o_agentWorkData").where({ id }).first();
     if (!row) throw new ScriptAgentWorkspaceError("Failed to create Script Agent workspace", 500);
     return row;
@@ -107,32 +95,48 @@ async function assertNoActiveRun(projectId: number, database: any) {
   }
 }
 
-function normalizeScript(row: any) {
-  return {
-    id: Number(row.id),
-    name: String(row.name || ""),
-    content: String(row.content || ""),
-  };
-}
-
 export function scriptAgentIsolationKey(projectId: number) {
   return `${projectId}:${SCRIPT_AGENT_KEY}`;
 }
 
-export async function getScriptAgentWorkspace(projectId: number, database: any = u.db) {
+export async function getScriptAgentWorkspace(
+  projectId: number,
+  database: any = u.db,
+  options: { includeContent?: boolean; includeScriptContent?: boolean } = {},
+) {
   await assertProject(projectId, database);
   await ensureWorkspaceRow(projectId, database);
-  return database.transaction(async (trx: any) => {
-    await assertProject(projectId, trx);
-    const row = await findWorkspaceRow(projectId, trx);
-    if (!row) throw new ScriptAgentWorkspaceError("Script Agent workspace was not found", 500);
-    const scripts = await trx("o_script").where({ projectId }).orderBy("id", "asc").select("id", "name", "content");
-    return {
-      workspaceId: Number(row.id),
-      ...parseWorkspaceData(row.data),
-      scripts: scripts.map(normalizeScript),
-    };
-  });
+  const row = await findWorkspaceRow(projectId, database);
+  if (!row) throw new ScriptAgentWorkspaceError("Script Agent workspace was not found", 500);
+  const scripts = await database("o_script")
+    .where({ projectId })
+    .orderBy("id", "asc")
+    .select("id", "name", "projectId", "content", "contentTextAssetId");
+  const includeContent = options.includeContent !== false;
+  const includeScriptContent = options.includeScriptContent ?? includeContent;
+  const [storySkeleton, adaptationStrategy, normalizedScripts] = await Promise.all([
+    readWorkspaceStageText({ projectId, workspaceRow: row, stage: "storySkeleton" }, database),
+    readWorkspaceStageText({ projectId, workspaceRow: row, stage: "adaptationStrategy" }, database),
+    Promise.all(
+      scripts.map(async (script: any) => ({
+        id: Number(script.id),
+        name: String(script.name || ""),
+        ...(includeScriptContent ? { content: await readScriptContent(script, database) } : {}),
+        contentAsset: await scriptContentMetadata(script, database),
+      })),
+    ),
+  ]);
+  return {
+    workspaceId: Number(row.id),
+    ...(includeContent
+      ? { storySkeleton: storySkeleton.content, adaptationStrategy: adaptationStrategy.content }
+      : {}),
+    stageAssets: {
+      storySkeleton: storySkeleton.asset,
+      adaptationStrategy: adaptationStrategy.asset,
+    },
+    scripts: normalizedScripts,
+  };
 }
 
 export async function saveScriptAgentStage(input: {
@@ -143,18 +147,18 @@ export async function saveScriptAgentStage(input: {
 }, database: any = u.db) {
   await assertProject(input.projectId, database);
   if (!input.allowWhileRun) await assertNoActiveRun(input.projectId, database);
-  await ensureWorkspaceRow(input.projectId, database);
-  return database.transaction(async (trx: any) => {
-    await assertProject(input.projectId, trx);
-    if (!input.allowWhileRun) await assertNoActiveRun(input.projectId, trx);
-    const row = await findWorkspaceRow(input.projectId, trx);
-    if (!row) throw new ScriptAgentWorkspaceError("Script Agent workspace was not found", 500);
-    const next = { ...parseWorkspaceData(row.data), [input.stage]: input.content };
-    await trx("o_agentWorkData").where({ id: row.id, projectId: input.projectId, key: SCRIPT_AGENT_KEY }).update({
-      data: JSON.stringify(next),
-    });
-    return { workspaceId: Number(row.id), stage: input.stage, content: input.content };
-  });
+  const row = await ensureWorkspaceRow(input.projectId, database);
+  const contentAsset = await replaceWorkspaceStageText(
+    {
+      projectId: input.projectId,
+      workspaceId: Number(row.id),
+      stage: input.stage,
+      content: input.content,
+      beforeCommit: input.allowWhileRun ? undefined : (trx) => assertNoActiveRun(input.projectId, trx),
+    },
+    database,
+  );
+  return { workspaceId: Number(row.id), stage: input.stage, contentAsset };
 }
 
 export async function upsertScriptAgentScript(input: {
@@ -164,20 +168,39 @@ export async function upsertScriptAgentScript(input: {
   content: string;
   allowWhileRun?: boolean;
 }, database: any = u.db) {
-  return database.transaction(async (trx: any) => {
-    await assertProject(input.projectId, trx);
-    if (!input.allowWhileRun) await assertNoActiveRun(input.projectId, trx);
-
-    if (input.id != null) {
-      const existing = await trx("o_script").where({ id: input.id, projectId: input.projectId }).first("id");
-      if (!existing) throw new ScriptAgentWorkspaceError("Script does not belong to the current project", 404);
-      await trx("o_script").where({ id: input.id, projectId: input.projectId }).update({ name: input.name, content: input.content });
-      return { id: input.id, name: input.name, content: input.content, created: false };
-    }
-
-    const [id] = await trx("o_script").insert({ projectId: input.projectId, name: input.name, content: input.content });
-    return { id: Number(id), name: input.name, content: input.content, created: true };
-  });
+  await assertProject(input.projectId, database);
+  if (!input.allowWhileRun) await assertNoActiveRun(input.projectId, database);
+  let scriptId = input.id == null ? null : Number(input.id);
+  let created = false;
+  if (scriptId != null) {
+    const existing = await database("o_script").where({ id: scriptId, projectId: input.projectId }).first("id");
+    if (!existing) throw new ScriptAgentWorkspaceError("Script does not belong to the current project", 404);
+  } else {
+    const [id] = await database("o_script").insert({
+      projectId: input.projectId,
+      name: input.name,
+      content: "",
+      createTime: Date.now(),
+    });
+    scriptId = Number(id);
+    created = true;
+  }
+  try {
+    const contentAsset = await replaceScriptContent(
+      {
+        projectId: input.projectId,
+        scriptId,
+        name: input.name,
+        content: input.content,
+        beforeCommit: input.allowWhileRun ? undefined : (trx) => assertNoActiveRun(input.projectId, trx),
+      },
+      database,
+    );
+    return { id: scriptId, name: input.name, contentAsset, created };
+  } catch (error) {
+    if (created) await database("o_script").where({ id: scriptId, projectId: input.projectId }).delete().catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function deleteScriptAgentScript(input: {
@@ -185,22 +208,28 @@ export async function deleteScriptAgentScript(input: {
   id: number;
   allowWhileRun?: boolean;
 }, database: any = u.db) {
-  return database.transaction(async (trx: any) => {
-    await assertProject(input.projectId, trx);
-    if (!input.allowWhileRun) await assertNoActiveRun(input.projectId, trx);
-    const deleted = await trx("o_script").where({ id: input.id, projectId: input.projectId }).delete();
-    if (!deleted) throw new ScriptAgentWorkspaceError("Script does not belong to the current project", 404);
-    return { id: input.id, deleted: true };
-  });
+  await assertProject(input.projectId, database);
+  if (!input.allowWhileRun) await assertNoActiveRun(input.projectId, database);
+  const deleted = await database("o_script").where({ id: input.id, projectId: input.projectId }).delete();
+  if (!deleted) throw new ScriptAgentWorkspaceError("Script does not belong to the current project", 404);
+  await deleteScriptContentAssets({ projectId: input.projectId, scriptIds: [input.id] }, database);
+  return { id: input.id, deleted: true };
 }
 
 export async function readScriptAgentScripts(input: { projectId: number; ids?: number[] }, database: any = u.db) {
   await assertProject(input.projectId, database);
   const query = database("o_script").where({ projectId: input.projectId }).orderBy("id", "asc");
   if (input.ids?.length) query.whereIn("id", input.ids);
-  const scripts = await query.select("id", "name", "content");
+  const scripts = await query.select("id", "name", "projectId", "content", "contentTextAssetId");
   if (input.ids?.length && scripts.length !== new Set(input.ids).size) {
     throw new ScriptAgentWorkspaceError("One or more scripts do not belong to the current project", 404);
   }
-  return scripts.map(normalizeScript);
+  return Promise.all(
+    scripts.map(async (row: any) => ({
+      id: Number(row.id),
+      name: String(row.name || ""),
+      content: await readScriptContent(row, database),
+      contentAsset: await scriptContentMetadata(row, database),
+    })),
+  );
 }

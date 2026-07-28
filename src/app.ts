@@ -29,7 +29,8 @@ import {
 } from "@/services/storagePaths";
 import { isStorageMaintenanceActive } from "@/services/storageMigration";
 import { skillRootCandidates } from "@/services/skillResolver";
-import { syncBuiltinStyleSkills } from "@/services/builtinSkillSync";
+import { syncBuiltinScriptSkills, syncBuiltinStyleSkills } from "@/services/builtinSkillSync";
+import { migrateScriptWorkspaceTextStorage } from "@/services/scriptWorkspaceText";
 import { initLogger, createLogger } from "@/logger";
 
 const app = express();
@@ -66,8 +67,12 @@ async function startServeOnce(options: { startQueue?: boolean; portRetryMs?: num
   process.env.PORT = String(RUNTIME_API_PORT);
   await checkPermissions();
   await dbReady;
+  const scriptTextMigration = await migrateScriptWorkspaceTextStorage();
+  apiLog.info("Script workspace text storage migrated", { event: "storage.script-workspace-text", ...scriptTextMigration });
   const skillSync = syncBuiltinStyleSkills();
   apiLog.info("Builtin style skills synchronized", { event: "skills.builtin-style-sync", ...skillSync });
+  const scriptSkillSync = syncBuiltinScriptSkills();
+  apiLog.info("Builtin script skills synchronized", { event: "skills.builtin-script-sync", ...scriptSkillSync });
   if (options.startQueue !== false) startVideoGenerationQueue();
 
   await u.writeVersion();
