@@ -125,6 +125,8 @@ test("director plan commits ordered multi-chunk sections and retains drafts", as
   const saved = await service.readDirectorPlanAsset({ projectId: 1, scriptId: 10, textAssetId: result.textAssetId });
   assert.match(saved.content, /inputCheck:/);
   assert.match(saved.content, /derivedAssets:/);
+  assert.match(saved.content, /inputCheck:a+\n-tail/);
+  assert.doesNotMatch(saved.content, /a-tail/);
 });
 
 test("director plan reads complete committed text over one megabyte", async () => {

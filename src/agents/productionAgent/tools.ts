@@ -35,8 +35,15 @@ import {
   listProjectMaterials,
   readProjectMaterial,
 } from "@/services/projectMaterial";
-import { replaceStoryboardTableAgentReviewSuggestions } from "@/services/productionReview";
+import {
+  replaceStoryboardTableAgentReviewSuggestions,
+  resolveStoryboardTableAgentReviewItemTargets,
+} from "@/services/productionReview";
 import { recordAgentRunEvent, type AgentRunContext } from "@/services/agentRun";
+import {
+  readStoryboardPanelSources,
+  readStoryboardPanelTargets,
+} from "@/services/storyboardPanelReviewScope";
 import {
   storyboardGroupPreflightSchema,
   validateStoryboardGroupPreflightStructure,
@@ -334,6 +341,20 @@ const readStoryboardGenerationInputSchema = z
   .refine((input) => Boolean(input.generationId) !== Boolean(input.revision), {
     message: "Provide exactly one of generationId or revision",
   });
+const readStoryboardPanelTargetsInputSchema = z
+  .object({
+    snapshotId: z.string().length(64).optional(),
+    offset: z.number().int().nonnegative().optional().default(0),
+    limit: z.number().int().min(1).max(20).optional().default(10),
+    storyboardIds: z.array(z.number().int().positive()).min(1).max(20).optional(),
+  })
+  .refine((input) => !input.storyboardIds || input.offset === 0, {
+    message: "Do not combine storyboardIds with a non-zero offset",
+  });
+const readStoryboardPanelSourcesInputSchema = z.object({
+  snapshotId: z.string().length(64),
+  storyboardIds: z.array(z.number().int().positive()).min(1).max(20),
+});
 const listProductionReviewsInputSchema = z.object({
   target: z.enum(["directorPlan", "storyboardTable", "storyboardPanel", "general"]).optional(),
   limit: z.number().int().min(1).max(20).optional().default(10),
@@ -407,8 +428,8 @@ const storyboardTableReviewItemSchema = z.object({
   suggestedAction: z.string().trim().min(1).max(2000),
   owner: z.enum(["storyboardTable", "deriveAssets", "directorPlan"]),
 }).superRefine((item, ctx) => {
-  if (item.scope === "storyboard" && (item.storyboardId == null || item.storyboardIndex == null)) {
-    ctx.addIssue({ code: "custom", message: "storyboard scope requires storyboardId and storyboardIndex" });
+  if (item.scope === "storyboard" && item.storyboardIndex == null) {
+    ctx.addIssue({ code: "custom", message: "storyboard scope requires storyboardIndex" });
   }
 });
 const recordStoryboardTableReviewInputSchema = z.object({
@@ -758,6 +779,44 @@ export default (toolCpnfig: ToolConfig) => {
         };
       },
     }),
+    read_storyboard_panel_targets: tool({
+      description:
+        "Read only the current storyboard-panel review targets. Returns prompt, associateAssetsIds and shouldGenerateImage without upstream storyboard facts.",
+      inputSchema: jsonSchema<z.infer<typeof readStoryboardPanelTargetsInputSchema>>(
+        readStoryboardPanelTargetsInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = readStoryboardPanelTargetsInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        return readStoryboardPanelTargets({
+          projectId,
+          scriptId,
+          snapshotId: input.snapshotId,
+          offset: input.offset,
+          limit: input.limit,
+          storyboardIds: input.storyboardIds,
+        });
+      },
+    }),
+    read_storyboard_panel_sources: tool({
+      description:
+        "Read only the upstream structured facts for selected storyboard-panel targets. Requires the snapshotId returned by read_storyboard_panel_targets.",
+      inputSchema: jsonSchema<z.infer<typeof readStoryboardPanelSourcesInputSchema>>(
+        readStoryboardPanelSourcesInputSchema.toJSONSchema(),
+      ),
+      execute: async (raw) => {
+        const input = readStoryboardPanelSourcesInputSchema.parse(raw);
+        const projectId = scopedNumber(resTool.data.projectId, "projectId");
+        const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
+        return readStoryboardPanelSources({
+          projectId,
+          scriptId,
+          snapshotId: input.snapshotId,
+          storyboardIds: input.storyboardIds,
+        });
+      },
+    }),
     list_production_reviews: tool({
       description:
         "List archived production review reports for the current project/script. Returns textAssetId and reviewRunId; read the report text separately.",
@@ -769,31 +828,39 @@ export default (toolCpnfig: ToolConfig) => {
         const projectId = scopedNumber(resTool.data.projectId, "projectId");
         const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
         const events = await u
-          .db("o_agentRunEvent")
-          .where({ eventType: "agent_output_archived" })
-          .orderBy("id", "desc")
-          .limit(Math.max(50, input.limit * 5));
+          .db("o_agentRunEvent as event")
+          .join("o_agentRun as run", "run.runId", "event.runId")
+          .where({
+            "event.eventType": "agent_output_archived",
+            "run.agentKey": "productionAgent",
+            "run.projectId": projectId,
+            "run.scriptId": scriptId,
+          })
+          .orderBy("event.id", "desc")
+          .select(
+            "event.*",
+            "run.status as runStatus",
+            "run.currentStage as runCurrentStage",
+            "run.currentSubAgent as runCurrentSubAgent",
+            "run.startedAt as runStartedAt",
+            "run.finishedAt as runFinishedAt",
+          );
         const reviews: any[] = [];
         for (const event of events) {
           const payload = parseJsonSafe(event.payloadJson) as any;
           if (!payload || !reviewTargetMatches(payload.stage, input.target)) continue;
-          const run = await u
-            .db("o_agentRun")
-            .where({ runId: event.runId, agentKey: "productionAgent", projectId, scriptId })
-            .first("runId", "status", "currentStage", "currentSubAgent", "startedAt", "finishedAt");
-          if (!run) continue;
           const asset = payload.textAssetId
             ? await u.db("o_textAsset").where({ id: Number(payload.textAssetId), projectId }).first()
             : null;
           reviews.push({
             reviewRunId: String(event.runId),
-            stage: payload.stage ?? run.currentStage ?? null,
-            subAgent: payload.subAgent ?? run.currentSubAgent ?? null,
+            stage: payload.stage ?? event.runCurrentStage ?? null,
+            subAgent: payload.subAgent ?? event.runCurrentSubAgent ?? null,
             textAssetId: payload.textAssetId == null ? null : Number(payload.textAssetId),
             summary: asset?.summary ?? payload.summary ?? "",
             size: asset?.size == null ? payload.size ?? null : Number(asset.size),
             createdAt: Number(event.createdAt),
-            runStatus: run.status,
+            runStatus: event.runStatus,
           });
           if (reviews.length >= input.limit) break;
         }
@@ -1044,7 +1111,7 @@ export default (toolCpnfig: ToolConfig) => {
     }),
     record_storyboard_table_review: tool({
       description:
-        "Persist the complete current storyboard-table audit report. This is advisory only and never changes storyboard facts.",
+        "Persist the complete current storyboard-table audit report. For scope=storyboard pass the formal storyboardIndex; the server resolves storyboardId. Do not guess a storyboardId from a generation row. This is advisory only and never changes storyboard facts.",
       inputSchema: jsonSchema<z.infer<typeof recordStoryboardTableReviewInputSchema>>(
         recordStoryboardTableReviewInputSchema.toJSONSchema(),
       ),
@@ -1052,26 +1119,8 @@ export default (toolCpnfig: ToolConfig) => {
         const input = recordStoryboardTableReviewInputSchema.parse(raw);
         const projectId = scopedNumber(resTool.data.projectId, "projectId");
         const scriptId = scopedNumber(resTool.data.scriptId, "scriptId");
-        const ids = [
-          ...new Set(input.items.flatMap((item) => (item.storyboardId == null ? [] : [item.storyboardId]))),
-        ];
-        const rows = ids.length
-          ? await u
-              .db("o_storyboard")
-              .where({ projectId, scriptId })
-              .whereIn("id", ids)
-              .select("id", "index")
-          : [];
-        const storyboardIndexes = new Map(rows.map((row: any) => [Number(row.id), Number(row.index)]));
-        const invalid = input.items.find((item) =>
-          item.storyboardId == null
-            ? false
-            : storyboardIndexes.get(item.storyboardId) !== Number(item.storyboardIndex),
-        );
-        if (invalid) {
-          throw new Error(`Storyboard review item does not match the current scope: ${invalid.storyboardId}`);
-        }
-        const result = await replaceStoryboardTableAgentReviewSuggestions({ projectId, scriptId, items: input.items });
+        const items = await resolveStoryboardTableAgentReviewItemTargets({ projectId, scriptId, items: input.items });
+        const result = await replaceStoryboardTableAgentReviewSuggestions({ projectId, scriptId, items });
         if (runContext) {
           await recordAgentRunEvent(runContext.runId, "storyboard_table_review_recorded", {
             projectId,

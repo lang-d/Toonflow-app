@@ -11,7 +11,18 @@ const tableSkill = fs.readFileSync(path.join(skillsRoot, "production_execution_s
 const directorSkill = fs.readFileSync(path.join(skillsRoot, "production_execution_director_plan.md"), "utf8");
 const promptSkill = fs.readFileSync(path.join(skillsRoot, "production_skills", "storyboard_prompt_techniques.md"), "utf8");
 const tableTechnique = fs.readFileSync(path.join(skillsRoot, "production_skills", "storyboard_table_techniques.md"), "utf8");
-const supervisionSkill = fs.readFileSync(path.join(skillsRoot, "production_agent_supervision.md"), "utf8");
+const directorSupervisionSkill = fs.readFileSync(
+  path.join(skillsRoot, "production_supervision_director_plan.md"),
+  "utf8",
+);
+const tableSupervisionSkill = fs.readFileSync(
+  path.join(skillsRoot, "production_supervision_storyboard_table.md"),
+  "utf8",
+);
+const panelSupervisionSkill = fs.readFileSync(
+  path.join(skillsRoot, "production_supervision_storyboard_panel.md"),
+  "utf8",
+);
 const decisionSkill = fs.readFileSync(path.join(skillsRoot, "production_agent_decision.md"), "utf8");
 const mainProcess = fs.readFileSync(path.join(repoRoot, "scripts", "main.ts"), "utf8");
 const toolsSource = fs.readFileSync(path.join(repoRoot, "src", "agents", "productionAgent", "tools.ts"), "utf8");
@@ -45,9 +56,9 @@ test("director plan owns the overall visual scheme inherited by later stages", (
   assert.match(directorSkill, /不能补成门、窗、床或其他结构/);
   assert.doesNotMatch(directorSkill, /北 \/ 窗/);
   assert.doesNotMatch(directorSkill, /南 \/ 门/);
-  assert.match(supervisionSkill, /②整体视觉方案与画面基调/);
-  assert.match(supervisionSkill, /单人场景也需简短标出人物、已知锚点、朝向和主要机位半区/);
-  assert.match(supervisionSkill, /实际变位时补关键变位图/);
+  assert.match(directorSupervisionSkill, /②整体视觉方案与画面基调/);
+  assert.match(directorSupervisionSkill, /单人场景也需简短标出人物、已知锚点、朝向和主要机位半区/);
+  assert.match(directorSupervisionSkill, /实际变位时补关键变位图/);
 });
 
 test("storyboard table and supervision do not activate the visual table style skill", () => {
@@ -55,12 +66,12 @@ test("storyboard table and supervision do not activate the visual table style sk
   assert.match(tableSkill, /`director_storyboard_table_narrative`/);
   assert.match(tableSkill, /不得激活 `director_storyboard_table_style`/);
   assert.doesNotMatch(tableSkill, /-\s+`director_storyboard_table_style`\s*$/m);
-  assert.match(supervisionSkill, /加载 `storyboard_table_techniques` 与当前导演手册的 `director_storyboard_table_narrative`/);
-  assert.match(supervisionSkill, /禁止调用 `director_storyboard_table_style`/);
+  assert.match(tableSupervisionSkill, /加载 `storyboard_table_techniques` 与当前导演手册的 `director_storyboard_table_narrative`/);
+  assert.match(tableSupervisionSkill, /禁止调用 `director_storyboard_table_style`/);
 });
 
 test("generic storyboard table contracts stay topic agnostic", () => {
-  const genericText = `${tableSkill}\n${tableTechnique}\n${supervisionSkill}`;
+  const genericText = `${tableSkill}\n${tableTechnique}\n${tableSupervisionSkill}`;
   for (const term of ["证据镜头", "现实压力", "公共暴露"]) {
     assert.doesNotMatch(genericText, new RegExp(term));
   }
@@ -87,8 +98,10 @@ test("storyboard table runs an independent advisory review after commit", () => 
   assert.match(tableSkill, /审核后返修/);
   assert.match(tableSkill, /当前正式分镜表是唯一返修基线/);
   assert.match(tableTechnique, /生成前内部草算与提交前自检/);
-  assert.match(supervisionSkill, /record_storyboard_table_review/);
+  assert.match(tableSupervisionSkill, /record_storyboard_table_review/);
   assert.match(agentSource, /supervisionStoryboardTableAgent/);
+  assert.match(agentSource, /严格按当前分镜表监督 Skill 的四遍协议执行/);
+  assert.match(agentSource, /四遍全部完成并归并后/);
   assert.match(agentSource, /Recent awaiting-user run hint/);
   assert.match(agentSource, /list_production_reviews/);
   assert.match(agentSource, /read_storyboard_generation/);
@@ -125,7 +138,7 @@ test("storyboard preparation runs inside the table agent before generation", () 
   assert.match(tableSkill, /`prepare_storyboard_table`/);
   assert.match(tableSkill, /同一次流式运行、同一份上下文/);
   assert.match(tableTechnique, /禁止为了模型时长删减台词、压缩表演、改变镜头顺序或增加填充空镜/);
-  assert.match(supervisionSkill, /组边界节奏审校/);
+  assert.match(tableSupervisionSkill, /组边界节奏审校/);
   assert.match(decisionSkill, /不得自动拆镜或默认提出后期拼接/);
   assert.match(toolsSource, /prepare_storyboard_table/);
   assert.match(agentSource, /progressTitle:/);
@@ -214,18 +227,24 @@ test("storyboard panel compiles camera, blocking, references, and hard conflicts
 });
 
 test("storyboard panel review is read-only and waits for user-directed repair", () => {
-  assert.match(supervisionSkill, /## 分镜面板审核/);
-  assert.match(supervisionSkill, /机位继承/);
-  assert.match(supervisionSkill, /人物空间忠实/);
-  assert.match(supervisionSkill, /最小充分引用/);
-  assert.match(supervisionSkill, /问题归属与返修边界/);
-  assert.match(supervisionSkill, /报告展示后必须等待用户确认；不得自动派发返修/);
-  assert.match(supervisionSkill, /报告是最终结论，不是过程转录/);
-  assert.match(supervisionSkill, /审核通过的分镜不逐镜列出/);
-  assert.match(supervisionSkill, /不设置固定字数上限；以简洁、完整表达结论为准/);
+  assert.match(panelSupervisionSkill, /## 分镜面板审核/);
+  assert.match(panelSupervisionSkill, /机位继承/);
+  assert.match(panelSupervisionSkill, /人物空间忠实/);
+  assert.match(panelSupervisionSkill, /最小充分引用/);
+  assert.match(panelSupervisionSkill, /问题归属与返修边界/);
+  assert.match(panelSupervisionSkill, /报告展示后必须等待用户确认；不得自动派发返修/);
+  assert.match(panelSupervisionSkill, /最终报告只写异常、风险和需要用户决定的问题/);
+  assert.match(panelSupervisionSkill, /通过项不输出，但四遍内部检查一项也不能省略/);
+  assert.match(panelSupervisionSkill, /第四遍完成前不得输出“审核完成”/);
+  assert.match(panelSupervisionSkill, /read_storyboard_panel_targets/);
+  assert.match(panelSupervisionSkill, /read_storyboard_panel_sources/);
+  assert.match(panelSupervisionSkill, /禁止在分镜面板监督阶段调用 `get_flowData\("storyboard"\)`/);
+  assert.match(panelSupervisionSkill, /新发现（基线不可判定）/);
   assert.match(decisionSkill, /写入成功后会自动执行只读分镜面板审核/);
   assert.match(decisionSkill, /审核后不得自动返修/);
   assert.match(agentSource, /stage: "supervisionStoryboardPanel"/);
+  assert.match(agentSource, /当前监督 Skill 完成事实与范围、全局检查、专业逐镜检查、漏检复查与归并四遍/);
+  assert.match(agentSource, /禁止调用 get_flowData\("storyboard"\)/);
   assert.match(agentSource, /只读审核，不得执行返修/);
 });
 

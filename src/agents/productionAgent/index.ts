@@ -294,6 +294,7 @@ async function createSubAgent(
     toolNames,
     messages,
     modelKey,
+    archiveOutput,
   }: {
     key: `${string}:${string}`;
     modelKey?: Parameters<typeof u.Ai.Text>[0];
@@ -307,6 +308,7 @@ async function createSubAgent(
     tools?: Record<string, any>;
     toolNames: string[];
     messages?: { role: "user" | "assistant" | "system"; content: string }[];
+    archiveOutput?: boolean;
   }) {
     parentCtx.msg.complete();
     const subMsg = resTool.newMessage("assistant", name);
@@ -358,7 +360,7 @@ async function createSubAgent(
 
     if (fullResponse.trim()) {
       let memoryContent = removeAllXmlTags(fullResponse);
-      const shouldArchiveFullOutput = memoryContent.length > 4000;
+      const shouldArchiveFullOutput = archiveOutput === true || memoryContent.length > 4000;
       if (shouldArchiveFullOutput) {
         try {
           await runLazyRetentionCleanup();
@@ -399,11 +401,16 @@ async function createSubAgent(
 
   const promptInput = z
     .object({
-      prompt: z.string().describe("交给子Agent的任务简约描述，100字以内"),
+      prompt: z.string().describe("交给子Agent的完整任务说明；审核返修需包含正式版本、完整问题范围和保留要求"),
     })
     .toJSONSchema();
 
-  async function runStoryboardTableReview() {
+  async function runStoryboardTableReview(input: {
+    executionPrompt: string;
+    executionSummary: string;
+    generationId: string;
+    revision: number;
+  }) {
     const startedAt = Date.now();
     const projectId = Number(resTool.data.projectId);
     const scriptId = Number(resTool.data.scriptId);
@@ -416,11 +423,19 @@ async function createSubAgent(
       directorManual: projectInfo.directorManual || "",
     });
     const reviewPrompt = `
-请对刚刚提交的正式分镜表执行独立只读审核。先读取 script、scriptPlan、assets 和 storyboard。
+请对刚刚提交的正式分镜表执行独立只读审核。审核对象必须锁定为 generationId=${input.generationId}、revision=${input.revision} 的正式结构化字段；先读取这个指定版本，再读取 script、scriptPlan 和 assets 作为上游依据，不得混用其他版本。
 
-先做全局审核：逐项对照剧本事件与关键台词，检查遗漏、顺序倒置、因果改变、情绪曲线、整段过碎或拖沓、分组边界和轴线体系。再做逐镜审核：单机位单时刻、台词动作与时长、重复信息、站位视线道具连续性、机位资产和稳定外观复述。
+本轮执行指令：
+${input.executionPrompt}
 
-必须先用 record_storyboard_table_review 保存本轮问题清单记录；即使没有问题也提交 items: []。这是内部持久化步骤，最终回复绝对不要提及工具名、JSON、数据库或下一次工具调用。不得修改任何分镜。最终回复只给简洁结论、异常/风险和需要用户决定的问题，不逐镜罗列通过项。
+本轮执行摘要：
+${input.executionSummary}
+
+以上两项只用于识别本轮返修范围和执行意图；当前正式 generation/revision 中实际存在的字段才是审核对象。若这是返修复核，读取上一轮完整审核报告，逐项区分已修复、仍存在、返修回归和历史漏检。
+
+严格按当前分镜表监督 Skill 的四遍协议执行：事实与范围、全局检查、专业逐镜检查、漏检复查与归并。必须检查全部正式分镜，不得抽样，不得因已经发现严重问题而提前停止。
+
+四遍全部完成并归并后，必须只用一次 record_storyboard_table_review 保存本轮完整问题清单；即使没有问题也提交 items: []。逐镜问题只传正式分镜的 storyboardIndex；不得把 generation 行内部 ID 或 index+1 猜作 storyboardId，服务端会按 index 解析。全局问题仍使用 scope=global。这是内部持久化步骤，最终回复绝对不要提及工具名、JSON、数据库或下一次工具调用。不得修改任何分镜。最终回复只给简洁结论、异常/风险和需要用户决定的问题，不逐镜罗列通过项。
 
 保存审核报告后，必须调用 await_user_decision，用自然语言向用户说明本次仅完成检查、尚未改动正式分镜，并等待用户决定是否调整、保留或指定其他版本/范围。`;
     const response = await runAgent({
@@ -438,6 +453,7 @@ async function createSubAgent(
       ],
       tools: reviewStage.tools,
       toolNames: reviewStage.definition.tools,
+      archiveOutput: true,
     });
     const reviewRecorded = parentCtx.runContext
       ? await u
@@ -661,7 +677,19 @@ async function createSubAgent(
         artStyle: projectInfo.artStyle || "",
         directorManual: projectInfo.directorManual || "",
       });
-      const reviewPrompt = "请审核【分镜面板】写入结果，只列异常、风险、问题归属和建议；通过项不要逐镜罗列。只读审核，不得执行返修。";
+      const reviewPrompt = `请审核【分镜面板】写入结果。当前审核对象只包括每条当前正式分镜的 prompt、associateAssetsIds、shouldGenerateImage；tableRowJson 等字段只作为上游事实依据。
+
+本轮执行指令：
+${prompt}
+
+本轮执行摘要：
+${summarizeAgentReason(response)}
+
+以上上下文只用于识别本轮修改范围。必须先读取上一轮完整报告，再使用分镜面板专用只读工具分别读取当前目标和上游来源；禁止调用 get_flowData("storyboard")。目标字段中找不到对应原句或直接证据时不得报为面板问题。
+
+若这是返修复核，上一轮问题只区分已修复和仍存在；上一轮没有报告的新问题统一标记为“新发现（基线不可判定）”。分镜面板没有历史目标版本，禁止根据执行摘要或旧报告猜测返修回归、历史漏检。
+
+严格按当前监督 Skill 完成事实与范围、全局检查、专业逐镜检查、漏检复查与归并四遍；不得抽样或提前结束。最终只列异常、风险、问题归属和建议，通过项不要逐镜罗列。只读审核，不得执行返修。`;
       const reviewPromptWithAwait =
         reviewPrompt +
         "\n\n完成报告后必须调用 await_user_decision，用自然语言等待用户决定是否返修、保留或进入分镜图生成。";
@@ -681,6 +709,7 @@ async function createSubAgent(
           ],
           tools: reviewStage.tools,
           toolNames: reviewStage.definition.tools,
+          archiveOutput: true,
         });
       } catch (error: any) {
         reviewResponse = `分镜面板已写入，但自动审核失败：${error?.message || String(error)}`;
@@ -765,7 +794,12 @@ async function createSubAgent(
 
       let reviewResponse: string;
       try {
-        const review = await runStoryboardTableReview();
+        const review = await runStoryboardTableReview({
+          executionPrompt: prompt,
+          executionSummary: summarizeAgentReason(response),
+          generationId: String(committedGeneration.generationId),
+          revision: Number(committedGeneration.revision || 0),
+        });
         reviewResponse = review.response;
       } catch (error: any) {
         const reason = `Storyboard table was committed, but its independent review failed: ${u.error(error).message}`;
@@ -820,6 +854,7 @@ async function createSubAgent(
         ],
         tools: stage.tools,
         toolNames: stage.definition.tools,
+        archiveOutput: true,
       });
       return response;
     },

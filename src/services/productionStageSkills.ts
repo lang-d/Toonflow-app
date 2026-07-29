@@ -44,6 +44,9 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
       "await_user_decision",
       "list_director_plan_generations",
       "read_director_plan_generation",
+      "list_production_reviews",
+      "read_production_review",
+      "read_text_asset",
       "begin_director_plan",
       "append_director_plan_section",
       "commit_director_plan",
@@ -109,7 +112,7 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
     tools: ["get_flowData", "update_agent_progress", "await_user_decision", "generate_storyboard"],
   },
   supervisionDirectorPlan: {
-    workflow: "production_agent_supervision.md",
+    workflow: "production_supervision_director_plan.md",
     skills: [
       { source: "manual", kind: "visual", file: "driector_skills/director_planning_style.md", name: "director_planning_style" },
       { source: "manual", kind: "director", file: "driector_skills/director_planning_narrative.md", name: "director_planning_narrative" },
@@ -121,11 +124,13 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
       "list_director_plan_generations",
       "read_director_plan_generation",
       "get_director_plan_asset",
+      "list_production_reviews",
+      "read_production_review",
       "read_text_asset",
     ],
   },
   supervisionStoryboardTable: {
-    workflow: "production_agent_supervision.md",
+    workflow: "production_supervision_storyboard_table.md",
     skills: [
       { source: "configured", file: "production_skills/storyboard_table_techniques.md", name: "storyboard_table_techniques" },
       {
@@ -148,12 +153,14 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
     ],
   },
   supervisionStoryboardPanel: {
-    workflow: "production_agent_supervision.md",
+    workflow: "production_supervision_storyboard_panel.md",
     skills: [
       { source: "configured", file: "production_skills/storyboard_prompt_techniques.md", name: "storyboard_prompt_techniques" },
     ],
     tools: [
       "get_flowData",
+      "read_storyboard_panel_targets",
+      "read_storyboard_panel_sources",
       "update_agent_progress",
       "await_user_decision",
       "list_storyboard_generations",

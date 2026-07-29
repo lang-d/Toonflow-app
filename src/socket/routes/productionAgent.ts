@@ -17,6 +17,11 @@ import {
   type AgentRunContext,
   type AgentRunStatus,
 } from "@/services/agentRun";
+import {
+  clearProductionAgentRunControl,
+  registerProductionAgentRunControl,
+  stopProductionAgentRunControl,
+} from "@/services/productionAgentRunRegistry";
 
 async function verifyToken(rawToken: string): Promise<Boolean> {
   const setting = await u.db("o_setting").where("key", "tokenKey").select("value").first();
@@ -108,8 +113,14 @@ export default (nsp: Namespace) => {
 
     socket.on("updateContext", async (data: { isolationKey: string; projectId: number; scriptId: number }, callback) => {
       try {
-        if (abortController) throw new Error("production agent is running; stop it before switching context");
         const nextContext = await validateProductionAgentContext(data);
+        if (abortController && nextContext.isolationKey !== context.isolationKey) {
+          throw new Error("production agent is running; stop it before switching context");
+        }
+        if (nextContext.isolationKey === context.isolationKey) {
+          callback?.({ success: true });
+          return;
+        }
         socket.leave(productionAgentRoom(context));
         context = nextContext;
         socket.join(productionAgentRoom(context));
@@ -220,6 +231,11 @@ export default (nsp: Namespace) => {
       }
       const runContext = createAgentRunContext(createdRun.run.runId);
       currentRunContext = runContext;
+      registerProductionAgentRunControl(context.isolationKey, {
+        runId: createdRun.run.runId,
+        controller: currentController,
+        runContext,
+      });
       broadcastRunUpdate({ status: "running", run: createdRun.run });
       heartbeatTimer = setInterval(() => {
         void updateAgentRunHeartbeat(createdRun.run.runId).catch((error) => {
@@ -286,6 +302,7 @@ export default (nsp: Namespace) => {
         } catch (error) {
           console.error("[productionAgent] failed to persist terminal run status:", u.error(error).message);
         } finally {
+          clearProductionAgentRunControl(context.isolationKey, createdRun.run.runId);
           if (abortController === currentController) {
             abortController = null;
           }
@@ -305,10 +322,36 @@ export default (nsp: Namespace) => {
       console.log("[productionAgent] think config updated:", thinkConfig);
     });
 
-    socket.on("stop", () => {
-      currentRunContext && (currentRunContext.abortReason = "user_stop");
-      abortController?.abort();
-      abortController = null;
+    socket.on("abort", async (data: { runId?: string }, callback?: (result: any) => void) => {
+      try {
+        const runId = String(data?.runId || "");
+        const activeRun = await getActiveAgentRun({
+          agentKey: "productionAgent",
+          projectId: context.projectId,
+          scriptId: context.scriptId,
+        });
+
+        if (!activeRun) {
+          callback?.({ accepted: false, code: "NO_ACTIVE_RUN", message: "当前没有可中断的 Production Agent 运行。" });
+          return;
+        }
+        if (!runId || activeRun.runId !== runId) {
+          callback?.({ accepted: false, code: "RUN_MISMATCH", runId: activeRun.runId, message: "目标运行已变化，请刷新状态后重试。" });
+          return;
+        }
+
+        const stopped = stopProductionAgentRunControl(context.isolationKey, runId);
+        if (!stopped) {
+          await recordAgentRunEvent(runId, "abort_unavailable", { socketId: socket.id, isolationKey: context.isolationKey });
+          callback?.({ accepted: false, code: "ABORT_UNAVAILABLE", runId, message: "当前运行无法中断，请稍后刷新状态。" });
+          return;
+        }
+
+        broadcastRunUpdate({ status: "running", run: activeRun, stopping: true });
+        callback?.({ accepted: true, runId, stopping: true });
+      } catch (error) {
+        callback?.({ accepted: false, code: "ABORT_FAILED", message: `中断请求失败：${u.error(error).message}` });
+      }
     });
 
     socket.on("disconnect", () => {

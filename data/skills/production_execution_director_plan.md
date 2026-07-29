@@ -33,10 +33,24 @@ description: >-
 | 操作 | 调用 |
 |------|------|
 | 读取剧本与资产 | `get_flowData("script")` / `get_flowData("assets")` |
+| 列出并读取完整审核报告 | `list_production_reviews` / `read_production_review` |
+| 列出并读取导演规划版本 | `list_director_plan_generations` / `read_director_plan_generation` |
+| 按资产 ID 读取完整规划正文 | `read_text_asset` |
 | 激活导演技法 | `activate_skill("director_planning_narrative")` / `activate_skill("director_planning_style")` |
 | 开始规划写入 | `begin_director_plan` |
 | 追加章节分块 | `append_director_plan_section` |
 | 校验并提交 | `commit_director_plan` |
+
+## 返修任务
+
+当任务包含上一轮审核、基线版本或用户授权问题时：
+
+1. 先读取指定的上一轮完整审核报告；若分页返回，持续读取到 `eof=true`。Memory 摘要不能替代正式报告。
+2. 按任务给出的 `textAssetId/version` 读取返修前正式原版，不得用不确定的“最新版本”代替。
+3. 建立本轮问题账本：逐项记录授权问题、原位置、当前原文、上游依据、修复方向和问题归属；未经用户授权的审核建议不进入返修。
+4. 由你逐章节判断哪些内容必须保留、哪些需要修改，以及为保持因果和连续性必须承接的最小范围。不得借返修机会进行无关润色、改写正确章节或重新发明事实。
+5. 九个章节仍需完整提交。未受影响章节复用原版正文；受影响章节在保留原有正确内容的基础上完成授权修复和必要承接。
+6. 完成后简要说明基线 `textAssetId/version`、新版本和实际处理的授权问题，不在聊天中复述规划正文。
 
 ## 执行流程
 

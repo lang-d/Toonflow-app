@@ -39,6 +39,10 @@ export interface ProductionReviewSuggestionInput {
 
 export interface StoryboardTableAgentReviewItem {
   scope: "global" | "storyboard" | "director_plan" | "asset";
+  /**
+   * Resolved from the current formal storyboard row by the server.  Models
+   * should address storyboard review items with storyboardIndex instead.
+   */
   storyboardId?: number;
   storyboardIndex?: number;
   issueType: string;
@@ -48,6 +52,46 @@ export interface StoryboardTableAgentReviewItem {
   reason: string;
   suggestedAction: string;
   owner: "storyboardTable" | "deriveAssets" | "directorPlan";
+}
+
+/**
+ * Resolves the stable business id for storyboard-table review items.  A
+ * generation row's index is the only row identity available to the reviewer;
+ * generation-row ids are not o_storyboard ids and must never be guessed by a
+ * model.
+ */
+export async function resolveStoryboardTableAgentReviewItemTargets(
+  input: {
+    projectId: number;
+    scriptId: number;
+    items: StoryboardTableAgentReviewItem[];
+  },
+  database: any = u.db,
+): Promise<StoryboardTableAgentReviewItem[]> {
+  const indexes = [
+    ...new Set(
+      input.items
+        .filter((item) => item.scope === "storyboard")
+        .map((item) => item.storyboardIndex)
+        .filter((index): index is number => typeof index === "number" && Number.isInteger(index) && index >= 0),
+    ),
+  ];
+  const rows = indexes.length
+    ? await database("o_storyboard")
+        .where({ projectId: input.projectId, scriptId: input.scriptId })
+        .whereIn("index", indexes)
+        .select("id", "index")
+    : [];
+  const idsByIndex = new Map<number, number>(rows.map((row: any) => [Number(row.index), Number(row.id)]));
+
+  return input.items.map((item) => {
+    if (item.scope !== "storyboard") return item;
+    const storyboardId = idsByIndex.get(Number(item.storyboardIndex));
+    if (storyboardId == null) {
+      throw new Error(`Storyboard review item does not match the current scope: index ${item.storyboardIndex}`);
+    }
+    return { ...item, storyboardId };
+  });
 }
 
 function now() {

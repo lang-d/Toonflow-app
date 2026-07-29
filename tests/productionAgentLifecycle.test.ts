@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 const source = fs.readFileSync(path.join(process.cwd(), "src", "socket", "routes", "productionAgent.ts"), "utf8");
+const runRegistrySource = fs.readFileSync(path.join(process.cwd(), "src", "services", "productionAgentRunRegistry.ts"), "utf8");
 
 test("production agent disconnect detaches the client without aborting the run", () => {
   assert.match(source, /recordAgentRunEvent\(currentRunContext\.runId, "client_detached"/);
@@ -37,9 +38,12 @@ test("storyboard panel review falls back to awaiting_user without overriding the
   assert.match(productionAgentSource, /parentCtx\.runContext\.stopForTerminal\(\)/);
 });
 
-test("production agent only archives long outputs as process transcripts", () => {
-  assert.match(productionAgentSource, /const shouldArchiveFullOutput = memoryContent\.length > 4000/);
-  assert.doesNotMatch(productionAgentSource, /stage\.startsWith\("supervision"\)/);
+test("production agent archives every supervision report and still archives other long outputs", () => {
+  assert.match(
+    productionAgentSource,
+    /const shouldArchiveFullOutput = archiveOutput === true \|\| memoryContent\.length > 4000/,
+  );
+  assert.ok((productionAgentSource.match(/archiveOutput: true/g) || []).length >= 3);
   assert.match(productionAgentSource, /process transcript \(\$\{fullResponse\.length\} chars\)/);
 });
 
@@ -49,4 +53,23 @@ test("production agent requires a model-declared terminal state", () => {
   assert.match(source, /"terminal_declaration_missing"/);
   assert.match(productionAgentSource, /"complete_agent_run"/);
   assert.match(productionAgentSource, /recordAgentModelStreamFinished/);
+});
+
+test("production agent abort is addressed by isolation key and run id without locally faking a terminal status", () => {
+  assert.match(runRegistrySource, /new Map<string, ProductionAgentRunControl>/);
+  assert.match(runRegistrySource, /function controlKey\(isolationKey: string, runId: string\)/);
+  assert.match(runRegistrySource, /stopProductionAgentRunControl\(isolationKey: string, runId: string\)/);
+  assert.match(runRegistrySource, /control\.runContext\.abortReason = "user_stop"/);
+  assert.match(source, /registerProductionAgentRunControl\(context\.isolationKey/);
+  assert.match(source, /clearProductionAgentRunControl\(context\.isolationKey, createdRun\.run\.runId\)/);
+  assert.match(source, /socket\.on\("abort", async \(data: \{ runId\?: string \}/);
+  assert.match(source, /stopProductionAgentRunControl\(context\.isolationKey, runId\)/);
+  assert.match(source, /recordAgentRunEvent\(runId, "abort_unavailable"/);
+  assert.match(source, /broadcastRunUpdate\(\{ status: "running", run: activeRun, stopping: true \}\)/);
+  assert.match(
+    source,
+    /else if \(runContext\.abortReason === "user_stop"\) \{\s*finalStatus = "cancelled";\s*finalReason = "用户已停止当前 Production Agent chat。";/,
+  );
+  assert.match(source, /finishAgentRun\(createdRun\.run\.runId, \{\s*status: finalStatus,/);
+  assert.doesNotMatch(source, /finishAgentRun\(runId, \{\s*status: "cancelled"/);
 });

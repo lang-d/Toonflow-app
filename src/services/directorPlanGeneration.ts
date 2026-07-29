@@ -226,7 +226,7 @@ function assembleDirectorPlan(chunks: any[]) {
         issues.push({ sectionKey, message: `chunk ${index} hash mismatch` });
       }
     });
-    const content = stripDuplicateSectionHeading(sectionKey, values.map((value) => String(value.content || "")).join(""));
+    const content = stripDuplicateSectionHeading(sectionKey, values.map((value) => String(value.content || "")).join("\n"));
     if (!content) issues.push({ sectionKey, message: "section content is empty" });
     sections.push(`## ${DIRECTOR_PLAN_SECTION_TITLES[sectionKey]}\n\n${content}`);
   }
