@@ -74,6 +74,7 @@ visualRequirements.realpeople_republican_period = [/统一棕黄滤镜/, /年代
 visualRequirements.realpeople_professional_documentary = [/观察式摄影/, /权限调度/, /玻璃、金属、白色织物和显示器/, /复述、确认、记录、交接/, /英雄宣传光/];
 visualRequirements.realpeople_sports_cinematic = [/场地标线/, /固定广角/, /中长焦/, /运动织物/, /无目的慢动作/];
 visualRequirements.realpeople_rural_naturalism = [/地域色彩/, /生活生产空间/, /土、石、砖、木、瓦/, /贫困奇观/, /文旅航拍/];
+visualRequirements["3D_rural_anime_render"] = [/条件化色彩决策/, /曝光优先级/, /生产轴线/, /卡通材质状态矩阵/, /三维动画与表演/];
 genreRequirements.Survival_island = {
   planning: [/环境时钟/, /生存状态账本/, /场前条件/, /知识权/, /岛屿拓扑/, /冲突时按以下优先级取舍/],
   table: [/信息建立/, /动作准备/, /状态写回/, /变化前条件/, /条件化区域覆盖/, /机位半区/],
@@ -110,6 +111,10 @@ genreRequirements.Rural_hometown = {
   planning: [/生活与关系账本/, /生产节律/, /地域空间/, /返乡不自动等于和解/, /文旅宣传/],
   table: [/生活与劳动拆镜/, /家庭与社区空间/, /往返路线/, /季节/, /贫困凝视/],
 };
+genreRequirements.Modern_farming_business = {
+  planning: [/经营压力诊断矩阵/, /经营时钟与闭环/, /经营场面因果/, /关系位移与家庭行动/, /生产空间与物流拓扑/, /条件化轻喜剧/],
+  table: [/拆镜触发矩阵/, /经营行动镜头链/, /商品、订单与证据镜头/, /空间、轴线与连续性/, /题材化景别与时长/, /轻喜剧反应链/],
+};
 
 test("only the production-agent manual contracts are treated as active", () => {
   const activeNames = new Set(Object.values(PRODUCTION_STAGE_DEFINITIONS).flatMap((definition) => definition.skills.map((skill) => skill.name)));
@@ -132,11 +137,11 @@ test("only the production-agent manual contracts are treated as active", () => {
   ]);
 });
 
-test("all 352 director combinations and every storyboard topic resolve through the real stage loader", async () => {
+test("all 391 director combinations and every storyboard topic resolve through the real stage loader", async () => {
   const visualPackages = packages(visualRoot);
   const directorPackages = packages(directorRoot);
-  assert.equal(visualPackages.length, 16);
-  assert.equal(directorPackages.length, 22);
+  assert.equal(visualPackages.length, 17);
+  assert.equal(directorPackages.length, 23);
 
   for (const visual of visualPackages) {
     assert.match(readSkill(visualRoot, visual, "director_planning_style.md"), /^---\nname: director_planning_style/m);
@@ -170,7 +175,7 @@ test("all 352 director combinations and every storyboard topic resolve through t
         combinations += 1;
       }
     }
-    assert.equal(combinations, 352);
+    assert.equal(combinations, 391);
 
     for (const director of directorPackages) {
       for (const stage of ["storyboardTable", "supervisionStoryboardTable"] as const) {
@@ -234,7 +239,7 @@ test("all active type-specific Director manuals contain their distinct direction
   for (const [packageName, requirements] of Object.entries(visualRequirements)) {
     const content = readSkill(visualRoot, packageName, "director_planning_style.md");
     assert.match(content, /轴线/);
-    assert.match(content, /导演规划应用检查|声音与检查/);
+    assert.match(content, /导演规划应用检查|视觉应用检查|声音与检查/);
     assert.match(content, /禁止|不得/);
     assert.match(content, /新增|增加|添加|补写|待确认|默认|虚构|推断/);
     for (const requirement of requirements) assert.match(content, requirement, packageName);
@@ -271,6 +276,80 @@ test("active Director manuals have one hierarchy and contain no execution-layer 
   assert.match(executionSkills, /begin_director_plan/);
   assert.match(executionSkills, /append_storyboard_rows/);
   assert.match(executionSkills, /commit_storyboard_table/);
+});
+
+test("Modern_farming_business preserves operating causality without inventing a rural success story", () => {
+  const planning = readSkill(directorRoot, "Modern_farming_business", "director_planning_narrative.md");
+  const table = readSkill(directorRoot, "Modern_farming_business", "director_storyboard_table_narrative.md");
+
+  for (const heading of [
+    "经营压力诊断矩阵",
+    "经营时钟与闭环",
+    "经营场面因果",
+    "关系位移与家庭行动",
+    "生产空间与物流拓扑",
+    "条件化轻喜剧与生活节拍",
+    "表演、声音与节奏",
+  ]) {
+    assert.match(planning, new RegExp(`## .*${heading}`));
+  }
+  assert.match(planning, /生产条件.*商品状态.*承诺状态.*资源限制.*关系结构.*信息等级/s);
+  assert.match(planning, /听说、看见、收到、核验、确认、执行、完成/);
+  assert.match(planning, /生产对象 → 可用商品 → 承诺 → 履约行动 → 接收、退回或结果未知/);
+  assert.match(planning, /接单不等于确认.*包装不等于发运.*发运不等于送达.*验收不等于付款或结算/s);
+  assert.match(planning, /场前条件 → 当下目标 → 判断依据 → 可见执行 → 阻力或代价 → 状态变化 → 下一场条件/);
+  assert.match(planning, /拥有关键事实.*决定权.*负责执行.*保管商品.*承担承诺.*承担行动风险.*核验结果/s);
+  assert.match(planning, /接手.*拒绝.*让渡.*补位.*核验.*承担.*共同收尾/s);
+  assert.match(planning, /正常任务 → 局部偏差 → 可读结果 → 反应传播 → 成年人核验或收尾 → 现实任务恢复/);
+  assert.match(planning, /不自动加入丰收、炊烟、民俗和观光人群/);
+  assert.doesNotMatch(planning, /模型参数|工具调用|运行流程|持久化/);
+
+  for (const heading of [
+    "拆镜触发矩阵",
+    "经营行动镜头链",
+    "条件化行动拆解",
+    "商品、订单与证据镜头",
+    "空间、轴线与连续性",
+    "题材化景别与时长",
+    "轻喜剧反应链与声音",
+  ]) {
+    assert.match(table, new RegExp(`## .*${heading}`));
+  }
+  assert.match(table, /条件建立 → 人物核验 → 准备或分工 → 关键操作 → 交接 → 结果确认 → 下一场条件/);
+  assert.match(table, /条件改变.*信息确认.*商品状态改变.*持有人改变.*承诺进入新阶段.*路线改变.*关系位移/s);
+  for (const action of ["观察或检查", "采收或制作", "分级或包装", "搬运或短驳", "交接或发运", "沟通、退回或暂停", "恢复或返工"]) {
+    assert.match(table, new RegExp(action));
+  }
+  assert.match(table, /工作轴线.*交接轴线.*道路轴线.*关系轴线.*入口出口轴线/s);
+  assert.match(table, /消息发出与对方收到.*递出商品与对方验收.*车辆离开与商品送达/s);
+  assert.match(table, /动作是否完整.*信息是否可读.*多人协作是否能分辨/s);
+  assert.match(table, /行动者 → 受影响者 → 先发现者 → 负责核验或收尾者/);
+  assert.doesNotMatch(table, /固定秒数|固定镜头比例|逐句台词切镜|强制重复/);
+  assert.doesNotMatch(table, /模型参数|工具名|运行流程|任务状态|持久化/);
+});
+
+test("3D_rural_anime_render provides rural production readability without preset pastoral spectacle", () => {
+  const style = readSkill(visualRoot, "3D_rural_anime_render", "director_planning_style.md");
+
+  for (const heading of [
+    "条件化色彩决策",
+    "条件化光线与曝光",
+    "空间轴线与机位覆盖",
+    "卡通材质状态矩阵",
+    "三维动画与表演",
+    "声音与空间层次",
+  ]) {
+    assert.match(style, new RegExp(`## .*${heading}`));
+  }
+  assert.match(style, /开阔日光.*树冠或棚架筛光.*阴天漫射.*院坝半室外.*包装\/储放空间.*晨昏/s);
+  assert.match(style, /人物判断与关键动作 → 商品\/工具状态 → 交接位置与通行面 → 背景环境/);
+  assert.match(style, /生产轴线.*商品交接轴线.*入口\/出口轴线.*道路轴线.*工作位关系轴线.*物件轴线/s);
+  assert.match(style, /反向区域.*时段、天气、地面干湿.*车辆停靠.*关键物件位置/s);
+  assert.match(style, /作物\/商品.*土、石与道路.*竹木.*纸张\/纸箱.*塑料.*金属.*织物.*植被与水分/s);
+  assert.match(style, /重心.*手与把手.*抓握与换手.*衣物、头发和软质物件的惯性.*物件重量/s);
+  assert.match(style, /自然环境.*生产操作.*移动与交通.*人物活动.*空间混响/s);
+  assert.match(style, /不自动加入[\s\S]*暖黄丰收[\s\S]*破旧、贫困[\s\S]*萌宠表演/);
+  assert.doesNotMatch(style, /\b\d{4}K\b|#[0-9a-f]{6}\b|8K|Seedance|@reference|\bCFG\b|--ar\b/i);
 });
 
 test("Survival_island preserves factual survival constraints without inventing an island plot", () => {

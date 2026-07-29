@@ -70,12 +70,12 @@ function sha256(file: string) {
   return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
-test("all 96 active Art manuals resolve through the real Art loader", () => {
+test("all 102 active Art manuals resolve through the real Art loader", () => {
   const packages = fs.readdirSync(artRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
-  assert.equal(packages.length, 16);
+  assert.equal(packages.length, 17);
 
   for (const packageName of packages) {
     for (const manual of manuals) {
@@ -182,6 +182,104 @@ test("each of the 24 new Art manuals contains its asset-specific professional me
         assert.match(content, /基础设定图|基础资产/);
       }
     }
+  }
+});
+
+test("3D_rural_anime_render compiles stable rural assets and one confirmed derivative change", () => {
+  const packageName = "3D_rural_anime_render";
+  const methodGroups: Record<(typeof manuals)[number], RegExp[]> = {
+    art_character: [
+      /角色识别层级/,
+      /面部拓扑与年龄感/,
+      /体态、关节与绑定/,
+      /发型结构/,
+      /服装层级与材料/,
+      /四视图规范/,
+    ],
+    art_character_derivative: [
+      /不可变锚点/,
+      /单一变化分类矩阵/,
+      /材料传播规律/,
+      /湿度从外层和发尾产生聚束/,
+      /四视图与对照/,
+    ],
+    art_scene: [
+      /场景分类与事实选择/,
+      /功能拓扑/,
+      /尺度与动画可行性/,
+      /季节、时段与光线/,
+      /3D乡村材质/,
+      /主视图与辅助视图/,
+    ],
+    art_scene_derivative: [
+      /连续性锁定表/,
+      /单一变化矩阵/,
+      /变化传播规则/,
+      /同地点证明/,
+      /至少两个可识别锚点/,
+    ],
+    art_prop: [
+      /功能结构诊断/,
+      /道具类型与建模重点/,
+      /材料与结构规律/,
+      /受力、重心与交互/,
+      /多视图规范/,
+    ],
+    art_prop_derivative: [
+      /不可变锚点/,
+      /单一变化矩阵/,
+      /材料传播规律/,
+      /纸张\/纸箱/,
+      /对照视图/,
+    ],
+  };
+
+  for (const manual of manuals) {
+    const content = getArtPrompt(packageName, "art_skills", manual).replace(/\r\n/g, "\n");
+    assert.match(content, new RegExp(`^---\\nname: ${manual}$`, "m"), manual);
+    assert.match(content, /assetFoundation/, manual);
+    assert.match(content, /visualDesignRationale/, manual);
+    assert.match(content, /## 职责与方法/, manual);
+    assert.match(content, /## 类型专属设计方法/, manual);
+    assert.match(content, /## 提示词模板（编译顺序）/, manual);
+    assert.match(content, /## 输出规则/, manual);
+    assert.match(content, /## 必守与严禁/, manual);
+    assert.match(content, /<assetImagePrompt>/, manual);
+    assert.equal((content.match(/```text\n/g) || []).length, 1, `${manual} template count`);
+    assert.doesNotMatch(content, /Seedance|@reference|\bCFG\b|--ar\b|https?:\/\//i, manual);
+    for (const method of methodGroups[manual]) assert.match(content, method, manual);
+
+    const template = content.match(/```text\n([\s\S]+?)\n```/)?.[1];
+    assert.ok(template, manual);
+    const ordered = ["稳定事实：", "设计理由：", "专业细节：", "视图与构图：", "光线材质：", "背景：", "禁止项："];
+    let previous = -1;
+    for (const marker of ordered) {
+      const current = template.indexOf(marker);
+      assert.ok(current > previous, `${manual}: ${marker}`);
+      previous = current;
+    }
+  }
+
+  const character = readManual(packageName, "art_character");
+  const characterDerivative = readManual(packageName, "art_character_derivative");
+  const scene = readManual(packageName, "art_scene");
+  const sceneDerivative = readManual(packageName, "art_scene_derivative");
+  const prop = readManual(packageName, "art_prop");
+  const propDerivative = readManual(packageName, "art_prop_derivative");
+  assert.match(character, /汗湿、雨湿、泥尘、晒伤、疲劳、伤病、破损、劳动姿势和手持物均不自动进入基础图/);
+  assert.match(character, /不使用固定身高、固定头身比、固定男女面容/);
+  assert.match(characterDerivative, /一次只改变一个维度/);
+  assert.match(characterDerivative, /不把一项雨湿扩展为泥污、疲劳、破损和伤病/);
+  assert.match(scene, /不生成正在发生的生产事件、人物剧情或经营结果/);
+  assert.match(scene, /不能为了纵深增加不存在的作物、农具、动物和建筑/);
+  assert.match(sceneDerivative, /一次只改变一个条件类别/);
+  assert.match(sceneDerivative, /不自动加入丰收、满仓、积水、泥泞、灾损和群众/);
+  assert.match(prop, /不能自动加入果筐、电子秤、农具、包装箱、车辆、直播设备或品牌/);
+  assert.match(prop, /不自动添加泥尘、受潮、锈蚀、划痕、破损和修补/);
+  assert.match(propDerivative, /不把使用自动等于磨损，把湿润自动等于锈蚀或霉变/);
+
+  for (const content of [character, characterDerivative, scene, sceneDerivative, prop, propDerivative]) {
+    assert.doesNotMatch(content, /固定身高\s*\d|固定头身比\s*\d|8K|16:9|4:1|3:1|Seedance|@reference|\bCFG\b|--ar\b/i);
   }
 });
 
