@@ -1,21 +1,21 @@
 {
-  "generatedAt": "2026-07-13T07:40:54.988Z",
+  "generatedAt": "2026-08-03T18:38:00.295Z",
   "frontendRoot": "E:\\codex_workspace\\Toonflow-web",
   "totals": {
-    "frontend": 195,
-    "backend": 268,
-    "matched": 193,
+    "frontend": 202,
+    "backend": 273,
+    "matched": 199,
     "compatibilityAliases": 0,
     "dynamicAllowlist": 1,
-    "frontendPendingRemoval": 1,
+    "frontendPendingRemoval": 2,
     "unclassified": 0
   },
   "contracts": [
     {
       "method": "post",
       "route": "/agent/run/detail",
-      "file": "src/stores/productionAgent.ts",
-      "line": 972,
+      "file": "src/api/productionMusic.ts",
+      "line": 108,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/agent/run/detail.ts"
@@ -23,8 +23,8 @@
     {
       "method": "post",
       "route": "/agent/run/status",
-      "file": "src/stores/productionAgent.ts",
-      "line": 882,
+      "file": "src/api/productionMusic.ts",
+      "line": 107,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/agent/run/status.ts"
@@ -32,8 +32,8 @@
     {
       "method": "post",
       "route": "/agents/clearMemory",
-      "file": "src/views/scriptAgent/index copy.vue",
-      "line": 347,
+      "file": "src/views/productionMusic/index.vue",
+      "line": 584,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/agents/clearMemory.ts"
@@ -42,7 +42,7 @@
       "method": "post",
       "route": "/agents/getMemory",
       "file": "src/api/productionMusic.ts",
-      "line": 48,
+      "line": 110,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/agents/getMemory.ts"
@@ -240,7 +240,7 @@
       "method": "post",
       "route": "/diagnostics/runtime/status",
       "file": "src/stores/taskCenter.ts",
-      "line": 907,
+      "line": 969,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/diagnostics/runtime/status.ts"
@@ -276,7 +276,7 @@
       "method": "post",
       "route": "/novel/batchDeleteNovel",
       "file": "src/views/novel/index.vue",
-      "line": 239,
+      "line": 283,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/novel/batchDeleteNovel.ts"
@@ -285,7 +285,7 @@
       "method": "post",
       "route": "/novel/delNovel",
       "file": "src/views/novel/index.vue",
-      "line": 260,
+      "line": 304,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/novel/delNovel.ts"
@@ -310,6 +310,15 @@
     },
     {
       "method": "post",
+      "route": "/novel/event/generateEvents",
+      "file": "src/views/novel/index.vue",
+      "line": 326,
+      "dynamic": false,
+      "classification": "canonical",
+      "backendFile": "src/routes/novel/event/generateEvents.ts"
+    },
+    {
+      "method": "post",
       "route": "/novel/event/getEvent",
       "file": "src/views/novel/components/event.vue",
       "line": 118,
@@ -319,12 +328,30 @@
     },
     {
       "method": "post",
+      "route": "/novel/getNovel",
+      "file": "src/views/novel/index.vue",
+      "line": 237,
+      "dynamic": false,
+      "classification": "canonical",
+      "backendFile": "src/routes/novel/getNovel.ts"
+    },
+    {
+      "method": "post",
       "route": "/novel/getNovelData",
       "file": "src/views/scriptAgent/index copy.vue",
       "line": 312,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/novel/getNovelData.ts"
+    },
+    {
+      "method": "post",
+      "route": "/novel/getNovelEventState",
+      "file": "src/views/novel/index.vue",
+      "line": 465,
+      "dynamic": false,
+      "classification": "canonical",
+      "backendFile": "src/routes/novel/getNovelEventState.ts"
     },
     {
       "method": "post",
@@ -366,7 +393,7 @@
       "method": "post",
       "route": "/production/assets/batchGenerateAssetsImage",
       "file": "src/stores/productionAgent.ts",
-      "line": 1805,
+      "line": 1872,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/assets/batchGenerateAssetsImage.ts"
@@ -420,7 +447,7 @@
       "method": "post",
       "route": "/production/editImage/pollImageTask",
       "file": "src/stores/taskCenter.ts",
-      "line": 463,
+      "line": 466,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/editImage/pollImageTask.ts"
@@ -447,7 +474,7 @@
       "method": "post",
       "route": "/production/editImage/uploadMedia",
       "file": "src/views/production/components/workbench/generate/index.vue",
-      "line": 740,
+      "line": 657,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/editImage/uploadMedia.ts"
@@ -456,7 +483,7 @@
       "method": "post",
       "route": "/production/getFlowData",
       "file": "src/stores/productionAgent.ts",
-      "line": 1487,
+      "line": 1554,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/getFlowData.ts"
@@ -474,7 +501,7 @@
       "method": "post",
       "route": "/production/music/bible/detail",
       "file": "src/api/productionMusic.ts",
-      "line": 52,
+      "line": 116,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/bible/detail.ts"
@@ -483,7 +510,7 @@
       "method": "post",
       "route": "/production/music/bible/list",
       "file": "src/api/productionMusic.ts",
-      "line": 51,
+      "line": 115,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/bible/list.ts"
@@ -492,7 +519,7 @@
       "method": "post",
       "route": "/production/music/cue/bind",
       "file": "src/api/productionMusic.ts",
-      "line": 58,
+      "line": 122,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/cue/bind.ts"
@@ -501,7 +528,7 @@
       "method": "post",
       "route": "/production/music/cue/list",
       "file": "src/api/productionMusic.ts",
-      "line": 57,
+      "line": 121,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/cue/list.ts"
@@ -510,7 +537,7 @@
       "method": "post",
       "route": "/production/music/cue/prompt/list",
       "file": "src/api/productionMusic.ts",
-      "line": 60,
+      "line": 124,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/cue/prompt/list.ts"
@@ -519,7 +546,7 @@
       "method": "post",
       "route": "/production/music/cue/prompt/save",
       "file": "src/api/productionMusic.ts",
-      "line": 61,
+      "line": 125,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/cue/prompt/save.ts"
@@ -528,7 +555,7 @@
       "method": "post",
       "route": "/production/music/cue/selectAsset",
       "file": "src/api/productionMusic.ts",
-      "line": 64,
+      "line": 130,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/cue/selectAsset.ts"
@@ -537,7 +564,7 @@
       "method": "post",
       "route": "/production/music/library/create",
       "file": "src/api/productionMusic.ts",
-      "line": 65,
+      "line": 131,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/library/create.ts"
@@ -546,7 +573,7 @@
       "method": "post",
       "route": "/production/music/library/detail",
       "file": "src/api/productionMusic.ts",
-      "line": 67,
+      "line": 133,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/library/detail.ts"
@@ -555,7 +582,7 @@
       "method": "post",
       "route": "/production/music/library/edition/save",
       "file": "src/api/productionMusic.ts",
-      "line": 68,
+      "line": 134,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/library/edition/save.ts"
@@ -564,7 +591,7 @@
       "method": "post",
       "route": "/production/music/library/list",
       "file": "src/api/productionMusic.ts",
-      "line": 66,
+      "line": 132,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/library/list.ts"
@@ -573,7 +600,7 @@
       "method": "post",
       "route": "/production/music/library/lyrics/confirm",
       "file": "src/api/productionMusic.ts",
-      "line": 73,
+      "line": 139,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/library/lyrics/confirm.ts"
@@ -582,7 +609,7 @@
       "method": "post",
       "route": "/production/music/library/lyrics/list",
       "file": "src/api/productionMusic.ts",
-      "line": 71,
+      "line": 137,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/library/lyrics/list.ts"
@@ -591,7 +618,7 @@
       "method": "post",
       "route": "/production/music/library/lyrics/save",
       "file": "src/api/productionMusic.ts",
-      "line": 72,
+      "line": 138,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/library/lyrics/save.ts"
@@ -600,7 +627,7 @@
       "method": "post",
       "route": "/production/music/library/prompt/list",
       "file": "src/api/productionMusic.ts",
-      "line": 75,
+      "line": 141,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/library/prompt/list.ts"
@@ -609,7 +636,7 @@
       "method": "post",
       "route": "/production/music/library/prompt/save",
       "file": "src/api/productionMusic.ts",
-      "line": 76,
+      "line": 142,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/library/prompt/save.ts"
@@ -618,16 +645,25 @@
       "method": "post",
       "route": "/production/music/library/selectVersion",
       "file": "src/api/productionMusic.ts",
-      "line": 69,
+      "line": 135,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/library/selectVersion.ts"
     },
     {
       "method": "post",
+      "route": "/production/music/model/default",
+      "file": "src/api/productionMusic.ts",
+      "line": 111,
+      "dynamic": false,
+      "classification": "canonical",
+      "backendFile": "src/routes/production/music/model/default.ts"
+    },
+    {
+      "method": "post",
       "route": "/production/music/plan/detail",
       "file": "src/api/productionMusic.ts",
-      "line": 56,
+      "line": 120,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/plan/detail.ts"
@@ -636,19 +672,10 @@
       "method": "post",
       "route": "/production/music/plan/list",
       "file": "src/api/productionMusic.ts",
-      "line": 55,
+      "line": 119,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/music/plan/list.ts"
-    },
-    {
-      "method": "post",
-      "route": "/production/music/stage/state",
-      "file": "src/api/productionMusic.ts",
-      "line": 47,
-      "dynamic": false,
-      "classification": "frontend-pending-removal",
-      "reason": "Music module migration: frontend must switch to common Run, timeline, task snapshot, and music asset APIs"
     },
     {
       "method": "post",
@@ -708,7 +735,7 @@
       "method": "post",
       "route": "/production/saveFlowData",
       "file": "src/stores/productionAgent.ts",
-      "line": 1467,
+      "line": 1534,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/saveFlowData.ts"
@@ -717,7 +744,7 @@
       "method": "post",
       "route": "/production/storyboard/addStoryboard",
       "file": "src/views/production/node/storyboard/index.vue",
-      "line": 1455,
+      "line": 1564,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/storyboard/addStoryboard.ts"
@@ -735,7 +762,7 @@
       "method": "post",
       "route": "/production/storyboard/batchDelete",
       "file": "src/views/production/node/storyboard/index.vue",
-      "line": 1675,
+      "line": 1784,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/storyboard/batchDelete.ts"
@@ -744,7 +771,7 @@
       "method": "post",
       "route": "/production/storyboard/batchGenerateImage",
       "file": "src/stores/productionAgent.ts",
-      "line": 1712,
+      "line": 1779,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/storyboard/batchGenerateImage.ts"
@@ -753,7 +780,7 @@
       "method": "post",
       "route": "/production/storyboard/downPreviewImage",
       "file": "src/views/production/node/storyboard/index.vue",
-      "line": 1568,
+      "line": 1677,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/storyboard/downPreviewImage.ts"
@@ -762,7 +789,7 @@
       "method": "post",
       "route": "/production/storyboard/editStoryboardInfo",
       "file": "src/views/production/node/storyboard/index.vue",
-      "line": 942,
+      "line": 1034,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/storyboard/editStoryboardInfo.ts"
@@ -780,7 +807,7 @@
       "method": "post",
       "route": "/production/storyboard/removeFrame",
       "file": "src/views/production/node/storyboard/index.vue",
-      "line": 1700,
+      "line": 1809,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/storyboard/removeFrame.ts"
@@ -807,7 +834,7 @@
       "method": "post",
       "route": "/production/workbench/batchGenerateVideo",
       "file": "src/views/production/components/workbench/generate/components/track.vue",
-      "line": 407,
+      "line": 399,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/workbench/batchGenerateVideo.ts"
@@ -816,7 +843,7 @@
       "method": "post",
       "route": "/production/workbench/checkVideoPrompt",
       "file": "src/views/production/components/workbench/generate/index.vue",
-      "line": 1207,
+      "line": 1160,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/workbench/checkVideoPrompt.ts"
@@ -825,7 +852,7 @@
       "method": "post",
       "route": "/production/workbench/checkVideoStateList",
       "file": "src/views/production/components/workbench/generate/index.vue",
-      "line": 1243,
+      "line": 1215,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/workbench/checkVideoStateList.ts"
@@ -834,7 +861,7 @@
       "method": "post",
       "route": "/production/workbench/createMergedReference",
       "file": "src/views/production/components/workbench/generate/index.vue",
-      "line": 908,
+      "line": 825,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/workbench/createMergedReference.ts"
@@ -879,7 +906,7 @@
       "method": "post",
       "route": "/production/workbench/getAudioBindAssetsList",
       "file": "src/views/production/components/workbench/generate/components/imageSelect.vue",
-      "line": 393,
+      "line": 394,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/production/workbench/getAudioBindAssetsList.ts"
@@ -1004,8 +1031,8 @@
     {
       "method": "post",
       "route": "/project/getModelDetails",
-      "file": "src/views/scriptAgent/index.vue",
-      "line": 436,
+      "file": "src/views/production/components/rightChatBox/index.vue",
+      "line": 457,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/project/getModelDetails.ts"
@@ -1077,7 +1104,7 @@
       "method": "post",
       "route": "/script/addScript",
       "file": "src/views/script/components/addScript.vue",
-      "line": 211,
+      "line": 209,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/script/addScript.ts"
@@ -1086,7 +1113,7 @@
       "method": "post",
       "route": "/script/batchAddScript",
       "file": "src/views/script/components/batchAddScript.vue",
-      "line": 241,
+      "line": 140,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/script/batchAddScript.ts"
@@ -1095,7 +1122,7 @@
       "method": "post",
       "route": "/script/delScript",
       "file": "src/views/script/index.vue",
-      "line": 323,
+      "line": 340,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/script/delScript.ts"
@@ -1104,7 +1131,7 @@
       "method": "post",
       "route": "/script/exportScript",
       "file": "src/views/script/index.vue",
-      "line": 281,
+      "line": 285,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/script/exportScript.ts"
@@ -1113,7 +1140,7 @@
       "method": "post",
       "route": "/script/extractAssets",
       "file": "src/views/script/index.vue",
-      "line": 347,
+      "line": 364,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/script/extractAssets.ts"
@@ -1122,7 +1149,7 @@
       "method": "post",
       "route": "/script/getAiRegex",
       "file": "src/views/script/components/batchAddScript.vue",
-      "line": 271,
+      "line": 153,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/script/getAiRegex.ts"
@@ -1147,27 +1174,63 @@
     },
     {
       "method": "post",
+      "route": "/scriptAgent/deleteScript",
+      "file": "src/stores/scriptAgent.ts",
+      "line": 520,
+      "dynamic": false,
+      "classification": "canonical",
+      "backendFile": "src/routes/scriptAgent/deleteScript.ts"
+    },
+    {
+      "method": "post",
       "route": "/scriptAgent/getPlanData",
       "file": "src/views/scriptAgent/index copy.vue",
       "line": 228,
       "dynamic": false,
+      "classification": "frontend-pending-removal",
+      "reason": "Script Agent migration: frontend must switch to /scriptAgent/workspace/detail"
+    },
+    {
+      "method": "post",
+      "route": "/scriptAgent/saveWorkspaceStage",
+      "file": "src/stores/scriptAgent.ts",
+      "line": 494,
+      "dynamic": false,
       "classification": "canonical",
-      "backendFile": "src/routes/scriptAgent/getPlanData.ts"
+      "backendFile": "src/routes/scriptAgent/saveWorkspaceStage.ts"
     },
     {
       "method": "post",
       "route": "/scriptAgent/setPlanData",
+      "file": "src/views/scriptAgent/index copy.vue",
+      "line": 233,
+      "dynamic": false,
+      "classification": "frontend-pending-removal",
+      "reason": "Script Agent migration: frontend must switch to backend workspace APIs and stop XML full-workspace writeback"
+    },
+    {
+      "method": "post",
+      "route": "/scriptAgent/upsertScript",
       "file": "src/stores/scriptAgent.ts",
-      "line": 70,
+      "line": 507,
       "dynamic": false,
       "classification": "canonical",
-      "backendFile": "src/routes/scriptAgent/setPlanData.ts"
+      "backendFile": "src/routes/scriptAgent/upsertScript.ts"
+    },
+    {
+      "method": "post",
+      "route": "/scriptAgent/workspaceDetail",
+      "file": "src/stores/scriptAgent.ts",
+      "line": 268,
+      "dynamic": false,
+      "classification": "canonical",
+      "backendFile": "src/routes/scriptAgent/workspaceDetail.ts"
     },
     {
       "method": "post",
       "route": "/setting/about/checkUpdate",
       "file": "src/pages/workbench/index.vue",
-      "line": 210,
+      "line": 230,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/setting/about/checkUpdate.ts"
@@ -1455,7 +1518,7 @@
       "method": "post",
       "route": "/setting/skillManagement/getSkillContent",
       "file": "src/components/setting/components/skillManagement.vue",
-      "line": 155,
+      "line": 199,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/setting/skillManagement/getSkillContent.ts"
@@ -1464,7 +1527,7 @@
       "method": "post",
       "route": "/setting/skillManagement/getSkillList",
       "file": "src/components/setting/components/skillManagement.vue",
-      "line": 146,
+      "line": 187,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/setting/skillManagement/getSkillList.ts"
@@ -1473,7 +1536,7 @@
       "method": "post",
       "route": "/setting/skillManagement/saveSkillContent",
       "file": "src/components/setting/components/skillManagement.vue",
-      "line": 181,
+      "line": 226,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/setting/skillManagement/saveSkillContent.ts"
@@ -1527,7 +1590,7 @@
       "method": "post",
       "route": "/setting/vendorConfig/addVendor",
       "file": "src/components/setting/components/vendorConfig.vue",
-      "line": 1151,
+      "line": 1193,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/setting/vendorConfig/addVendor.ts"
@@ -1536,7 +1599,7 @@
       "method": "post",
       "route": "/setting/vendorConfig/addVendorModel",
       "file": "src/components/setting/components/vendorConfig.vue",
-      "line": 894,
+      "line": 924,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/setting/vendorConfig/addVendorModel.ts"
@@ -1545,7 +1608,7 @@
       "method": "post",
       "route": "/setting/vendorConfig/delVendorModel",
       "file": "src/components/setting/components/vendorConfig.vue",
-      "line": 1017,
+      "line": 1059,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/setting/vendorConfig/delVendorModel.ts"
@@ -1554,7 +1617,7 @@
       "method": "post",
       "route": "/setting/vendorConfig/getCodeByLink",
       "file": "src/components/setting/components/vendorConfig.vue",
-      "line": 1127,
+      "line": 1169,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/setting/vendorConfig/getCodeByLink.ts"
@@ -1581,7 +1644,7 @@
       "method": "post",
       "route": "/setting/vendorConfig/modelTest/textTest",
       "file": "src/components/setting/components/vendorTest/TextModelTest.vue",
-      "line": 101,
+      "line": 92,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/setting/vendorConfig/modelTest/textTest.ts"
@@ -1599,7 +1662,7 @@
       "method": "post",
       "route": "/setting/vendorConfig/updateVendorInputs",
       "file": "src/components/setting/components/vendorConfig.vue",
-      "line": 623,
+      "line": 653,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/setting/vendorConfig/updateVendorInputs.ts"
@@ -1698,7 +1761,7 @@
       "method": "post",
       "route": "/task/cancel",
       "file": "src/stores/taskCenter.ts",
-      "line": 885,
+      "line": 947,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/task/cancel.ts"
@@ -1733,8 +1796,8 @@
     {
       "method": "post",
       "route": "/task/status/snapshot",
-      "file": "src/stores/taskCenter.ts",
-      "line": 672,
+      "file": "src/api/productionMusic.ts",
+      "line": 109,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/task/status/snapshot.ts"
@@ -1743,7 +1806,7 @@
       "method": "post",
       "route": "/task/taskDetails",
       "file": "src/stores/taskCenter.ts",
-      "line": 698,
+      "line": 715,
       "dynamic": false,
       "classification": "canonical",
       "backendFile": "src/routes/task/taskDetails.ts"

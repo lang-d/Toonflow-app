@@ -44,7 +44,9 @@ const TEXT_EXTENSIONS = new Set(["txt", "md", "markdown", "json", "csv"]);
 const DEFAULT_PAGE_LIMIT = 64 * 1024;
 const MAX_PAGE_LIMIT = 512 * 1024;
 const CONTEXT_PACK_TAG = "projectContextPack";
+const CONTEXT_PACK_FACTS_TAG = "projectMaterialFacts";
 const CONTEXT_PACK_TARGET_ID = "project";
+const CONTEXT_PACK_SOURCE_CHUNK_SIZE = 6 * 1024;
 const CONTEXT_PACK_REQUIRED_HEADINGS = [
   "项目硬事实",
   "连续性锚点",
@@ -274,13 +276,67 @@ export async function archiveProjectMaterial(input: { projectId: number; id: num
   return { id: input.id, archived: true };
 }
 
-async function readMaterialSnippet(id: number, projectId: number) {
-  try {
-    const data = await readProjectMaterial({ id, projectId, limit: 24 * 1024 });
-    return data.content;
-  } catch {
-    return "";
+export interface ProjectMaterialSourceChunk {
+  materialId: number;
+  projectId: number;
+  category: ProjectMaterialCategory;
+  name: string;
+  index: number;
+  start: number;
+  end: number;
+  total: number;
+  content: string;
+}
+
+async function readFullProjectMaterial(id: number, projectId: number) {
+  const pages: string[] = [];
+  let offset = 0;
+  while (true) {
+    const page = await readProjectMaterial({ id, projectId, offset, limit: MAX_PAGE_LIMIT });
+    pages.push(page.content);
+    if (page.eof) return pages.join("");
+    if (!page.content.length) throw new Error(`Project material ${id} could not be read completely`);
+    offset += page.content.length;
   }
+}
+
+/**
+ * Splits source text without classifying it: chunks remain contiguous and join back
+ * to the exact original text. Prefer paragraph and line boundaries for model input.
+ */
+export function buildProjectMaterialSourceChunks(input: {
+  material: Pick<ProjectMaterialRow, "id" | "projectId" | "category" | "name">;
+  content: string;
+  maxChars?: number;
+}): ProjectMaterialSourceChunk[] {
+  const content = String(input.content || "");
+  const maxChars = Math.max(512, Number(input.maxChars || CONTEXT_PACK_SOURCE_CHUNK_SIZE));
+  if (!content.trim()) throw new Error(`Project material ${input.material.id} is empty`);
+  const chunks: ProjectMaterialSourceChunk[] = [];
+  let start = 0;
+  while (start < content.length) {
+    const tentativeEnd = Math.min(content.length, start + maxChars);
+    let end = tentativeEnd;
+    if (tentativeEnd < content.length) {
+      const paragraphBreak = content.lastIndexOf("\n\n", tentativeEnd);
+      const lineBreak = content.lastIndexOf("\n", tentativeEnd);
+      const boundary = paragraphBreak > start ? paragraphBreak + 2 : lineBreak > start ? lineBreak + 1 : -1;
+      if (boundary > start) end = boundary;
+    }
+    chunks.push({
+      materialId: Number(input.material.id),
+      projectId: Number(input.material.projectId),
+      category: input.material.category,
+      name: input.material.name || `material-${input.material.id}`,
+      index: chunks.length,
+      start,
+      end,
+      total: content.length,
+      content: content.slice(start, end),
+    });
+    start = end;
+  }
+  return chunks;
 }
 
 async function readContextPackSkill(fileName: string, fallback: string) {
@@ -295,6 +351,36 @@ function extractXmlContent(text: string, tag: string) {
 
 export function extractProjectContextPackXml(text: string) {
   return extractXmlContent(text, CONTEXT_PACK_TAG);
+}
+
+function extractProjectMaterialFactsXml(text: string) {
+  return extractXmlContent(text, CONTEXT_PACK_FACTS_TAG);
+}
+
+async function extractProjectMaterialFacts(input: {
+  chunk: ProjectMaterialSourceChunk;
+  skill: string;
+}) {
+  const result = await u.Ai.Text("universalAi").invoke({
+    system: input.skill,
+    messages: [{
+      role: "user",
+      content: [
+        `资料 ID：${input.chunk.materialId}`,
+        `资料名称：${input.chunk.name}`,
+        `资料分类：${input.chunk.category}`,
+        `原文范围：${input.chunk.start}-${input.chunk.end} / ${input.chunk.total}`,
+        "",
+        "【本段原始项目资料】",
+        input.chunk.content,
+      ].join("\n"),
+    }],
+  });
+  const facts = extractProjectMaterialFactsXml(String((result as any).text || ""));
+  if (!facts) {
+    throw new Error(`Project material fact extraction failed for material ${input.chunk.materialId}, chunk ${input.chunk.index + 1}`);
+  }
+  return facts;
 }
 
 function parseReviewJson(value: string) {
@@ -411,16 +497,25 @@ export async function generateProjectContextPack(input: number | {
     grouped.set(material.category, list);
   }
   const materialSections: string[] = [];
+  const extractionSkill = await readContextPackSkill(
+    "project_context_pack_extraction.md",
+    "你是项目资料片段事实提取器。只整理当前原文已经明确的项目事实，保留稳定资产外形、声音/台词表现、空间、道具、连续性与制作约束；不推测，不写供应商、音色 ID 或真人模仿。一次性输出 <projectMaterialFacts>紧凑 Markdown 事实</projectMaterialFacts>。",
+  );
   for (const category of PROJECT_MATERIAL_CATEGORIES) {
     const list = grouped.get(category) || [];
     if (!list.length) continue;
-    const snippets = await Promise.all(
-      list.slice(0, 5).map(async (item) => {
-        const snippet = await readMaterialSnippet(item.id, projectId);
-        return `### ${item.name}\n${snippet.slice(0, 6000)}`;
-      }),
-    );
-    materialSections.push(`## ${category}\n${snippets.join("\n\n")}`);
+    const materialFacts: string[] = [];
+    for (const item of list) {
+      const content = await readFullProjectMaterial(item.id, projectId);
+      const chunks = buildProjectMaterialSourceChunks({ material: item, content });
+      const facts: string[] = [];
+      for (const chunk of chunks) {
+        const extracted = await extractProjectMaterialFacts({ chunk, skill: extractionSkill });
+        facts.push(`<!-- source materialId=${chunk.materialId} range=${chunk.start}-${chunk.end}/${chunk.total} -->\n${extracted}`);
+      }
+      materialFacts.push(`### ${item.name}\n${facts.join("\n\n")}`);
+    }
+    materialSections.push(`## ${category}\n${materialFacts.join("\n\n")}`);
   }
   if (!materialSections.length && !previousContent) throw new Error("No readable project materials");
   const project = await u.db("o_project").where("id", projectId).first();
@@ -438,7 +533,7 @@ export async function generateProjectContextPack(input: number | {
     `项目类型：${project?.type || ""}`,
     `画风：${project?.artStyle || ""}`,
     "",
-    previousContent ? `【上一版项目制作参考包】\n${previousContent.slice(0, 12000)}\n` : "",
+    previousContent ? `【上一版项目制作参考包】\n${previousContent}\n` : "",
     materialSections.length ? "【项目资料】" : "【项目资料】\n本次未提供新的可读项目资料，请基于上一版和用户指令调整。",
     materialSections.join("\n\n"),
   ].join("\n");

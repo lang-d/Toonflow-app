@@ -34,7 +34,7 @@ test("Production Agent degrades video metadata without blocking its text model",
   assert.doesNotMatch(source, /if \(!models\.length\) throw/);
   assert.match(source, /buildProductionProjectModelContext/);
   assert.match(source, /实际生成视频前必须刷新供应商模型或重新选择可用模型/);
-  assert.match(source, /u\.Ai\.Text\("productionAgent:decisionAgent"/);
+  assert.match(source, /u\.Ai\.Text\(\s*"productionAgent:decisionAgent"/);
 });
 
 test("video generation endpoints reject unavailable models before enqueueing", () => {

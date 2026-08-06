@@ -1,6 +1,6 @@
 /**
  * Toonflow AI vendor: Agnes AI
- * @version 1.0
+ * @version 1.1
  */
 
 // ============================================================
@@ -133,11 +133,11 @@ declare const exports: {
 
 const vendor: VendorConfig = {
   id: "agnes",
-  version: "1.0",
+  version: "1.1",
   author: "Toonflow",
   name: "Agnes AI",
   description:
-    "## Agnes AI\n\nOpenAI-compatible multimodal API. Supports Agnes 2.0 Flash text, Agnes Image 2.1 Flash image generation/editing, and Agnes Video V2.0 text-to-video.",
+    "## Agnes AI\n\nOpenAI-compatible multimodal API. Supports Agnes 2.0 Flash, Agnes 2.5 Flash, and Agnes 2.5 Pro Alpha text models, Agnes Image 2.1 Flash image generation/editing, and Agnes Video V2.0 text-to-video.",
   inputs: [
     { key: "apiKey", label: "API Key", type: "password", required: true },
     { key: "baseUrl", label: "Base URL", type: "url", required: true, placeholder: "https://apihub.agnes-ai.com/v1" },
@@ -145,6 +145,8 @@ const vendor: VendorConfig = {
   inputValues: { apiKey: "", baseUrl: "https://apihub.agnes-ai.com/v1" },
   models: [
     { name: "Agnes 2.0 Flash", modelName: "agnes-2.0-flash", type: "text", think: false },
+    { name: "Agnes 2.5 Flash", modelName: "agnes-2.5-flash", type: "text", think: false },
+    { name: "Agnes 2.5 Pro Alpha", modelName: "agnes-2.5-pro-alpha", type: "text", think: true },
     {
       name: "Agnes Image 2.1 Flash",
       modelName: "agnes-image-2.1-flash",
@@ -379,7 +381,7 @@ const ttsRequest = async (config: TTSConfig, model: TTSModel): Promise<string> =
 };
 
 const checkForUpdates = async (): Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }> => {
-  return { hasUpdate: false, latestVersion: "1.0", notice: "Agnes AI vendor is up to date." };
+  return { hasUpdate: false, latestVersion: "1.1", notice: "Agnes AI vendor is up to date." };
 };
 
 const updateVendor = async (): Promise<string> => {

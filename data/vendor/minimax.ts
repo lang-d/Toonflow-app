@@ -134,10 +134,10 @@ declare const exports: {
 
 const vendor: VendorConfig = {
   id: "minimax",
-  version: "2.1",
+  version: "2.2",
   author: "Toonflow",
   name: "MiniMax(海螺AI)",
-  description: "MiniMax官方接口适配，支持M系列推理文本模型、文生图/图生图、视频生成（文生视频、图生视频、首尾帧生成）能力 \n [前往平台](https://minimaxi.com/)",
+  description: "MiniMax官方接口适配，支持M系列推理文本模型、文生图/图生图，以及 MiniMax-H3 多模态视频和 Hailuo 2.3 视频生成能力 \n [前往平台](https://minimaxi.com/)",
   inputs: [
     { key: "apiKey", label: "API密钥", type: "password", required: true },
     { key: "baseUrl", label: "请求地址", type: "url", required: true, placeholder: "示例：https://api.minimaxi.com" },
@@ -157,6 +157,15 @@ const vendor: VendorConfig = {
     { name: "海螺图像V1 Live版", modelName: "image-01-live", type: "image", mode: ["text", "singleImage"], associationSkills: "支持自定义画风" },
     // 视频模型
     {
+      name: "MiniMax H3",
+      modelName: "MiniMax-H3",
+      type: "video",
+      mode: ["text", "singleImage", "startEndRequired", "endFrameOptional", "startFrameOptional", ["imageReference:9", "videoReference:3", "audioReference:3"]],
+      associationSkills: "MiniMax H3 text, first/last-frame, and multimodal reference video generation",
+      audio: true,
+      durationResolutionMap: [{ duration: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolution: ["768P", "2K"] }],
+    },
+    {
       name: "海螺2.3",
       modelName: "MiniMax-Hailuo-2.3",
       type: "video",
@@ -171,22 +180,11 @@ const vendor: VendorConfig = {
       name: "海螺2.3极速版",
       modelName: "MiniMax-Hailuo-2.3-Fast",
       type: "video",
-      mode: ["text", "singleImage"],
+      mode: ["singleImage"],
       audio: false,
       durationResolutionMap: [
         { duration: [6], resolution: ["768P", "1080P"] },
         { duration: [10], resolution: ["768P"] },
-      ],
-    },
-    {
-      name: "海螺02",
-      modelName: "MiniMax-Hailuo-02",
-      type: "video",
-      mode: ["text", "singleImage", "startEndRequired"],
-      audio: false,
-      durationResolutionMap: [
-        { duration: [6], resolution: ["512P", "768P", "1080P"] },
-        { duration: [10], resolution: ["512P", "768P"] },
       ],
     },
   ],
@@ -219,6 +217,126 @@ const getBaseUrl = (): string => {
  */
 const extractBase64WithHead = (ref: ReferenceList): string => {
   return ref.base64.startsWith("data:") ? ref.base64 : `data:image/png;base64,${ref.base64}`;
+};
+
+const H3_MODEL_NAME = "MiniMax-H3";
+const H3_MAX_REQUEST_BYTES = 64 * 1024 * 1024;
+const H3_MAX_IMAGE_BYTES = 30 * 1024 * 1024;
+const H3_MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+const H3_MAX_AUDIO_BYTES = 15 * 1024 * 1024;
+const H3_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]);
+const H3_VIDEO_MIME_TYPES = new Set(["video/mp4", "video/quicktime"]);
+const H3_AUDIO_MIME_TYPES = new Set(["audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3"]);
+
+const getProviderError = (error: any, fallback: string): string => {
+  return String(error?.response?.data?.error?.message || error?.response?.data?.message || error?.message || fallback);
+};
+
+const decodedDataUriByteLength = (encoded: string): number => {
+  const normalized = encoded.replace(/\s/g, "");
+  return Math.floor((normalized.length * 3) / 4) - (normalized.endsWith("==") ? 2 : normalized.endsWith("=") ? 1 : 0);
+};
+
+const parseDataUri = (value: string, label: string): { value: string; mime: string; bytes: number } => {
+  const match = String(value || "").match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (!match) throw new Error(`MiniMax H3 ${label} must be a Base64 Data URL`);
+  return { value, mime: match[1].toLowerCase(), bytes: decodedDataUriByteLength(match[2]) };
+};
+
+const flattenMode = (mode: any): string[] => {
+  if (!Array.isArray(mode)) return typeof mode === "string" ? [mode] : [];
+  const result: string[] = [];
+  for (const entry of mode) {
+    if (Array.isArray(entry)) result.push(...flattenMode(entry));
+    else if (typeof entry === "string") result.push(entry);
+  }
+  return result;
+};
+
+const h3ReferenceLimit = (modeEntries: string[], type: "image" | "video" | "audio", fallback: number): number => {
+  const entry = modeEntries.find((item) => item.startsWith(`${type}Reference:`));
+  if (!entry) return fallback;
+  const value = Number(entry.split(":")[1]);
+  return Number.isInteger(value) && value >= 0 ? Math.min(value, fallback) : fallback;
+};
+
+const validateH3Reference = (reference: ReferenceList) => {
+  const parsed = parseDataUri(reference.base64, `${reference.type} reference`);
+  if (reference.type === "image") {
+    if (!H3_IMAGE_MIME_TYPES.has(parsed.mime)) throw new Error("MiniMax H3 image references support JPG, PNG, WebP, HEIC, or HEIF only");
+    if (parsed.bytes > H3_MAX_IMAGE_BYTES) throw new Error("MiniMax H3 image references must not exceed 30 MB each");
+  } else if (reference.type === "video") {
+    if (!H3_VIDEO_MIME_TYPES.has(parsed.mime)) throw new Error("MiniMax H3 video references support MP4 or MOV only");
+    if (parsed.bytes > H3_MAX_VIDEO_BYTES) throw new Error("MiniMax H3 video references must not exceed 50 MB each");
+  } else {
+    if (!H3_AUDIO_MIME_TYPES.has(parsed.mime)) throw new Error("MiniMax H3 audio references support WAV or MP3 only");
+    if (parsed.bytes > H3_MAX_AUDIO_BYTES) throw new Error("MiniMax H3 audio references must not exceed 15 MB each");
+  }
+  return parsed.value;
+};
+
+const h3MediaItem = (reference: ReferenceList, role: string) => {
+  const url = validateH3Reference(reference);
+  if (reference.type === "image") return { type: "image_url", image_url: { url }, role };
+  if (reference.type === "video") return { type: "video_url", video_url: { url }, role };
+  return { type: "audio_url", audio_url: { url }, role };
+};
+
+const buildH3VideoRequest = (config: VideoConfig, model: VideoModel): Record<string, any> => {
+  const prompt = String(config.prompt || "").trim();
+  if (!prompt) throw new Error("MiniMax H3 requires a video prompt");
+  if (Array.from(prompt).length > 7000) throw new Error("MiniMax H3 prompts must not exceed 7000 characters");
+  const duration = Number(config.duration);
+  if (!Number.isInteger(duration) || duration < 4 || duration > 15) throw new Error("MiniMax H3 supports durations from 4 to 15 seconds");
+  if (config.resolution !== "768P" && config.resolution !== "2K") throw new Error("MiniMax H3 supports 768P or 2K resolution only");
+  if (config.aspectRatio !== "16:9" && config.aspectRatio !== "9:16") throw new Error("MiniMax H3 supports the current workbench ratios 16:9 and 9:16 only");
+
+  const modeEntries = flattenMode(config.mode);
+  const keyframeMode = modeEntries.find((item) => ["singleImage", "startEndRequired", "endFrameOptional", "startFrameOptional"].includes(item));
+  const referenceMode = modeEntries.some((item) => /^(image|video|audio)Reference:\d+$/.test(item));
+  if (keyframeMode && referenceMode) throw new Error("MiniMax H3 keyframe and multimodal reference modes cannot be combined");
+
+  const references = config.referenceList || [];
+  const images = references.filter((item) => item.type === "image");
+  const videos = references.filter((item) => item.type === "video");
+  const audios = references.filter((item) => item.type === "audio");
+  const content: any[] = [{ type: "text", text: prompt }];
+
+  if (keyframeMode) {
+    if (videos.length || audios.length) throw new Error("MiniMax H3 keyframe modes accept image references only");
+    if (images.length > 2) throw new Error("MiniMax H3 keyframe modes accept at most two images");
+    if (keyframeMode === "singleImage") {
+      if (images.length !== 1) throw new Error("MiniMax H3 single-image mode requires exactly one image");
+      content.push(h3MediaItem(images[0], "first_frame"));
+    } else if (keyframeMode === "startEndRequired") {
+      if (images.length !== 2) throw new Error("MiniMax H3 first-and-last-frame mode requires exactly two images");
+      content.push(h3MediaItem(images[0], "first_frame"), h3MediaItem(images[1], "last_frame"));
+    } else if (keyframeMode === "endFrameOptional") {
+      if (!images.length) throw new Error("MiniMax H3 end-frame-optional mode requires a first-frame image");
+      content.push(h3MediaItem(images[0], "first_frame"));
+      if (images[1]) content.push(h3MediaItem(images[1], "last_frame"));
+    } else {
+      if (!images.length) throw new Error("MiniMax H3 start-frame-optional mode requires a last-frame image");
+      if (images[1]) content.push(h3MediaItem(images[0], "first_frame"), h3MediaItem(images[1], "last_frame"));
+      else content.push(h3MediaItem(images[0], "last_frame"));
+    }
+  } else if (referenceMode) {
+    if (!references.length) throw new Error("MiniMax H3 multimodal reference mode requires at least one reference");
+    if (images.length > h3ReferenceLimit(modeEntries, "image", 9) || videos.length > h3ReferenceLimit(modeEntries, "video", 3) || audios.length > h3ReferenceLimit(modeEntries, "audio", 3)) {
+      throw new Error("MiniMax H3 reference count exceeds the selected mode limit");
+    }
+    if (images.length > 9 || videos.length > 3 || audios.length > 3 || references.length > 12) throw new Error("MiniMax H3 supports at most 9 images, 3 videos, 3 audios, and 12 references in total");
+    if (audios.length && !images.length && !videos.length) throw new Error("MiniMax H3 audio references require at least one image or video reference");
+    for (const reference of images) content.push(h3MediaItem(reference, "reference_image"));
+    for (const reference of videos) content.push(h3MediaItem(reference, "reference_video"));
+    for (const reference of audios) content.push(h3MediaItem(reference, "reference_audio"));
+  } else if (references.length) {
+    throw new Error("MiniMax H3 text mode does not accept references; select a keyframe or multimodal reference mode");
+  }
+
+  const body = { model: model.modelName, content, resolution: config.resolution, duration, ratio: config.aspectRatio, aigc_watermark: false };
+  if (JSON.stringify(body).length > H3_MAX_REQUEST_BYTES) throw new Error("MiniMax H3 request body must not exceed 64 MB; use smaller references");
+  return body;
 };
 
 // ============================================================
@@ -285,6 +403,45 @@ const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<str
   const baseUrl = getBaseUrl();
   const headers = getHeaders();
 
+  if (model.modelName === H3_MODEL_NAME) {
+    try {
+      const reqBody = buildH3VideoRequest(config, model);
+      logger(`Submitting MiniMax H3 video task: ${model.modelName}`);
+      const submitResp = await axios.post(`${baseUrl}/v2/video_generation`, reqBody, { headers });
+      const taskId = String(submitResp.data?.task_id || "");
+      if (!taskId) throw new Error(submitResp.data?.error?.message || "MiniMax H3 task submission did not return a task_id");
+      logger(`MiniMax H3 video task submitted: ${taskId}`);
+
+      const pollResult = await pollTask(
+        async (): Promise<PollResult> => {
+          const queryResp = await axios.get(`${baseUrl}/v2/query/video_generation/${encodeURIComponent(taskId)}`, { headers });
+          const task = queryResp.data?.task;
+          const status = String(task?.status || "").toLowerCase();
+          if (status === "succeeded") {
+            const url = String(task?.content?.url || "");
+            return url ? { completed: true, data: url } : { completed: true, error: "MiniMax H3 task succeeded without a video URL" };
+          }
+          if (status === "failed" || status === "cancelled") {
+            return { completed: true, error: String(task?.error?.message || task?.error || `MiniMax H3 task ${status}`) };
+          }
+          logger(`MiniMax H3 video task processing: ${taskId}${status ? `, status=${status}` : ""}`);
+          return { completed: false };
+        },
+        5000,
+        20 * 60 * 1000,
+      );
+      if (pollResult.error) throw new Error(pollResult.error);
+      if (!pollResult.data) throw new Error("MiniMax H3 task completed without a video result");
+      return pollResult.data.startsWith("http") ? await urlToBase64(pollResult.data) : pollResult.data;
+    } catch (error: any) {
+      throw new Error(getProviderError(error, "MiniMax H3 video generation failed"));
+    }
+  }
+
+  if (model.modelName !== "MiniMax-Hailuo-2.3" && model.modelName !== "MiniMax-Hailuo-2.3-Fast") {
+    throw new Error(`Unsupported MiniMax video model: ${model.modelName}`);
+  }
+
   const reqBody: any = {
     model: model.modelName,
     prompt: config.prompt,
@@ -296,6 +453,10 @@ const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<str
 
   // 提取图片类型的引用
   const imageRefs = (config.referenceList || []).filter((r) => r.type === "image");
+
+  if (model.modelName === "MiniMax-Hailuo-2.3-Fast" && imageRefs.length !== 1) {
+    throw new Error("MiniMax-Hailuo-2.3-Fast supports image-to-video and requires exactly one first-frame image");
+  }
 
   if (imageRefs.length > 0) {
     // 压缩图片到20MB以内
@@ -372,9 +533,9 @@ const ttsRequest = async (config: TTSConfig, model: TTSModel): Promise<string> =
 const checkForUpdates = async (): Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }> => {
   return {
     hasUpdate: false,
-    latestVersion: "2.0",
+    latestVersion: "2.2",
     notice:
-      "## 新版本更新公告\n1. 适配新版模板架构，支持 ReferenceList 统一引用类型\n2. 新增 uploadReference 前置处理器\n3. 优化图片压缩和引用提取逻辑",
+      "## 新版本更新公告\n1. 新增 MiniMax-H3 V2 多模态视频生成\n2. 保留 Hailuo 2.3 与 Hailuo 2.3 Fast，淘汰 Hailuo-02\n3. H3 支持首尾帧和图、视频、音频参考输入",
   };
 };
 

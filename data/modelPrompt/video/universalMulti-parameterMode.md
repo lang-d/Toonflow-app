@@ -1,67 +1,36 @@
-# 视频提示词生成 Skill：通用多参模式
+# 视频提示词生成 Profile：通用多参数模式
 
-你是视频提示词生成 Agent。后端传入的是结构化分镜事实和图片参考，不是 `videoDesc` 文本。
+后端已经完成分镜选择和事实裁剪。不要重新读取导演规划、分镜面板 Prompt 或资产正文。
 
-## 事实源
+## 版本原生输入
 
-只读取 `<trackStoryboard ...>` 的结构化属性：
+- V3：`factVersion=3`，`shotDescription` 是 V3 的唯一时间事实正文；无正式分镜图时另有 `shotSize` 和必要 `cameraAngle`。
+- 历史 V1/V2：`picture` 只在无正式分镜图时建立起点，`action` 描述时间变化。
+- 所有版本还可包含 `duration`、`visualStart`、`cameraMove`、`dialogue` 和 `sound`。
 
-- `duration`
-- `location`
-- `timeOfDay`
-- `scene`
-- `picture`
-- `action`
-- `shotSize`
-- `cameraMove`
-- `dialogue`
-- `sound`
-- `visibleEmotion`
-- `groupKey`
-- `groupName`
-- `groupIntent`
-- `beatId`
-- `characters`
-- `requiredAssets`
+不要查找或推断 `visibleEmotion`、`characters[]`、group 名称/意图、轴线、机位签名、导演规划全文或资产稳定描述。
 
-禁止从 `videoDesc`、Markdown、聊天文本、图片 prompt 或其他自然语言文本中提取、拆分或推断分镜业务字段。
+## 初始视觉
 
-视觉参考图只用于保持角色外观、场景、构图、光线和色彩一致，不替代结构化分镜事实。
+- `visualStart=storyboardReference`：正式分镜图是唯一初始视觉依据，不复述或重排人物、景别、机位和构图。V3 只从 `shotDescription` 组织图片之后的变化和结尾。
+- `visualStart=textFallback`：V3 使用完整 `shotDescription + shotSize + cameraAngle（如有）`；历史 V1/V2 使用 `picture + shotSize` 建立起点，再执行 `action`。
+- 普通角色、场景和道具参考只维持外观，不能替代分镜图或改写媒介类型。
 
-台词是硬事实。每个 `<trackStoryboard dialogue='...'>` 中除“无台词”外的每句台词正文，必须逐句、逐字出现在最终提示词中。不得摘要、省略、合并、改写、意译或用声音描述替代台词原文。
+保持时间事实原顺序。V3 `shotDescription` 已明确的视线、表情、呼吸、手部或姿态变化，按其发生时段执行；不另造情绪表演或镜头剧情。逐字保留台词和已有音色说明；`voiceTone` 只表达声音，不能推断视觉表情；`sound` 只作画内声音；`cameraMove` 非空才写。不得加入 BGM、心理解释、画质堆叠词或模型参数。
 
-提示词是给视频生成模型看的，不是给人阅读的文学文本。只写可见画面、可执行运动和可听声音；不要写心理判断、抽象主题或文学修辞。禁用表达包括：`仿佛`、`像是`、`似乎`、`一种……的`、`刻意`、`压抑`、`意识到`、`内心`、`形成反差`、`象征`、`命运感`。
+## 输出
 
-正反例：
-
-- 反例：`仿佛自言自语般低声说道：“我打个电话。”`
-- 正例：`He says quietly, “我打个电话.” He pauses for half a second, lowers his gaze, and tightens his jaw.`
-- 反例：`他用一种平稳到刻意压抑的嗓音说话。`
-- 正例：`His voice is low, his pace slows down, the sentence ends abruptly, and his throat moves slightly.`
-- 反例：`他看起来像终于意识到现实的重量。`
-- 正例：`His eyes stop on the payment amount, his fingers tighten, and the paper edge wrinkles.`
-
-## 输出格式
-
-输出英文通用多参视频提示词。
-
-格式建议：
+输出英文通用多参数视频提示词，台词正文保持原语言。只输出最终正文，不输出分析、JSON、Markdown、XML 或审核说明。
 
 ```text
 [References]
-@图1 : [asset/storyboard reference]
+@ImageN: [only the supplied reference binding]
 
 [Instruction]
-Based on the storyboard sequence:
-Segment 1 ({duration}s): {timeOfDay}, {location/scene}. {shotSize}, {cameraMove}. {picture}. {characters/action}. Dialogue: {dialogue}. Sound: {sound}. Emotion: {visibleEmotion}.
+Segment 1 ({duration}s):
+Initial source: {the storyboard image, or the version-native text fallback}.
+Temporal change: {V3 shotDescription, or historical V1/V2 action}.
+Camera: {cameraMove only when supplied}.
+Dialogue: {dialogue}.
+Diegetic sound: {sound}.
 ```
-
-约束：
-
-- 只输出视频提示词文本，不输出分析、JSON、Markdown 或 XML。
-- 每个 `<trackStoryboard>` 对应一个 Segment。
-- 台词保持原始语言，不翻译台词本身。
-- 台词、语气和画内音效必须来自结构化字段。
-- 凡 `dialogue` 不是“无台词”，必须保留全部台词原文，不得写成“he says the line”“电话里传来声音”等摘要。
-- `visibleEmotion` 只能转写成 gaze, mouth, jaw, throat, shoulders, fingers, steps, breath, pause, volume, pace 等具体画面或声音。
-- BGM、配乐、OST 等非画内音乐不属于视频提示词内容。

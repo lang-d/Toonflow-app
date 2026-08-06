@@ -20,8 +20,10 @@ Return the normal structured result with `prompt`, `negativePrompt`, and `genera
 
 - `prompt`: one compact, natural-language musical direction. Order the identity-defining sound first, then pulse, core instrumentation, texture, dynamic or structural movement, and ending behavior.
 - `generationConfig.title`: a short distinct take title, never an episode synopsis or instruction.
-- `generationConfig.tags`: compact English comma-separated descriptors for the core style, motif gesture, pulse, main instrument roles, texture, dynamics, ending behavior, and vocal character only when the target is vocal. For instrumental work this is the provider-facing musical input, so it must retain every material audible choice from `prompt` without turning into plot prose or a sentence.
+- `generationConfig.tags`: compact English comma-separated descriptors for the core style, motif gesture, pulse, main instrument roles, texture, dynamics, ending behavior, and vocal character only when the target is vocal. Keep it as concise identity metadata without turning it into plot prose or a sentence; the selected adapter owns provider field routing.
 - `negativePrompt`: only unwanted audible musical traits. Do not put plot, people, dialogue, lyrics, model controls, or unavailable features here.
+
+Before returning, remove duplicated adjectives, decorative instruments, and repeated structural claims while retaining the core motif, pulse, primary instrument roles, texture, and ending behavior. Follow a selected adapter's declared request contract when one is available; do not invent numeric limits.
 
 The execution layer enforces the chosen instrumental or vocal mode. Do not try to simulate that control with text such as "no vocals" or by writing an anti-vocal word list.
 
@@ -56,7 +58,7 @@ Translate dramatic ideas into audible behavior:
 - isolation -> exposed single instrument, empty space, distant or close placement chosen deliberately
 - escalation -> denser rhythm, widening register, added harmonic pressure, then a defined release or cutoff
 
-Keep tags to the core listening identity. Include the material motif gesture, pulse, main instrument roles, texture, harmonic color, dynamic direction, and ending behavior so the instrumental request remains specific when only tags are supplied to the provider. Do not turn tags into plot prose, a list of every possible instrument, or an anti-vocal instruction.
+Keep tags to the core listening identity. Include the material motif gesture, pulse, main instrument roles, texture, harmonic color, dynamic direction, and ending behavior. Do not turn tags into plot prose, a list of every possible instrument, or an anti-vocal instruction.
 
 Instrumental self-check:
 - Does every word describe audible music rather than a person or story?

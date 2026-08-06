@@ -132,7 +132,7 @@ async function runTaskHandlerWithTimeout<T>(task: any, promise: Promise<T>): Pro
 const DEFAULT_LIMITS: Record<UnifiedTaskType, number> = {
   prompt: 4,
   image: 5,
-  asset: 2,
+  asset: 5,
   storyboard: 2,
   video: 1,
   audio: 2,

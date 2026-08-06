@@ -61,8 +61,8 @@ const musicModel = {
   name: "Suno V5.5",
   modelName: "chirp-fenix",
   type: "music",
-  durationRange: { max: 480 },
   durationControl: "targetOnly",
+  durationParameter: false,
   outputFormats: ["mp3"],
   vocal: "optional",
   lyrics: "optional",
@@ -112,6 +112,19 @@ test("T8Star keeps the legacy async channel disabled by default", () => {
   assert.equal(runtime.exports.imagePoll, undefined);
 });
 
+test("T8Star owns its music request contract and maps the full instrumental prompt to tags", () => {
+  const runtime = loadVendor([]);
+  assert.equal(typeof runtime.exports.musicRequestCheck, "function");
+  assert.deepEqual(
+    runtime.exports.musicRequestCheck({ vocalMode: "instrumental", prompt: "", tags: "piano" }, musicModel).issues.map((issue: any) => issue.code),
+    ["instrumental_prompt_required"],
+  );
+  assert.deepEqual(
+    runtime.exports.musicRequestCheck({ vocalMode: "instrumental", prompt: "piano", tags: "piano", referenceList: [{ type: "audio" }] }, musicModel).issues.map((issue: any) => issue.code),
+    ["reference_audio_unsupported"],
+  );
+});
+
 test("T8Star sends instrumental music through the documented clip feed protocol", async () => {
   const runtime = loadVendor([
     {
@@ -133,8 +146,6 @@ test("T8Star sends instrumental music through the documented clip feed protocol"
       negativePrompt: "triumphant brass",
       vocalMode: "instrumental",
       durationSec: 22,
-      referenceList: [{ type: "audio", sourceType: "base64", base64: "ignored" }],
-      loop: true,
     },
     musicModel,
   );
@@ -151,7 +162,7 @@ test("T8Star sends instrumental music through the documented clip feed protocol"
   const unsupportedFieldsPresent = ["durationSec", "referenceList", "loop", "negative_tags", "make_instrumental", "generation_type"].map((key) => Object.prototype.hasOwnProperty.call(submittedBody, key));
   assert.deepEqual(submittedBody, {
     prompt: "",
-    tags: "cinematic score, piano, cello, restrained",
+    tags: "restrained piano and cello score, 78 BPM",
     mv: "chirp-fenix",
     title: "Debt Pulse",
     continue_clip_id: null,
@@ -180,6 +191,16 @@ test("T8Star retains exact submitted clips when one instrumental candidate fails
       { providerId: "submitted-clip-2", error: "provider rejected candidate" },
     ],
   });
+});
+
+test("T8Star keeps polling when a nonterminal response exposes a provisional audio URL", async () => {
+  const runtime = loadVendor([
+    { clips: [{ id: "submitted-clip-1", status: "submitted", audio_url: "https://cdn.example/provisional.mp3" }] },
+    [{ id: "submitted-clip-1", status: "complete", audio_url: "https://cdn.example/final.mp3" }],
+  ]);
+  const result = await runtime.exports.musicRequest({ prompt: "restrained piano", vocalMode: "instrumental", tags: "piano" }, musicModel);
+  assert.deepEqual(result, { candidates: [{ providerId: "submitted-clip-1", data: "https://cdn.example/final.mp3" }] });
+  assert.equal(runtime.calls.length, 2);
 });
 
 test("T8Star refuses a completed instrumental response that omits the submitted clip", async () => {
@@ -248,7 +269,7 @@ test("T8Star rejects Suno submissions that provide neither audio nor a task id",
   await assert.rejects(
     () => runtime.exports.musicRequest({ prompt: "vocal piano", lyrics: "[Verse]\nTest", vocalMode: "vocal", tags: "piano" }, musicModel),
     (cause: any) => {
-      assert.match(cause.message, /任务 ID 或音频结果/);
+      assert.match(cause.message, /no task ID/);
       assert.match(cause.message, /responseSummary=/);
       assert.doesNotMatch(cause.message, /instrumental piano|test-key/);
       return true;
@@ -261,7 +282,7 @@ test("T8Star refuses ambiguous Suno vocal mode instead of inferring it from lyri
 
   await assert.rejects(
     () => runtime.exports.musicRequest({ prompt: "instrumental piano", lyrics: "[Verse]\nUnexpected", tags: "piano" }, musicModel),
-    /需要明确的 vocalMode/,
+    /requires vocalMode/,
   );
   assert.equal(runtime.calls.length, 0);
 });

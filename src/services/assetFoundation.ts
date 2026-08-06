@@ -53,6 +53,25 @@ function extractTagContent(text: string, tag: string) {
   return match?.[1]?.trim() || "";
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function extractMarkdownSection(content: string, heading: string) {
+  const expression = new RegExp(`(?:^|\\n)##\\s+${escapeRegExp(heading)}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, "i");
+  return String(content || "").match(expression)?.[1]?.trim() || "";
+}
+
+export function selectAssetFoundationContextPack(content: string) {
+  const hardFacts = extractMarkdownSection(content, "项目硬事实");
+  const reusableAssets = extractMarkdownSection(content, "资产复用参考");
+  const sections = [
+    hardFacts ? `## 项目硬事实\n${hardFacts}` : "",
+    reusableAssets ? `## 资产复用参考\n${reusableAssets}` : "",
+  ].filter(Boolean);
+  return sections.length ? sections.join("\n\n") : String(content || "").trim();
+}
+
 function extractAssetResult(text: string, assetId: number) {
   const match = String(text || "").match(/<assetResult\b([^>]*)>([\s\S]*?)<\/assetResult>/i);
   if (!match) throw new Error("Asset foundation generation did not return <assetResult> XML");
@@ -229,7 +248,11 @@ function assetFoundationBoundaryRules(assetType: AssetFoundationType) {
       "只有打印聊天记录、纸质转账凭证、独立文件、独立物证等已经成为实体物件时，信息记录才可以作为道具事实。",
     ].join("\n");
   }
-  return common.join("\n");
+  return [
+    ...common,
+    "角色 assetFoundation 可以保留项目制作参考包明确的稳定声音/台词表现，供剧本与配音参考；不得猜测声线、方言、口音、真人模仿、TTS 供应商、音色 ID 或克隆参数。",
+    "角色声音/台词表现是不可见制作参考，assetImagePrompt 不得包含声线、音区、语速、咬字、方言、口音、台词或其他声音描述。",
+  ].join("\n");
 }
 
 async function buildPrompt(input: {
@@ -246,6 +269,7 @@ async function buildPrompt(input: {
   ]);
   const contextPack = await getProjectContextPack(Number(input.project.id)).catch(() => null);
   const contextPackContent = String(contextPack?.content || "").trim();
+  const assetContextPackContent = selectAssetFoundationContextPack(contextPackContent);
   const existingFoundation = String(input.asset.foundationText || "").trim();
   const initialDescription = String(input.asset.describe || "").trim();
   const assetType = input.asset.type as AssetFoundationType;
@@ -299,7 +323,7 @@ async function buildPrompt(input: {
     "【资产初始描述 describe（仅作线索，不是正式基础设定）】",
     initialDescription || "无",
     "",
-    contextPackContent ? `【项目制作参考包（主要事实源，优先匹配当前资产信息）】\n${contextPackContent.slice(0, 7000)}\n` : "【项目制作参考包】\n无\n",
+    assetContextPackContent ? `【项目制作参考包中的项目硬事实与资产复用参考（主要事实源，优先匹配当前资产信息）】\n${assetContextPackContent}\n` : "【项目制作参考包】\n无\n",
     "【当前资产类型视觉手册（只用于 assetImagePrompt，不得反向改写 assetFoundation 事实）】",
     input.visualManual.slice(0, 10000),
   ].join("\n");

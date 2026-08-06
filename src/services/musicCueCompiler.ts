@@ -3,7 +3,7 @@ import u from "@/utils";
 import { invokeAiObjectWithFallback, parseAiJsonWithSchema } from "@/services/aiJsonObject";
 import { parseJsonValue, readMusicSkill } from "@/services/musicDirector";
 import { getMusicLibraryEdition, getMusicPromptVersion, saveMusicPromptVersion } from "@/services/musicLibrary";
-import { assertMusicVocalCapability, resolveMusicGenerationDuration, resolveMusicModelCapabilities } from "@/services/musicModelCapability";
+import { resolveMusicGenerationDuration, resolveMusicModelCapabilities } from "@/services/musicModelCapability";
 export { readMusicModelProfile, resolveMusicPromptProfile } from "@/services/musicPromptProfile";
 import { missingMusicProfileGenerationConfig, readMusicModelTechnique, resolveMusicPromptProfile, type MusicModelProfile } from "@/services/musicPromptProfile";
 
@@ -29,18 +29,22 @@ function createCompiledPromptSchema(profile: MusicModelProfile | null): z.ZodTyp
   });
 }
 
-function durationInstruction(duration: {
-  effectiveMusicDurationSec: number;
-  generationDurationSec: number;
-  hasSilentTail: boolean;
-  durationControl?: "exact" | "targetOnly";
+function resolveSuggestedDuration(value: unknown) {
+  const duration = Number(value);
+  return Number.isFinite(duration) && duration > 0 ? Math.ceil(duration) : undefined;
+}
+
+function musicTimingContext(duration: {
+  effectiveMusicDurationSec?: number;
+  generationDurationSec?: number;
+  durationParameter?: boolean;
 }) {
-  if (duration.durationControl === "targetOnly") {
-    return `The intended use is about ${duration.effectiveMusicDurationSec} seconds. The provider does not support exact duration control, so make the musical idea resolve naturally near that point without claiming an exact runtime.`;
-  }
-  return duration.hasSilentTail
-    ? `The model must generate ${duration.generationDurationSec} seconds. The musical content must resolve by ${duration.effectiveMusicDurationSec} seconds; the remainder must be silence or a natural tail.`
-    : `The requested generation duration is ${duration.generationDurationSec} seconds.`;
+  return {
+    suggestedDurationSec: duration.effectiveMusicDurationSec ?? null,
+    providerDurationSec: duration.generationDurationSec ?? null,
+    providerAcceptsDurationParameter: duration.durationParameter === true,
+    note: "Suggested duration is musical-design input. Incorporate it naturally into the Prompt when useful; do not promise an exact generated runtime.",
+  };
 }
 
 export async function compileMusicCuePrompt(input: {
@@ -71,9 +75,10 @@ export async function compileMusicCuePrompt(input: {
   const duration = capabilities
     ? resolveMusicGenerationDuration({ effectiveMusicDurationSec: cue.estimatedDurationSec || cue.durationSec, capabilities })
     : {
-        effectiveMusicDurationSec: Math.max(1, Math.ceil(Number(cue.estimatedDurationSec || cue.durationSec || 30))),
-        generationDurationSec: Math.max(1, Math.ceil(Number(cue.estimatedDurationSec || cue.durationSec || 30))),
+        effectiveMusicDurationSec: resolveSuggestedDuration(cue.estimatedDurationSec || cue.durationSec),
+        generationDurationSec: undefined,
         hasSilentTail: false,
+        durationParameter: false,
       };
   const result = await invokeAiObjectWithFallback({
     modelKey: "productionAgent",
@@ -84,7 +89,6 @@ export async function compileMusicCuePrompt(input: {
         ? "You are compiling a scoring cue into a music generation model prompt. Follow the target model prompt profile."
         : "You are compiling a scoring cue into a provider-neutral music prompt that can later be adapted to a model.",
       "Do not paste full story material. Keep only the musical generation information needed by the model.",
-      durationInstruction(duration),
       compilerSkill.content,
       ...(profile ? ["# Target Music Model Prompt Profile", profile.content] : []),
       ...(modelTechnique ? ["# Target Music Model Prompt Technique", modelTechnique.content] : []),
@@ -112,8 +116,7 @@ export async function compileMusicCuePrompt(input: {
               title: cue.title,
               narrativePurpose: cue.narrativePurpose,
               durationSec: cue.durationSec,
-              effectiveMusicDurationSec: duration.effectiveMusicDurationSec,
-              generationDurationSec: duration.generationDurationSec,
+              timing: musicTimingContext(duration),
               promptBrief: cue.promptBrief,
               startRef: parseJsonValue(cue.startRefJson, {}),
               endRef: parseJsonValue(cue.endRefJson, {}),
@@ -129,8 +132,8 @@ export async function compileMusicCuePrompt(input: {
   });
   const generationConfig = {
     ...(result.generationConfig || {}),
-    durationSec: duration.generationDurationSec,
-    effectiveMusicDurationSec: duration.effectiveMusicDurationSec,
+    ...(duration.generationDurationSec == null ? {} : { durationSec: duration.generationDurationSec }),
+    ...(duration.effectiveMusicDurationSec == null ? {} : { effectiveMusicDurationSec: duration.effectiveMusicDurationSec }),
   };
   const promptVersion = await saveMusicPromptVersion({
     projectId: input.projectId,
@@ -188,11 +191,11 @@ export async function compileMusicLibraryPrompt(input: {
   ]);
   const modelTechnique = profile ? await readMusicModelTechnique(profile) : null;
   const promptSchema = createCompiledPromptSchema(profile);
-  if (capabilities) assertMusicVocalCapability(capabilities, { vocalMode: edition.vocalMode, lyrics: lyrics?.content });
-  const requestedDurationSec = input.effectiveMusicDurationSec || input.requestedDurationSec || 60;
+  const editionMusicSpec = parseJsonValue<Record<string, unknown>>(edition.musicSpecJson, {});
+  const requestedDurationSec = input.effectiveMusicDurationSec ?? input.requestedDurationSec ?? resolveSuggestedDuration(editionMusicSpec.durationSec);
   const duration = capabilities
     ? resolveMusicGenerationDuration({ effectiveMusicDurationSec: requestedDurationSec, requestedDurationSec: input.requestedDurationSec, capabilities })
-    : { effectiveMusicDurationSec: Math.max(1, Math.ceil(Number(requestedDurationSec))), generationDurationSec: Math.max(1, Math.ceil(Number(requestedDurationSec))), hasSilentTail: false };
+    : { effectiveMusicDurationSec: resolveSuggestedDuration(requestedDurationSec), generationDurationSec: undefined, hasSilentTail: false, durationParameter: false };
   const result = await invokeAiObjectWithFallback({
     modelKey: "productionAgent",
     label: "Music library prompt",
@@ -202,7 +205,6 @@ export async function compileMusicLibraryPrompt(input: {
         ? "You are compiling a confirmed project music work into a generation prompt for the selected model."
         : "You are compiling a confirmed project music work into a provider-neutral prompt that can later be adapted to a model.",
       "Use only the confirmed work, edition and lyrics. Do not invent plot material.",
-      durationInstruction(duration),
       songSkill.content,
       compilerSkill.content,
       ...(profile ? ["# Target Music Model Prompt Profile", profile.content] : []),
@@ -218,15 +220,15 @@ export async function compileMusicLibraryPrompt(input: {
         work: item,
         edition: { ...edition, musicSpec: parseJsonValue(edition.musicSpecJson, {}) },
         lyrics: lyrics ? { id: lyrics.id, title: lyrics.title, language: lyrics.language, content: lyrics.content } : null,
-        duration,
+        timing: musicTimingContext(duration),
       }, null, 2),
     }],
     fallbackTextParser: (text) => parseAiJsonWithSchema(text, promptSchema, "Music library prompt"),
   });
   const generationConfig = {
     ...(result.generationConfig || {}),
-    durationSec: duration.generationDurationSec,
-    effectiveMusicDurationSec: duration.effectiveMusicDurationSec,
+    ...(duration.generationDurationSec == null ? {} : { durationSec: duration.generationDurationSec }),
+    ...(duration.effectiveMusicDurationSec == null ? {} : { effectiveMusicDurationSec: duration.effectiveMusicDurationSec }),
     vocalMode: edition.vocalMode,
   };
   const promptVersion = await saveMusicPromptVersion({

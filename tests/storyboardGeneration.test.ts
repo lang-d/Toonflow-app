@@ -22,29 +22,16 @@ function groupIntent(groupKey: string) {
 
 function row(index: number, groupKey = index < 6 ? "G01" : "G02") {
   return {
-    version: 1 as const,
+    version: 3 as const,
     index,
     groupKey,
-    groupName: groupName(groupKey),
-    groupIntent: groupIntent(groupKey),
     beatId: `B${String(index + 1).padStart(2, "0")}`,
     durationSec: 3,
     location: "Interior room",
     timeOfDay: "Day",
-    picture: `Storyboard picture ${index + 1}`,
+    shotDescription: `The character starts beside the worktable, responds to a visible trigger, completes action ${index + 1}, and stops with the result visible.`,
     shotSize: "Medium shot",
     cameraMove: "Static",
-    action: `Character completes action ${index + 1}`,
-    characters: [
-      {
-        assetId: 1,
-        name: "Hero",
-        action: `Action ${index + 1}`,
-        orientation: "Facing right",
-        spatialPosition: "Center foreground",
-      },
-    ],
-    visibleEmotion: "Steady gaze and calm breath",
     dialogue: [],
     soundEffects: ["Room tone"],
     requiredAssets: [
@@ -185,7 +172,7 @@ before(async () => {
     ]),
   });
   await db("o_script").insert(
-    [10, 20, 21, 22, 23, 24, 30, 40, 50, 60, 61, 70, 80, 90].map((id) => ({
+    [10, 20, 21, 22, 23, 24, 30, 40, 50, 60, 61, 70, 80, 90, 95].map((id) => ({
       id,
       projectId: 1,
       name: `script-${id}`,
@@ -238,6 +225,9 @@ test("storyboard generation resumes batches, is idempotent, and commits atomical
   assert.equal(committed.status, "committed");
   if (committed.status !== "committed") return;
   assert.equal(committed.rowCount, 12);
+  assert.equal(committed.previousRevision, null);
+  assert.equal(committed.previousRowCount, 0);
+  assert.equal(committed.previousGroupCount, 0);
   assert.equal(await countRows("o_storyboard", { projectId: 1, scriptId: 10 }), 12);
   assert.equal(await countRows("o_storyboardGenerationRow", { generationId: started.generationId }), 12);
   const saved = await db("o_storyboard").where({ projectId: 1, scriptId: 10 }).orderBy("index", "asc");
@@ -326,14 +316,15 @@ test("new generation supersedes unfinished generation for the same script", asyn
   await service.appendStoryboardRows({
     generationId: second.generationId,
     startIndex: 0,
-    rows: [{ ...row(0, "G01"), picture: "new generation picture" }],
+    rows: [{ ...row(0, "G01"), shotDescription: "New generation chronological shot description" }],
   });
   assert.equal((await service.commitStoryboardGeneration(second.generationId)).status, "committed");
   const saved = await db("o_storyboard").where({ projectId: 1, scriptId: 61 }).first();
-  assert.equal(saved.picture, "new generation picture");
+  assert.equal(saved.picture, null);
+  assert.equal(JSON.parse(saved.tableRowJson).shotDescription, "New generation chronological shot description");
 });
 
-test("commit accepts brief row group intent and normalizes formal rows from the group plan", async () => {
+test("commit projects group display metadata from the group plan without duplicating it in V3 rows", async () => {
   const started = await service.beginStoryboardGeneration({
     projectId: 1,
     scriptId: 20,
@@ -343,10 +334,7 @@ test("commit accepts brief row group intent and normalizes formal rows from the 
   await service.appendStoryboardRows({
     generationId: started.generationId,
     startIndex: 0,
-    rows: [
-      { ...row(0, "G01"), groupIntent: "brief intent" },
-      { ...row(1, "G01"), groupName: "Short name", groupIntent: "another brief intent" },
-    ],
+    rows: [row(0, "G01"), row(1, "G01")],
   });
 
   const result = await service.commitStoryboardGeneration(started.generationId);
@@ -355,7 +343,9 @@ test("commit accepts brief row group intent and normalizes formal rows from the 
   assert.equal(saved.length, 2);
   assert.ok(saved.every((item: any) => item.groupName === groupName("G01")));
   assert.ok(saved.every((item: any) => item.groupIntent === groupIntent("G01")));
-  assert.ok(saved.every((item: any) => JSON.parse(item.tableRowJson).groupIntent === groupIntent("G01")));
+  assert.ok(saved.every((item: any) => JSON.parse(item.tableRowJson).version === 3));
+  assert.ok(saved.every((item: any) => !("groupName" in JSON.parse(item.tableRowJson))));
+  assert.ok(saved.every((item: any) => !("groupIntent" in JSON.parse(item.tableRowJson))));
 });
 
 test("chinese storyboard group keys are normalized to stable ASCII keys", async () => {
@@ -371,12 +361,7 @@ test("chinese storyboard group keys are normalized to stable ASCII keys", async 
   const append = await service.appendStoryboardRows({
     generationId: started.generationId,
     startIndex: 0,
-    rows: [
-      { ...row(0, "围剿"), groupName: "围剿", groupIntent: "row intent A" },
-      { ...row(1, "围剿"), groupName: "围剿", groupIntent: "row intent A" },
-      { ...row(2, "反击"), groupName: "反击", groupIntent: "row intent B" },
-      { ...row(3, "反击"), groupName: "反击", groupIntent: "row intent B" },
-    ],
+    rows: [row(0, "围剿"), row(1, "围剿"), row(2, "反击"), row(3, "反击")],
   });
   assert.equal(append.accepted, 4);
 
@@ -422,7 +407,7 @@ test("conflicting retry and incomplete commit never replace formal rows", async 
     startIndex: 0,
     rows: [row(0, "G01")],
   });
-  const conflictRow = { ...row(0, "G01"), picture: "Different content" };
+  const conflictRow = { ...row(0, "G01"), shotDescription: "Different content" };
   const conflict = await service.appendStoryboardRows({
     generationId: started.generationId,
     startIndex: 0,
@@ -724,7 +709,8 @@ test("transaction failure is recorded as failed and keeps existing formal rows",
   const retriedRows = await db("o_storyboard").where({ projectId: 1, scriptId: 30 });
   assert.equal(retriedRows.length, 1);
   assert.equal(retriedRows[0].factStatus, "ready");
-  assert.equal(retriedRows[0].picture, "Storyboard picture 1");
+  assert.equal(retriedRows[0].picture, null);
+  assert.equal(JSON.parse(retriedRows[0].tableRowJson).shotDescription, row(0, "G01").shotDescription);
 });
 
 test("committing generation returns an explicit failed status", async () => {
@@ -854,4 +840,63 @@ test("replacing a formal table keeps only the latest storyboards, asset links an
   );
   assert.equal((await db("o_videoTrack").where({ projectId: 1, scriptId: 50, archived: 0 })).length, 2);
   assert.equal((await db("o_videoTrack").where({ projectId: 1, scriptId: 50, archived: 1 })).length, 1);
+});
+
+test("post-write inspection reports a 57-to-6 factual delta without judging intent", async () => {
+  const baselineGroups = Array.from({ length: 12 }, (_, groupIndex) => {
+    const start = groupIndex * 5;
+    const indexes = Array.from({ length: Math.min(5, 57 - start) }, (_, offset) => start + offset);
+    return plan(`G${String(groupIndex + 1).padStart(2, "0")}`, indexes);
+  });
+  const baseline = await service.beginStoryboardGeneration({
+    projectId: 1,
+    scriptId: 95,
+    expectedRowCount: 57,
+    groups: baselineGroups,
+  });
+  for (let startIndex = 0; startIndex < 57; startIndex += 10) {
+    const rows = Array.from({ length: Math.min(10, 57 - startIndex) }, (_, offset) => {
+      const index = startIndex + offset;
+      return row(index, `G${String(Math.floor(index / 5) + 1).padStart(2, "0")}`);
+    });
+    await service.appendStoryboardRows({ generationId: baseline.generationId, startIndex, rows });
+  }
+  const baselineCommit = await service.commitStoryboardGeneration(baseline.generationId);
+  assert.equal(baselineCommit.status, "committed");
+
+  const target = await service.beginStoryboardGeneration({
+    projectId: 1,
+    scriptId: 95,
+    expectedRowCount: 6,
+    groups: [plan("G01", [0, 1, 2, 3, 4, 5])],
+  });
+  await service.appendStoryboardRows({
+    generationId: target.generationId,
+    startIndex: 0,
+    rows: Array.from({ length: 6 }, (_, index) => ({
+      ...row(index, "G01"),
+      durationSec: 2,
+      shotDescription:
+        index === 3 || index === 4
+          ? `Revised chronological shot description ${index}`
+          : row(index, "G01").shotDescription,
+    })),
+  });
+  const targetCommit = await service.commitStoryboardGeneration(target.generationId);
+  assert.equal(targetCommit.status, "committed");
+  if (targetCommit.status !== "committed") return;
+  assert.equal(targetCommit.previousRowCount, 57);
+  assert.equal(targetCommit.previousGroupCount, 12);
+
+  const inspected = await service.inspectStoryboardTableChange({ projectId: 1, scriptId: 95 });
+  assert.equal(inspected.target.generationId, target.generationId);
+  assert.equal(inspected.target.rowCount, 6);
+  assert.equal(inspected.target.groupCount, 1);
+  assert.equal(inspected.baseline?.generationId, baseline.generationId);
+  assert.equal(inspected.baseline?.rowCount, 57);
+  assert.deepEqual(inspected.diff?.missingIndexes, Array.from({ length: 51 }, (_, index) => index + 6));
+  assert.deepEqual(inspected.diff?.addedIndexes, []);
+  assert.ok(inspected.diff?.removedGroupKeys.includes("G12"));
+  assert.equal(inspected.formal.matchesTargetGeneration, true);
+  assert.equal("status" in inspected, false);
 });

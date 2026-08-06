@@ -68,6 +68,20 @@ export default function agentProxy(kind: AgentKind) {
           callbacks.set(callbackId, possibleCallback);
         }
         if (!port) {
+          if (kind === "productionAgent" && eventName === "chat") {
+            const auth = socket.handshake.auth || {};
+            socket.emit("agent:run:update", {
+              agentKey: "productionAgent",
+              projectId: Number(auth.projectId),
+              scriptId: Number(auth.scriptId),
+              serverTime: Date.now(),
+              rejected: true,
+              code: "AGENT_UNAVAILABLE",
+              reason: "Agent 进程暂不可用",
+            });
+            if (callbackId) callbacks.delete(callbackId);
+            return;
+          }
           if (callbackId && typeof possibleCallback === "function") {
             callbacks.delete(callbackId);
             possibleCallback({ code: "AGENT_UNAVAILABLE", message: "Agent 进程暂不可用" });

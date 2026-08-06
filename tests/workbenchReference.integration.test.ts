@@ -53,6 +53,14 @@ before(async () => {
     table.integer("id").primary();
     table.integer("projectId");
   });
+  await db.schema.createTable("o_directorPlanGeneration", (table: any) => {
+    table.string("generationId").primary();
+    table.integer("projectId");
+    table.integer("scriptId");
+    table.string("state");
+    table.text("videoStyle");
+    table.integer("updatedAt");
+  });
   await db.schema.createTable("o_videoTrack", (table: any) => {
     table.integer("id").primary();
     table.integer("projectId");
@@ -580,16 +588,16 @@ test("video prompt context keeps audio out of visual @Image numbering", async ()
   const audioPath = "1/imageFlow/10/media/prompt-private.wav";
   await u.oss.writeFile(audioPath, Buffer.from("RIFF0000WAVE"));
   const readyFact = {
-    version: 1,
+    version: 3,
     index: 0,
     durationSec: 3,
     location: "厨房",
     timeOfDay: "清晨",
-    picture: "角色站在窗边",
-    action: "角色看向桌面",
+    shotDescription: "角色站在窗边。水壶响起后，角色转头看向桌面；镜头结束时视线停在水壶上。",
     shotSize: "中景",
     cameraMove: "固定",
-    characters: [],
+    groupKey: "audio-context",
+    beatId: "audio-context-1",
     dialogue: [],
     soundEffects: ["水壶声"],
     requiredAssets: [],
@@ -610,7 +618,7 @@ test("video prompt context keeps audio out of visual @Image numbering", async ()
   u.Ai = {
     ...u.Ai,
     Text: () => ({
-      invoke: async () => ({ text: "厨房中景，角色看向桌面，水壶声。" }),
+      invoke: async () => ({ text: "参考定义：\n@Image1: red，用于角色外观。\n@Image2: red，用于场景空间。\n厨房中景，角色看向桌面，水壶声。" }),
     }),
   };
   try {
@@ -630,8 +638,227 @@ test("video prompt context keeps audio out of visual @Image numbering", async ()
     assert.match(result.promptContext, /不得写成 @ImageN/);
     assert.match(result.promptContext, /visualToken='@Image1'[\s\S]*referenceId='101'/);
     assert.match(result.promptContext, /visualToken='@Image2'[\s\S]*referenceId='301'/);
+    assert.match(result.promptContext, /storyboardId='301'[\s\S]*visualStart='storyboardReference'/);
+    assert.match(result.promptContext, /shotDescription='角色站在窗边。水壶响起后，角色转头看向桌面；镜头结束时视线停在水壶上。'/);
+    assert.match(result.promptContext, /shotDescriptionRole='temporalContinuation'/);
+    assert.doesNotMatch(result.promptContext, /picture=/);
+    assert.doesNotMatch(result.promptContext, /action=/);
+    assert.doesNotMatch(result.promptContext, /shotSize='中景'/);
+    assert.doesNotMatch(result.promptContext, /只使用该条携带的 picture/);
+    assert.match(result.promptContext, /factVersion=3: shotDescription is one chronological source/);
     const audioBlock = result.promptContext.match(/<audioReference[\s\S]*?<\/audioReference>/)?.[0] || "";
     assert.doesNotMatch(audioBlock, /visualToken='@Image/);
+  } finally {
+    u.Ai = originalAi;
+  }
+});
+
+test("V3 video context keeps visible performance chronological and does not derive it from voiceTone", async () => {
+  const { compileWorkbenchVideoPrompt } = await import("../src/services/videoPromptCompiler");
+  await db("o_videoTrack").insert({ id: 320, projectId: 1, scriptId: 10, archived: 0 });
+  await db("o_storyboard").insert({
+    id: 321,
+    projectId: 1,
+    scriptId: 10,
+    trackId: 320,
+    index: 0,
+    filePath: "/1/storyboard/performance.png",
+    factStatus: "ready",
+    tableRowJson: JSON.stringify({
+      version: 3,
+      index: 0,
+      groupKey: "performance-context",
+      beatId: "performance-context-1",
+      durationSec: 4,
+      location: "办公室",
+      timeOfDay: "日",
+      shotDescription:
+        "苏晴站在桌外侧，唇角压紧，目光停在电脑屏幕上。赵成业画外说完最后一句后，她的眼睑微微收紧，随后抬眼看向他；镜头结束时仍保持克制的直视。",
+      shotSize: "近景",
+      dialogue: [{ speaker: "赵成业", text: "年轻人就是沉不住气。", voiceTone: "慢，轻蔑" }],
+      soundEffects: [],
+      requiredAssets: [],
+    }),
+  });
+  const originalAi = u.Ai;
+  let request: any;
+  u.Ai = {
+    ...u.Ai,
+    Text: () => ({
+      invoke: async (input: any) => {
+        request = input;
+        return { text: "参考 @Image1，赵成业画外说完后，苏晴的眼睑微微收紧，随后抬眼看向他。" };
+      },
+    }),
+  };
+  try {
+    const result = await compileWorkbenchVideoPrompt({
+      projectId: 1,
+      scriptId: 10,
+      trackId: 320,
+      references: [{ id: 321, sources: "storyboard" }],
+      model: "dreamina:seedance",
+      mode: JSON.stringify(["imageReference:1"]),
+    });
+    assert.match(request.system, /已明确的视线、表情、呼吸、手部或姿态变化，按其发生时段执行/);
+    assert.match(request.system, /`voiceTone`.*(?:不推断或新增|不能推断)视觉表情/);
+    assert.match(result.promptContext, /visualStart='storyboardReference'/);
+    assert.match(result.promptContext, /shotDescriptionRole='temporalContinuation'/);
+    assert.match(result.promptContext, /唇角压紧，目光停在电脑屏幕上/);
+    assert.match(result.promptContext, /眼睑微微收紧，随后抬眼看向他/);
+    assert.match(result.promptContext, /赵成业：年轻人就是沉不住气。/);
+    assert.doesNotMatch(result.promptContext, /picture=|action=|visibleEmotion=/);
+  } finally {
+    u.Ai = originalAi;
+  }
+});
+
+test("video prompt uses the committed clean videoStyle as the exact stable style anchor", async () => {
+  const { compileWorkbenchVideoPrompt } = await import("../src/services/videoPromptCompiler");
+  await db("o_script").insert({ id: 9030, projectId: 1 });
+  await db("o_directorPlanGeneration").insert({
+    generationId: "4e9e9aa0-d183-4875-bf74-5ab6f6f5ac4a",
+    projectId: 1,
+    scriptId: 9030,
+    state: "committed",
+    videoStyle: "三维卡通乡村漫剧，采用清晰轮廓和稳定卡通明暗，哑光与半哑光材质表现，保持自然、克制的乡村光色层次。",
+    updatedAt: Date.now(),
+  });
+  await db("o_videoTrack").insert({ id: 9320, projectId: 1, scriptId: 9030, archived: 0 });
+  await db("o_storyboard").insert({
+    id: 9321,
+    projectId: 1,
+    scriptId: 9030,
+    trackId: 9320,
+    index: 0,
+    filePath: "/1/storyboard/red.png",
+    tableRowJson: JSON.stringify({
+      version: 3,
+      index: 0,
+      durationSec: 3,
+      location: "院坝",
+      timeOfDay: "阵雨后的午后",
+      shotDescription: "角色站在仍有积水的院门前，屋檐断续滴水。她转身看向道路，白鹅从工作区外侧经过；镜头结束时她仍望向道路。",
+      shotSize: "中景",
+      cameraMove: "固定",
+      groupKey: "video-style",
+      beatId: "video-style-1",
+      dialogue: [],
+      soundEffects: [],
+      requiredAssets: [],
+    }),
+    factStatus: "ready",
+  });
+  const originalAi = u.Ai;
+  let request: any;
+  u.Ai = {
+    ...u.Ai,
+    Text: () => ({
+      invoke: async (input: any) => {
+        request = input;
+        return {
+          text:
+            "画面风格和类型：三维卡通乡村漫剧，清晰轮廓、非塑料材质与自然光色。\n院坝中景，阵雨后屋檐断续滴水，角色转身看向道路，白鹅从工作区外侧经过。",
+        };
+      },
+    }),
+  };
+  try {
+    const compiled = await compileWorkbenchVideoPrompt({
+      projectId: 1,
+      scriptId: 9030,
+      trackId: 9320,
+      references: [],
+      model: "dreamina:seedance",
+      mode: JSON.stringify(["imageReference:1"]),
+    });
+    const promptContext = request.messages.find((item: any) => item.role === "user")?.content || "";
+    const styleGuide = request.messages.find((item: any) => item.role === "assistant")?.content || "";
+    assert.match(promptContext, /正式视频风格（当前已提交导演规划）/);
+    assert.match(promptContext, /三维卡通乡村漫剧，采用清晰轮廓和稳定卡通明暗，哑光与半哑光材质表现，保持自然、克制的乡村光色层次。/);
+    assert.match(promptContext, /visualStart='textFallback'/);
+    assert.match(promptContext, /shotDescription='角色站在仍有积水的院门前，屋檐断续滴水。她转身看向道路，白鹅从工作区外侧经过；镜头结束时她仍望向道路。'/);
+    assert.match(promptContext, /shotDescriptionRole='fullShot'/);
+    assert.match(promptContext, /shotSize='中景'/);
+    assert.doesNotMatch(promptContext, /picture=|action=/);
+    assert.match(styleGuide, /直接使用正式 videoStyle 的原义/);
+    assert.match(promptContext, /不得扩写、二次总结或改写为另一种媒介/);
+    assert.match(compiled.text, /画面风格和类型：三维卡通乡村漫剧/);
+    assert.match(compiled.text, /阵雨后屋檐断续滴水/);
+    assert.match(compiled.text, /白鹅/);
+  } finally {
+    u.Ai = originalAi;
+  }
+});
+
+test("video prompt keeps mixed historical and V3 rows version-native", async () => {
+  const { compileWorkbenchVideoPrompt } = await import("../src/services/videoPromptCompiler");
+  await db("o_videoTrack").insert({ id: 9340, projectId: 1, scriptId: 10, archived: 0, duration: 7 });
+  await db("o_storyboard").insert([
+    {
+      id: 9341,
+      projectId: 1,
+      scriptId: 10,
+      trackId: 9340,
+      index: 0,
+      factStatus: "ready",
+      tableRowJson: JSON.stringify({
+        version: 2,
+        index: 0,
+        groupKey: "mixed",
+        beatId: "mixed-1",
+        durationSec: 3,
+        location: "门口",
+        timeOfDay: "日",
+        picture: "角色站在门内",
+        action: "角色推门走出",
+        shotSize: "中景",
+        dialogue: [],
+        soundEffects: [],
+        requiredAssets: [],
+      }),
+    },
+    {
+      id: 9342,
+      projectId: 1,
+      scriptId: 10,
+      trackId: 9340,
+      index: 1,
+      factStatus: "ready",
+      tableRowJson: JSON.stringify({
+        version: 3,
+        index: 1,
+        groupKey: "mixed",
+        beatId: "mixed-2",
+        durationSec: 4,
+        location: "门外",
+        timeOfDay: "日",
+        shotDescription: "角色站在门外。身后传来关门声，她停步回头；镜头结束时门已经关闭。",
+        shotSize: "全景",
+        dialogue: [],
+        soundEffects: ["关门声"],
+        requiredAssets: [],
+      }),
+    },
+  ]);
+  const originalAi = u.Ai;
+  u.Ai = {
+    ...u.Ai,
+    Text: () => ({ invoke: async () => ({ text: "门口两镜连续视频提示词" }) }),
+  };
+  try {
+    const result = await compileWorkbenchVideoPrompt({
+      projectId: 1,
+      scriptId: 10,
+      trackId: 9340,
+      references: [],
+      model: "dreamina:seedance",
+      mode: JSON.stringify(["text"]),
+    });
+    assert.match(result.promptContext, /分镜事实（版本混合）/);
+    assert.match(result.promptContext, /factVersion='2'[\s\S]*picture='角色站在门内'[\s\S]*action='角色推门走出'/);
+    assert.match(result.promptContext, /factVersion='3'[\s\S]*shotDescription='角色站在门外。身后传来关门声/);
+    assert.match(result.promptContext, /不得在版本之间拼接或借用字段/);
   } finally {
     u.Ai = originalAi;
   }
@@ -649,6 +876,11 @@ test("video prompt retries once when reference definition misses an image token"
     action: "角色停顿",
     shotSize: "中景",
     cameraMove: "固定",
+    groupKey: "token-retry",
+    groupName: "引用重试",
+    groupIntent: "角色在门口停顿",
+    beatId: "token-retry-1",
+    visibleEmotion: "短暂停顿",
     characters: [],
     dialogue: [],
     soundEffects: [],

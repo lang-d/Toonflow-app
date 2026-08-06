@@ -1,4 +1,4 @@
-// @db-hash e11b0e8e83bc3dfde92bbc155ad30ebd
+// @db-hash 8a91586d34eb760e0751a0eafc49537d
 //该文件由脚本自动生成，请勿手动修改
 
 export interface memories {
@@ -129,6 +129,7 @@ export interface o_directorPlanGeneration {
   'textAssetId'?: number | null;
   'updatedAt': number;
   'version'?: number | null;
+  'videoStyle'?: string | null;
 }
 export interface o_directorPlanGenerationChunk {
   'chunkIndex': number;
@@ -425,6 +426,7 @@ export interface o_project {
   'imageQuality'?: string | null;
   'intro'?: string | null;
   'mode'?: string | null;
+  'musicModel'?: string | null;
   'name'?: string | null;
   'projectType'?: string | null;
   'type'?: string | null;

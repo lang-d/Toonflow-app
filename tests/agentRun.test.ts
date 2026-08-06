@@ -270,6 +270,76 @@ test("model-declared completion is a distinct terminal intent", () => {
   assert.equal(context.terminalIntent?.reason, "Read-only analysis is complete");
 });
 
+test("context overflow counting is shared by every Turn and Subagent in one Run", () => {
+  const context = service.createAgentRunContext("overflow-count-context");
+  assert.equal(context.recordContextOverflow(), 1);
+  assert.equal(context.recordContextOverflow(), 2);
+  assert.equal(context.contextOverflowCount, 2);
+});
+
+test("repeated context overflow is the only interrupted Run eligible for a new Chat resume", async () => {
+  const resumableRun = await service.createAgentRun({ ...scope(35), messageId: "message-overflow" });
+  assert.equal(resumableRun.created, true);
+  if (!resumableRun.created) return;
+  await service.recordAgentRunEvent(resumableRun.run.runId, "agent_resumable_checkpoint", {
+    checkpoint: "model-authored working checkpoint",
+    sourceRunId: resumableRun.run.runId,
+    stage: "supervisionStoryboardTable",
+  });
+  await service.finishAgentRun(resumableRun.run.runId, {
+    status: "interrupted",
+    reason: "context overflow twice",
+    errorJson: { code: "AGENT_CONTEXT_OVERFLOW_REPEATED" },
+    currentStage: "supervisionStoryboardTable",
+    currentSubAgent: "supervisionStoryboardTableAgent",
+  });
+
+  const resumed = await service.getResumableAgentInterruption(scope(35));
+  assert.equal(resumed?.run.runId, resumableRun.run.runId);
+  assert.equal(resumed?.checkpoint.checkpoint, "model-authored working checkpoint");
+
+  const completedAfterResume = await service.createAgentRun({ ...scope(35), messageId: "message-after-resume" });
+  assert.equal(completedAfterResume.created, true);
+  if (!completedAfterResume.created) return;
+  await service.finishAgentRun(completedAfterResume.run.runId, { status: "completed", reason: "resumed work completed" });
+  assert.equal(await service.getResumableAgentInterruption(scope(35)), null);
+
+  const ordinaryRun = await service.createAgentRun({ ...scope(36), messageId: "message-ordinary-interrupt" });
+  assert.equal(ordinaryRun.created, true);
+  if (!ordinaryRun.created) return;
+  await service.finishAgentRun(ordinaryRun.run.runId, {
+    status: "interrupted",
+    reason: "runtime restarted",
+    errorJson: { code: "RUNTIME_RESTARTED" },
+  });
+  assert.equal(await service.getResumableAgentInterruption(scope(36)), null);
+});
+
+test("Turn events retain the actual process message id", async () => {
+  const created = await service.createAgentRun({ ...scope(37), messageId: "chat-initial-message" });
+  assert.equal(created.created, true);
+  if (!created.created) return;
+  await service.recordAgentTurnStarted(created.run.runId, {
+    turnId: "turn-1",
+    turnNumber: 1,
+    messageId: "process-message-1",
+    stage: "decision",
+  });
+  await service.recordAgentTurnResult(created.run.runId, {
+    turnId: "turn-1",
+    turnNumber: 1,
+    messageId: "process-message-1",
+    stage: "decision",
+    state: "complete",
+    finishReason: "stop",
+    textLength: 0,
+  });
+  const detail = await service.getAgentRunDetail(created.run.runId);
+  const turnEvents = detail.events.filter((event: any) => event.eventType.startsWith("agent_turn_"));
+  assert.equal(turnEvents.length, 2);
+  assert.ok(turnEvents.every((event: any) => JSON.parse(event.payloadJson).messageId === "process-message-1"));
+});
+
 test("terminal diagnostics are normalized without storing model content", async () => {
   const created = await service.createAgentRun({ ...scope(29), messageId: "message-terminal-diagnostics" });
   assert.equal(created.created, true);
@@ -277,9 +347,14 @@ test("terminal diagnostics are normalized without storing model content", async 
 
   await service.recordAgentModelStreamFinished(created.run.runId, {
     finishReason: "stop",
-    steps: [{}, {}],
+    usage: { inputTokens: 120, outputTokens: 20, totalTokens: 140 },
+    totalUsage: { inputTokens: 200, outputTokens: 30, totalTokens: 230 },
+    steps: [{ usage: { inputTokens: 80 } }, { usage: { inputTokens: 120 } }],
     toolCalls: [{}],
     text: "private response text",
+  });
+  await service.recordAgentRunEvent(created.run.runId, "agent_turn_context_boundary", {
+    reason: "resolved_capacity",
   });
   await service.recordAgentRunEvent(created.run.runId, "terminal_declaration_missing", {
     code: "AGENT_TERMINAL_DECLARATION_MISSING",
@@ -292,8 +367,17 @@ test("terminal diagnostics are normalized without storing model content", async 
 
   const detail = await service.getAgentRunDetail(created.run.runId);
   const stream = detail.timeline.find((item: any) => item.kind === "model_stream_finished");
-  assert.deepEqual(stream?.payload, { finishReason: "stop", stepCount: 2, toolCallCount: 1, textLength: 21 });
+  assert.deepEqual(stream?.payload, {
+    finishReason: "stop",
+    stepCount: 2,
+    toolCallCount: 1,
+    textLength: 21,
+    finalStepUsage: { inputTokens: 120, outputTokens: 20, totalTokens: 140 },
+    totalUsage: { inputTokens: 200, outputTokens: 30, totalTokens: 230 },
+    maxStepInputTokens: 120,
+  });
   assert.equal(JSON.stringify(stream?.payload).includes("private response text"), false);
+  assert.equal(detail.timeline.some((item: any) => item.kind === "agent_turn_context_boundary"), true);
   assert.equal(detail.timeline.some((item: any) => item.kind === "terminal_declaration_missing"), true);
   assert.deepEqual(detail.run?.errorJson, JSON.stringify({ code: "AGENT_TERMINAL_DECLARATION_MISSING" }));
 });

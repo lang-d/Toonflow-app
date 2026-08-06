@@ -79,19 +79,26 @@ dbLog.info("Database path resolved", { event: "db.path", path: dbPath });
 const dbDir = path.dirname(dbPath);
 const splitStorage = storageMode() === "workspace";
 const profilePath = profileDatabasePath();
+const readOnlyRuntime = process.env.TOONFLOW_READONLY_DB === "1";
 
 // 确保数据库目录存在
-if (!fs.existsSync(dbDir)) {
+if (!readOnlyRuntime && !fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
 
 // 创建空数据库文件
-if (!fs.existsSync(dbPath)) {
+if (!readOnlyRuntime && !fs.existsSync(dbPath)) {
   fs.writeFileSync(dbPath, "");
 }
-if (splitStorage) {
+if (readOnlyRuntime && !fs.existsSync(dbPath)) {
+  throw new Error(`Read-only database does not exist: ${dbPath}`);
+}
+if (splitStorage && !readOnlyRuntime) {
   fs.mkdirSync(path.dirname(profilePath), { recursive: true });
   if (!fs.existsSync(profilePath)) fs.writeFileSync(profilePath, "");
+}
+if (splitStorage && readOnlyRuntime && !fs.existsSync(profilePath)) {
+  throw new Error(`Read-only profile database does not exist: ${profilePath}`);
 }
 
 function escapeSqlitePath(value: string) {
@@ -101,12 +108,14 @@ function escapeSqlitePath(value: string) {
 const profileDb = splitStorage
   ? knex({
       client: "better-sqlite3",
-      connection: { filename: profilePath },
+      connection: { filename: profilePath, readonly: readOnlyRuntime, fileMustExist: readOnlyRuntime } as any,
       pool: {
         afterCreate(connection: any, done: (error: Error | null, connection: any) => void) {
           try {
-            connection.pragma("journal_mode = WAL");
-            connection.pragma("synchronous = NORMAL");
+            if (!readOnlyRuntime) {
+              connection.pragma("journal_mode = WAL");
+              connection.pragma("synchronous = NORMAL");
+            }
             connection.pragma("busy_timeout = 2000");
             done(null, connection);
           } catch (error) {
@@ -122,12 +131,16 @@ const db = knex({
   client: "better-sqlite3",
   connection: {
     filename: dbPath,
-  },
+    readonly: readOnlyRuntime,
+    fileMustExist: readOnlyRuntime,
+  } as any,
   pool: {
     afterCreate(connection: any, done: (error: Error | null, connection: any) => void) {
       try {
-        connection.pragma("journal_mode = WAL");
-        connection.pragma("synchronous = NORMAL");
+        if (!readOnlyRuntime) {
+          connection.pragma("journal_mode = WAL");
+          connection.pragma("synchronous = NORMAL");
+        }
         connection.pragma(`busy_timeout = ${busyTimeoutMs()}`);
         if (splitStorage) connection.exec(`ATTACH DATABASE '${escapeSqlitePath(profilePath)}' AS profile`);
         done(null, connection);
@@ -182,7 +195,7 @@ db.on("query-error", (error: any, query: any) => {
 });
 
 export const dbReady =
-  process.env.TOONFLOW_SKIP_DB_INIT === "1"
+  readOnlyRuntime || process.env.TOONFLOW_SKIP_DB_INIT === "1"
     ? Promise.resolve()
     : (async () => {
         if (profileDb) await initDB(profileDb, false, { includeTables: PROFILE_TABLES });

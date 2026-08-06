@@ -2,11 +2,17 @@ import axios from "axios";
 import fs from "fs";
 import path from "path";
 import os from "node:os";
-import { spawn } from "child_process";
+import { execFile, spawn } from "child_process";
+import { createRequire } from "node:module";
+import { pipeline } from "node:stream/promises";
+import { promisify } from "node:util";
 import getPath from "@/utils/getPath";
 import { createLogger, writeDiagnosticFile } from "@/logger";
 
 const dreaminaLog = createLogger("dreamina-cli", { provider: "dreamina" });
+const runFile = promisify(execFile);
+const localRequire = createRequire(typeof __filename === "string" ? __filename : path.resolve(process.cwd(), "package.json"));
+const DREAMINA_VIDEO_DOWNLOAD_ATTEMPTS = 3;
 
 type TaskState = "idle" | "running" | "qr" | "device" | "success" | "failed";
 
@@ -80,6 +86,7 @@ interface ToonflowModel {
   durationResolutionMap?: { duration: number[]; resolution: string[] }[];
   queueConfig?: QueueConfig;
   durationRange?: { min?: number; max?: number };
+  durationParameter?: boolean;
   outputFormats?: string[];
   vocal?: "optional" | boolean;
   lyrics?: "optional" | boolean;
@@ -174,6 +181,16 @@ function tempDir(...parts: string[]) {
   const dir = getPath(["temp", "dreamina", ...parts]);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+function unpackedExecutablePath(value: unknown) {
+  const resolved = String(value || "").replace(/([\\/])app\.asar([\\/])/i, "$1app.asar.unpacked$2");
+  if (!resolved || !fs.existsSync(resolved)) throw new Error("Dreamina video validation runtime is unavailable: packaged executable is missing");
+  return resolved;
+}
+
+function ffmpegPath() {
+  return unpackedExecutablePath(localRequire("ffmpeg-static"));
 }
 
 function isInstalled() {
@@ -650,6 +667,148 @@ async function queryResult(submitId: string, downloadDir: string, poll = 120) {
 
 function outputText(result: CliResult) {
   return `${result.stdout}\n${result.stderr}`.trim();
+}
+
+function compactDownloadError(error: unknown) {
+  const cause = error as { message?: unknown; stderr?: unknown };
+  const message = String(cause?.stderr || cause?.message || error || "unknown error")
+    .replace(/\s+/g, " ")
+    .trim();
+  return message.slice(0, 800);
+}
+
+export async function validateDreaminaVideoFile(filePath: string) {
+  const stat = await fs.promises.stat(filePath);
+  if (!stat.isFile() || stat.size <= 0) throw new Error("Dreamina video download is empty or not a regular file");
+
+  try {
+    await runFile(
+      ffmpegPath(),
+      ["-v", "error", "-xerror", "-err_detect", "explode", "-i", filePath, "-map", "0:v:0", "-map", "0:a?", "-f", "null", "-"],
+      { maxBuffer: 8 * 1024 * 1024 },
+    );
+  } catch (error) {
+    throw new Error(`Dreamina video download is incomplete or corrupt: ${compactDownloadError(error)}`);
+  }
+
+  return { bytes: stat.size };
+}
+
+export async function downloadDreaminaVideoUrl(url: string, downloadDir: string) {
+  await fs.promises.mkdir(downloadDir, { recursive: true });
+  const partPath = path.join(downloadDir, "official-video.part");
+  const videoPath = path.join(downloadDir, "official-video.mp4");
+  await fs.promises.rm(partPath, { force: true });
+  await fs.promises.rm(videoPath, { force: true });
+
+  try {
+    const response = await axios.get(url, {
+      responseType: "stream",
+      timeout: 180000,
+      validateStatus: () => true,
+    });
+    if (response.status !== 200) {
+      response.data?.destroy?.();
+      throw new Error(`Dreamina video URL returned HTTP ${response.status}; a full 200 response is required`);
+    }
+    if (response.headers["content-range"]) {
+      response.data?.destroy?.();
+      throw new Error("Dreamina video URL returned Content-Range; partial responses are not accepted");
+    }
+
+    const rawLength = response.headers["content-length"];
+    const expectedBytes = rawLength === undefined ? undefined : Number(Array.isArray(rawLength) ? rawLength[0] : rawLength);
+    if (rawLength !== undefined && (expectedBytes === undefined || !Number.isFinite(expectedBytes) || expectedBytes < 0)) {
+      response.data?.destroy?.();
+      throw new Error("Dreamina video URL returned an invalid Content-Length");
+    }
+
+    let receivedBytes = 0;
+    response.data.on("data", (chunk: Buffer) => {
+      receivedBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+    });
+    await pipeline(response.data, fs.createWriteStream(partPath));
+    if (expectedBytes !== undefined && receivedBytes !== expectedBytes) {
+      throw new Error(`Dreamina video URL size mismatch: expected ${expectedBytes} bytes, received ${receivedBytes}`);
+    }
+    await fs.promises.rename(partPath, videoPath);
+    return videoPath;
+  } catch (error) {
+    await fs.promises.rm(partPath, { force: true }).catch(() => {});
+    await fs.promises.rm(videoPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+export class DreaminaVideoDownloadError extends Error {
+  constructor(
+    message: string,
+    readonly diagnostics: string,
+  ) {
+    super(message);
+    this.name = "DreaminaVideoDownloadError";
+  }
+}
+
+type DreaminaVideoDownloadDependencies = {
+  queryResult?: (submitId: string, downloadDir: string, poll?: number) => Promise<CliResult>;
+  downloadUrl?: (url: string, downloadDir: string) => Promise<string>;
+  validateFile?: (filePath: string) => Promise<{ bytes: number }>;
+};
+
+export async function retrieveValidatedDreaminaVideo(
+  input: { submitId: string; fallbackUrl?: string; tempRoot?: string },
+  dependencies: DreaminaVideoDownloadDependencies = {},
+) {
+  const diagnostics: string[] = [];
+  const query = dependencies.queryResult || queryResult;
+  const downloadUrl = dependencies.downloadUrl || downloadDreaminaVideoUrl;
+  const validateFile = dependencies.validateFile || validateDreaminaVideoFile;
+
+  for (let attempt = 1; attempt <= DREAMINA_VIDEO_DOWNLOAD_ATTEMPTS; attempt += 1) {
+    const downloadDir = input.tempRoot
+      ? path.join(input.tempRoot, `attempt-${attempt}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+      : tempDir("downloads", `${Date.now()}-${Math.random().toString(16).slice(2)}-attempt-${attempt}`);
+    fs.mkdirSync(downloadDir, { recursive: true });
+    try {
+      const download = await query(input.submitId, downloadDir, 120);
+      const downloadOutput = outputText(download);
+      const file = findNewestFile(downloadDir, "video");
+      const url = parseDreaminaTaskOutput(downloadOutput, input.submitId).videoUrl || input.fallbackUrl;
+      const candidate = file || (url ? await downloadUrl(url, downloadDir) : undefined);
+      if (!candidate) throw new Error("Dreamina task succeeded, but no downloadable video file or URL was returned");
+
+      const result = await validateFile(candidate);
+      diagnostics.push(`download attempt ${attempt}: accepted ${result.bytes} bytes from ${file ? "CLI file" : "official URL"}`);
+      dreaminaLog.info("Dreamina video download validated", {
+        event: "video.download.validated",
+        submitId: input.submitId,
+        attempt,
+        bytes: result.bytes,
+        source: file ? "cli_file" : "official_url",
+      });
+      return {
+        file: candidate,
+        rawOutput: `${downloadOutput}\n----- download integrity -----\n${diagnostics.join("\n")}`.trim(),
+      };
+    } catch (error) {
+      const reason = compactDownloadError(error);
+      diagnostics.push(`download attempt ${attempt}: rejected (${reason})`);
+      dreaminaLog.warn("Dreamina video download rejected", {
+        event: "video.download.rejected",
+        submitId: input.submitId,
+        attempt,
+        message: reason,
+      });
+      await fs.promises.rm(downloadDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  const diagnosticText = diagnostics.join("\n");
+  throw new DreaminaVideoDownloadError(
+    `Dreamina video result download remained incomplete after ${DREAMINA_VIDEO_DOWNLOAD_ATTEMPTS} attempts; the existing task will be polled again without regeneration. ${diagnosticText}`,
+    diagnosticText,
+  );
 }
 
 function dreaminaLogDir() {
@@ -1196,40 +1355,14 @@ async function queryVideoTask(submitId: string): Promise<DreaminaPollResult> {
     };
   }
 
-  const downloadDir = tempDir("downloads", `${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const download = await queryResult(submitId, downloadDir, 120);
-  const downloadOutput = outputText(download);
-  rawOutput = `${rawOutput}\n----- query_result download stdout/stderr -----\n${downloadOutput}`.trim();
-  const file = findNewestFile(downloadDir, "video");
-  if (file) {
-    return {
-      state: "success",
-      data: file,
-      dataType: "file",
-      rawOutput,
-      providerAccountId: evidence.providerAccountId,
-      providerCode,
-      evidence,
-      queueInfo,
-    };
-  }
-  const url = parseDreaminaTaskOutput(downloadOutput, submitId).videoUrl || queryTask.videoUrl;
-  if (url) {
-    return {
-      state: "success",
-      data: url,
-      dataType: "url",
-      rawOutput,
-      providerAccountId: evidence.providerAccountId,
-      providerCode,
-      evidence,
-      queueInfo,
-    };
-  }
+  const downloaded = await retrieveValidatedDreaminaVideo({ submitId, fallbackUrl: queryTask.videoUrl });
+  rawOutput = `${rawOutput}\n----- query_result download stdout/stderr -----\n${downloaded.rawOutput}`.trim();
   return {
-    state: "failed",
+    state: "success",
+    data: downloaded.file,
+    dataType: "file",
     rawOutput,
-    errorReason: "即梦任务成功，但未找到可下载的视频文件。",
+    providerAccountId: evidence.providerAccountId,
     providerCode,
     evidence,
     queueInfo,
@@ -1871,6 +2004,27 @@ export function discoverDreaminaMediaModels(command: (typeof MEDIA_COMMANDS)[num
   return models;
 }
 
+export function discoverDreaminaMusicModels(command: string, help: string): ToonflowModel[] {
+  const supportedFlags = extractSupportedFlags(help);
+  const commandModels = extractModelMetas(help);
+  const modelValues = commandModels.length ? commandModels : [{ id: "default", displayName: "SeedMusic" }];
+  return modelValues.map((modelMeta) => ({
+    name: `Dreamina ${command} - ${modelMeta.displayName}`,
+    modelName: `${command}:${modelMeta.id}`,
+    type: "music" as const,
+    associationSkills: `${describeMeta(command, modelMeta, false)}; type: music`,
+    durationRange: extractMusicDurationRange(help),
+    durationParameter: ["duration", "duration_sec", "seconds"].some((flagName) => supportedFlags.includes(flagName)),
+    outputFormats: [...new Set([...extractFlagValues(help, "output_format"), ...extractFlagValues(help, "format")])],
+    vocal: supportedFlags.includes("vocal_mode") || supportedFlags.includes("lyrics") ? "optional" as const : false,
+    lyrics: supportedFlags.includes("lyrics") ? "optional" as const : false,
+    referenceAudio: supportedFlags.some((flagName) => ["audio", "reference_audio", "ref_audio"].includes(flagName)) ? "optional" as const : false,
+    loop: supportedFlags.includes("loop") ? "optional" as const : false,
+    supportedFlags,
+    queueConfig: defaultVideoQueueConfig(modelMeta.concurrency || 1),
+  }));
+}
+
 async function discoverModels() {
   ensureInstalled();
   const models: ToonflowModel[] = [];
@@ -1899,27 +2053,7 @@ async function discoverModels() {
     } catch {
       continue;
     }
-    const supportedFlags = extractSupportedFlags(help);
-    const commandModels = extractModelMetas(help);
-    const modelValues = commandModels.length ? commandModels : [{ id: "default", displayName: "SeedMusic" }];
-    for (const modelMeta of modelValues) {
-      const modelValue = modelMeta.id;
-      const label = modelMeta.displayName;
-      models.push({
-        name: `Dreamina ${command} - ${label}`,
-        modelName: `${command}:${modelValue}`,
-        type: "music",
-        associationSkills: `${describeMeta(command, modelMeta, false)}; type: music`,
-        durationRange: extractMusicDurationRange(help),
-        outputFormats: [...new Set([...extractFlagValues(help, "output_format"), ...extractFlagValues(help, "format")])],
-        vocal: supportedFlags.includes("vocal_mode") || supportedFlags.includes("lyrics") ? "optional" : false,
-        lyrics: supportedFlags.includes("lyrics") ? "optional" : false,
-        referenceAudio: supportedFlags.some((flagName) => ["audio", "reference_audio", "ref_audio"].includes(flagName)) ? "optional" : false,
-        loop: supportedFlags.includes("loop") ? "optional" : false,
-        supportedFlags,
-        queueConfig: defaultVideoQueueConfig(modelMeta.concurrency || 1),
-      });
-    }
+    models.push(...discoverDreaminaMusicModels(command, help));
   }
   return models;
 }

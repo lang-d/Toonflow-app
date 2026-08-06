@@ -287,6 +287,182 @@ test("video queue migration externalizes queued Base64 and is idempotent", async
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
+test("restart recovery synchronizes terminal video queue tasks to their active unified task centers", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "toonflow-video-recovery-task-center-"));
+  const db = knexFactory({
+    client: "better-sqlite3",
+    connection: { filename: path.join(dataDir, "queue.sqlite") },
+    useNullAsDefault: true,
+  });
+  try {
+    await db.schema.createTable("o_video", (table) => {
+      table.integer("id").primary();
+      table.string("state");
+      table.string("errorReason");
+    });
+    await db.schema.createTable("o_tasks", (table) => {
+      table.integer("id").primary();
+      table.string("taskId").notNullable();
+      table.integer("projectId");
+      table.integer("scriptId");
+      table.integer("episode");
+      table.string("taskType");
+      table.string("targetType");
+      table.string("targetId");
+      table.string("nodeId");
+      table.string("status");
+      table.string("phase");
+      table.float("progress");
+      table.string("state");
+      table.text("reason");
+      table.text("resultJson");
+      table.string("leaseOwner");
+      table.integer("leaseExpiresAt");
+      table.integer("version");
+      table.integer("updateTime");
+      table.integer("finishTime");
+    });
+    await db.schema.createTable("o_taskEvent", (table) => {
+      table.increments("id").primary();
+      table.string("taskId").notNullable();
+      table.integer("legacyTaskId");
+      table.integer("version").notNullable();
+      table.string("taskType").notNullable();
+      table.integer("projectId");
+      table.integer("scriptId");
+      table.string("targetType");
+      table.string("targetId");
+      table.string("nodeId");
+      table.string("status").notNullable();
+      table.string("phase");
+      table.float("progress");
+      table.text("resultJson");
+      table.text("reason");
+      table.integer("createdAt").notNullable();
+    });
+    await db.schema.createTable("o_videoGenerationTask", (table) => {
+      table.integer("id").primary();
+      table.integer("videoId");
+      table.integer("taskCenterId");
+      table.string("model");
+      table.string("providerModelKey");
+      table.string("status");
+      table.string("phase");
+      table.string("state");
+      table.string("submitId");
+      table.string("officialTaskId");
+      table.string("historyRecordId");
+      table.integer("remoteConfirmedAt");
+      table.string("errorReason");
+      table.text("rawOutput");
+      table.integer("nextSubmitTime");
+      table.integer("nextPollTime");
+      table.integer("updateTime");
+      table.integer("finishTime");
+    });
+
+    await db("o_video").insert([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    await db("o_tasks").insert([
+      {
+        id: 1,
+        taskId: "unconfirmed-parent",
+        projectId: 1,
+        taskType: "video",
+        status: "submitting",
+        phase: "submitting",
+        state: "提交中",
+        progress: 5,
+        leaseOwner: "dead-worker",
+        leaseExpiresAt: Date.now() - 1,
+        version: 2,
+      },
+      {
+        id: 2,
+        taskId: "already-failed-parent",
+        projectId: 1,
+        taskType: "video",
+        status: "processing",
+        phase: "processing",
+        state: "进行中",
+        progress: 50,
+        version: 4,
+      },
+      {
+        id: 3,
+        taskId: "confirmed-parent",
+        projectId: 1,
+        taskType: "video",
+        status: "processing",
+        phase: "processing",
+        state: "进行中",
+        progress: 50,
+        version: 1,
+      },
+    ]);
+    await db("o_videoGenerationTask").insert([
+      {
+        id: 1,
+        videoId: 1,
+        taskCenterId: 1,
+        status: "submitting",
+        phase: "submitting",
+        state: "提交中",
+        rawOutput: "local-only",
+      },
+      {
+        id: 2,
+        videoId: 2,
+        taskCenterId: 2,
+        status: "failed",
+        phase: "failed",
+        state: "生成失败",
+        errorReason: "previous restart recovery failed this task",
+      },
+      {
+        id: 3,
+        videoId: 3,
+        taskCenterId: 3,
+        status: "processing",
+        phase: "processing",
+        state: "生成中",
+        officialTaskId: "provider-task-3",
+      },
+    ]);
+
+    await recoverVideoQueueAfterRestart(db);
+
+    const unconfirmedQueue = await db("o_videoGenerationTask").where("id", 1).first();
+    const unconfirmedParent = await db("o_tasks").where("id", 1).first();
+    assert.equal(unconfirmedQueue.status, "failed");
+    assert.equal(unconfirmedParent.status, "failed");
+    assert.equal(unconfirmedParent.phase, "failed");
+    assert.equal(unconfirmedParent.state, "生成失败");
+    assert.equal(unconfirmedParent.leaseOwner, null);
+    assert.equal(unconfirmedParent.leaseExpiresAt, null);
+    assert.ok(unconfirmedParent.finishTime);
+
+    const repairedParent = await db("o_tasks").where("id", 2).first();
+    assert.equal(repairedParent.status, "failed");
+    assert.equal(repairedParent.phase, "failed");
+    assert.equal(repairedParent.state, "生成失败");
+    assert.match(repairedParent.reason, /previous restart recovery/);
+
+    const confirmedQueue = await db("o_videoGenerationTask").where("id", 3).first();
+    const confirmedParent = await db("o_tasks").where("id", 3).first();
+    assert.equal(confirmedQueue.status, "processing");
+    assert.equal(confirmedParent.status, "processing");
+
+    const eventCountAfterRecovery = await db("o_taskEvent").whereIn("legacyTaskId", [1, 2]).count({ count: "*" }).first();
+    assert.equal(Number(eventCountAfterRecovery?.count), 2);
+    await recoverVideoQueueAfterRestart(db);
+    const eventCountAfterSecondRecovery = await db("o_taskEvent").whereIn("legacyTaskId", [1, 2]).count({ count: "*" }).first();
+    assert.equal(Number(eventCountAfterSecondRecovery?.count), 2);
+  } finally {
+    await db.destroy();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("video queue v3 restores capacity failures without resubmitting uncertain tasks", async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "toonflow-video-slots-"));
   const db = knexFactory({

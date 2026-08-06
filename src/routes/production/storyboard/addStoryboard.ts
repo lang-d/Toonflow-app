@@ -57,6 +57,8 @@ export default router.post(
     action: z.string().optional(),
     shotSize: z.string().optional(),
     cameraMove: z.string().optional(),
+    cameraAngle: z.string().optional(),
+    transitionFromPrevious: z.string().optional(),
     dialogue: z.string().optional(),
     sound: z.string().optional(),
     visibleEmotion: z.string().optional(),
@@ -90,12 +92,10 @@ export default router.post(
             action: req.body.action,
             shotSize: req.body.shotSize,
             cameraMove: req.body.cameraMove,
-            visibleEmotion: req.body.visibleEmotion,
+            cameraAngle: req.body.cameraAngle,
+            transitionFromPrevious: req.body.transitionFromPrevious,
             groupKey: req.body.groupKey,
-            groupName: req.body.groupName,
-            groupIntent: req.body.groupIntent,
             beatId: req.body.beatId,
-            characters: req.body.characters,
             dialogue: req.body.dialogueItems ?? req.body.dialogue,
             soundEffects: req.body.soundEffects ?? req.body.sound,
             requiredAssets: req.body.requiredAssets,
@@ -104,7 +104,13 @@ export default router.post(
         );
         const parsedFact = storyboardTableRowV2Schema.safeParse(factObject);
         const groupMeta = deriveStoryboardGroupMeta(
-          parsedFact.success ? { tableRowJson: JSON.stringify(parsedFact.data) } : req.body,
+          parsedFact.success
+            ? {
+                tableRowJson: JSON.stringify(parsedFact.data),
+                groupName: req.body.groupName,
+                groupIntent: req.body.groupIntent,
+              }
+            : req.body,
           index,
         );
         const musicPlan = buildTrackBgmSuggestion({
@@ -129,11 +135,11 @@ export default router.post(
         });
         const [id] = await trx("o_storyboard").insert({
           ...(parsedFact.success
-            ? storyboardRowToDbPatch(parsedFact.data, 1)
+            ? storyboardRowToDbPatch(parsedFact.data, 1, groupMeta)
             : {
                 tableRowJson: JSON.stringify(factObject),
                 factStatus: "draft",
-                factVersion: 1,
+                factVersion: 2,
                 factRevision: 1,
                 duration: String(req.body.duration),
                 videoDesc: "",
@@ -193,7 +199,7 @@ export default router.post(
           cameraMove: req.body.cameraMove || null,
           dialogue: req.body.dialogue || null,
           sound: req.body.sound || null,
-          visibleEmotion: req.body.visibleEmotion || null,
+          visibleEmotion: null,
           tableRowJson: JSON.stringify(factObject),
           factStatus: parsedFact.success ? "ready" : "draft",
           issues: parsedFact.success ? [] : parsedFact.error.issues,

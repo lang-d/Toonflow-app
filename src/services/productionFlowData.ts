@@ -8,6 +8,7 @@ import { getFullTextAssetContent } from "@/services/textAsset";
 import { VISUAL_ASSET_TYPES } from "@/services/assetTypes";
 import { getDirectorPlanGenerationState } from "@/services/directorPlanGeneration";
 import { readScriptContent } from "@/services/scriptWorkspaceText";
+import { STORYBOARD_FACT_WRITE_VERSION } from "@/services/storyboardTableContract";
 
 const ACTIVE_IMAGE_TASK_STATUSES = new Set(["queued", "submitting", "processing"]);
 
@@ -68,9 +69,28 @@ export async function readPersistedScriptPlan(projectId: number, scriptId: numbe
   return (await getFullTextAssetContent({ id: Number(asset.id), projectId })).content;
 }
 
-export async function buildProductionFlowData(projectId: number, episodesId: number) {
+export type ProductionFlowDataKey =
+  | "project"
+  | "assetAudioBindings"
+  | "script"
+  | "scriptPlan"
+  | "directorPlanGeneration"
+  | "assets"
+  | "storyboardTable"
+  | "storyboard"
+  | "storyboardGenerationLastFailure";
+
+export async function buildProductionFlowData(
+  projectId: number,
+  episodesId: number,
+  requestedKeys?: readonly ProductionFlowDataKey[],
+) {
+  const wants = (key: ProductionFlowDataKey) => !requestedKeys || requestedKeys.includes(key);
+  const wantsAssetFacts = wants("assets") || wants("assetAudioBindings");
+  const wantsStoryboard = wants("storyboard");
   const [projectData, storedWorkData, scriptData, scriptAssets] = await Promise.all([
-    u
+    wants("project")
+      ? u
       .db("o_project")
       .where("id", projectId)
       .select(
@@ -85,15 +105,18 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
         "videoRatio",
         "mode",
       )
-      .first(),
-    u
+      .first()
+      : null,
+    wants("scriptPlan")
+      ? u
       .db("o_agentWorkData")
       .where("projectId", String(projectId))
       .andWhere("episodesId", String(episodesId))
       .select("data")
-      .first(),
-    u.db("o_script").where({ projectId, id: episodesId }).first(),
-    u.db("o_scriptAssets").where("scriptId", episodesId),
+      .first()
+      : null,
+    wants("script") ? u.db("o_script").where({ projectId, id: episodesId }).first() : null,
+    wantsAssetFacts ? u.db("o_scriptAssets").where("scriptId", episodesId) : [],
   ]);
   const scriptContent = scriptData ? await readScriptContent(scriptData) : "";
   const assetIds = [...new Set(scriptAssets.map((item: any) => Number(item.assetId)).filter(Number.isFinite))];
@@ -104,7 +127,7 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
   const boundAudioAssetIds = [
     ...new Set(boundAudioRows.map((item: any) => Number(item.assetsAudioId)).filter(Number.isFinite)),
   ];
-  const assetsData = visualAssetIds.length
+  const assetsData = wants("assets") && visualAssetIds.length
     ? await u
         .db("o_assets")
         .leftJoin("o_image", "o_assets.imageId", "o_image.id")
@@ -114,7 +137,7 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
         .whereNull("o_assets.assetsId")
         .where("o_assets.projectId", projectId)
     : [];
-  const childAssetsData = visualAssetIds.length
+  const childAssetsData = wants("assets") && visualAssetIds.length
     ? await u
         .db("o_assets")
         .leftJoin("o_image", "o_assets.imageId", "o_image.id")
@@ -124,7 +147,7 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
         .whereIn("o_assets.type", VISUAL_ASSET_TYPES as unknown as string[])
         .whereNotNull("o_assets.assetsId")
     : [];
-  const audioParentRows = boundAudioAssetIds.length
+  const audioParentRows = wants("assetAudioBindings") && boundAudioAssetIds.length
     ? await u
         .db("o_assets")
         .leftJoin("o_image", "o_assets.imageId", "o_image.id")
@@ -133,7 +156,7 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
         .where("o_assets.projectId", projectId)
         .where("o_assets.type", "audio")
     : [];
-  const audioFileRows = boundAudioAssetIds.length
+  const audioFileRows = wants("assetAudioBindings") && boundAudioAssetIds.length
     ? await u
         .db("o_assets")
         .leftJoin("o_image", "o_assets.imageId", "o_image.id")
@@ -142,23 +165,25 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
         .where("o_assets.projectId", projectId)
         .where("o_assets.type", "audio")
     : [];
-  const directorAssetsRows = await u
-    .db("o_directorAsset")
-    .join("o_assets", "o_assets.id", "o_directorAsset.assetId")
-    .join("o_image", "o_image.id", "o_directorAsset.imageId")
-    .where("o_directorAsset.projectId", projectId)
-    .andWhere((query: any) => {
-      query.where("o_directorAsset.scriptId", episodesId).orWhereNull("o_directorAsset.scriptId");
-    })
-    .select(
-      "o_directorAsset.id",
-      "o_directorAsset.assetId",
-      "o_directorAsset.imageId",
-      "o_directorAsset.assetType",
-      "o_directorAsset.name",
-      "o_directorAsset.promptFragment",
-      "o_image.filePath",
-    );
+  const directorAssetsRows = requestedKeys
+    ? []
+    : await u
+        .db("o_directorAsset")
+        .join("o_assets", "o_assets.id", "o_directorAsset.assetId")
+        .join("o_image", "o_image.id", "o_directorAsset.imageId")
+        .where("o_directorAsset.projectId", projectId)
+        .andWhere((query: any) => {
+          query.where("o_directorAsset.scriptId", episodesId).orWhereNull("o_directorAsset.scriptId");
+        })
+        .select(
+          "o_directorAsset.id",
+          "o_directorAsset.assetId",
+          "o_directorAsset.imageId",
+          "o_directorAsset.assetType",
+          "o_directorAsset.name",
+          "o_directorAsset.promptFragment",
+          "o_image.filePath",
+        );
   const directorAssets = directorAssetsRows.map((item: any) => ({
     id: item.id,
     assetId: item.assetId,
@@ -245,11 +270,13 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
       }),
   );
 
-  const storyboardRows = await u
-    .db("o_storyboard")
-    .where({ projectId, scriptId: episodesId })
-    .orderBy("index", "asc")
-    .orderBy("id", "asc");
+  const storyboardRows = wantsStoryboard
+    ? await u
+        .db("o_storyboard")
+        .where({ projectId, scriptId: episodesId })
+        .orderBy("index", "asc")
+        .orderBy("id", "asc")
+    : [];
   const storyboardIds = storyboardRows.map((item: any) => Number(item.id));
   const assetLinks = storyboardIds.length
     ? await u
@@ -309,6 +336,7 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
         nodeId: imageStatus.nodeId,
         videoDesc: fact.rawVideoDesc,
         scene: fact.scene,
+        shotDescription: fact.shotDescription,
         picture: fact.picture,
         action: fact.action,
         shotSize: fact.shotSize,
@@ -326,7 +354,7 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
         tableRowJson: item.tableRowJson,
         factSource: fact.factSource,
         factStatus: fact.factStatus,
-        factVersion: item.factVersion || 1,
+        factVersion: fact.factVersion ?? item.factVersion ?? 1,
         groupKey: fact.groupKey,
         groupName: fact.groupName,
         groupIntent: fact.groupIntent,
@@ -339,18 +367,25 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
       };
     }),
   );
-  const rendered = await renderStoryboardTableFromRows(projectId, episodesId);
-  const latestGenerationFailure = await u
-    .db("o_storyboardGeneration")
-    .where({ projectId, scriptId: episodesId })
-    .whereIn("state", ["invalid", "failed"])
-    .orderBy("updatedAt", "desc")
-    .first("generationId", "state", "expectedRowCount", "errorJson", "updatedAt");
+  const rendered = wants("storyboardTable")
+    ? await renderStoryboardTableFromRows(projectId, episodesId)
+    : { content: "", meta: null };
+  const latestGenerationFailure = wants("storyboardGenerationLastFailure")
+    ? await u
+        .db("o_storyboardGeneration")
+        .where({ projectId, scriptId: episodesId })
+        .whereIn("state", ["invalid", "failed"])
+        .orderBy("updatedAt", "desc")
+        .first("generationId", "state", "expectedRowCount", "errorJson", "updatedAt")
+    : null;
   const stored = parseStoredWorkData(storedWorkData?.data) as any;
-  const persistedScriptPlan = await readPersistedScriptPlan(projectId, episodesId);
-  const directorPlanGeneration = await getDirectorPlanGenerationState(projectId, episodesId);
+  const persistedScriptPlan = wants("scriptPlan") ? await readPersistedScriptPlan(projectId, episodesId) : "";
+  const directorPlanGeneration = wants("directorPlanGeneration")
+    ? await getDirectorPlanGenerationState(projectId, episodesId)
+    : null;
   return {
     ...stored,
+    storyboardFactWriteVersion: STORYBOARD_FACT_WRITE_VERSION,
     project: projectData
       ? {
           id: projectData.id,
@@ -385,4 +420,13 @@ export async function buildProductionFlowData(projectId: number, episodesId: num
     directorAssets,
     workbench: stored.workbench || { videoList: [] },
   };
+}
+
+export async function buildProductionFlowDataKey(
+  projectId: number,
+  episodesId: number,
+  key: ProductionFlowDataKey,
+) {
+  const flowData = await buildProductionFlowData(projectId, episodesId, [key]);
+  return flowData[key];
 }

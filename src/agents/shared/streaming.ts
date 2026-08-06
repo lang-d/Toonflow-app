@@ -47,6 +47,36 @@ export type ConsumeFullStreamOptions = {
   maxToolInputBytes?: number;
   projectId?: number | string;
   scriptId?: number | string;
+  completion?: Promise<AgentModelCompletion | null>;
+};
+
+export type AgentModelCompletion = {
+  finishReason?: unknown;
+  usage?: {
+    inputTokens?: unknown;
+    outputTokens?: unknown;
+    totalTokens?: unknown;
+  } | null;
+};
+
+export type AgentToolResult = {
+  toolCallId: string | null;
+  toolName: string | null;
+  success: boolean;
+  result: unknown;
+};
+
+export type AgentTurnResult = {
+  text: string;
+  state: "finished" | "interrupted" | "aborted" | "failed";
+  finishReason: string;
+  usage: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    totalTokens: number | null;
+  };
+  toolCalls: Array<{ toolCallId: string | null; toolName: string | null }>;
+  toolResults: AgentToolResult[];
 };
 
 export type AgentModelStreamScope = {
@@ -161,7 +191,51 @@ async function nextChunk<T>(
   }
 }
 
-export async function consumeFullStream(options: ConsumeFullStreamOptions): Promise<string> {
+function finiteToken(value: unknown) {
+  const token = Number(value);
+  return Number.isFinite(token) && token >= 0 ? token : null;
+}
+
+function turnResult(input: {
+  text: string;
+  state: AgentTurnResult["state"];
+  completion?: AgentModelCompletion | null;
+  toolCalls: AgentTurnResult["toolCalls"];
+  toolResults: AgentToolResult[];
+}): AgentTurnResult {
+  const usage = input.completion?.usage;
+  return {
+    text: input.text,
+    state: input.state,
+    finishReason:
+      typeof input.completion?.finishReason === "string"
+        ? input.completion.finishReason
+        : input.state === "finished"
+          ? "unknown"
+          : input.state,
+    usage: {
+      inputTokens: finiteToken(usage?.inputTokens),
+      outputTokens: finiteToken(usage?.outputTokens),
+      totalTokens: finiteToken(usage?.totalTokens),
+    },
+    toolCalls: input.toolCalls,
+    toolResults: input.toolResults,
+  };
+}
+
+function attachTurnResult(error: unknown, result: AgentTurnResult) {
+  if (error && typeof error === "object") {
+    Object.defineProperty(error, "agentTurnResult", { value: result, configurable: true });
+  }
+}
+
+export function agentTurnResultFromError(error: unknown): AgentTurnResult | null {
+  const result = (error as { agentTurnResult?: unknown } | null)?.agentTurnResult;
+  if (!result || typeof result !== "object") return null;
+  return result as AgentTurnResult;
+}
+
+export async function consumeAgentTurn(options: ConsumeFullStreamOptions): Promise<AgentTurnResult> {
   const idleTimeoutMs = options.idleTimeoutMs ?? AGENT_STREAM_IDLE_TIMEOUT_MS;
   const maxDurationMs = options.maxDurationMs ?? AGENT_STREAM_MAX_DURATION_MS;
   const maxToolInputBytes = options.maxToolInputBytes ?? AGENT_STREAM_MAX_TOOL_INPUT_BYTES;
@@ -177,6 +251,8 @@ export async function consumeFullStream(options: ConsumeFullStreamOptions): Prom
   let chunkCount = 0;
   let toolInputChunkCount = 0;
   let toolInputBytes = 0;
+  const toolCalls: AgentTurnResult["toolCalls"] = [];
+  const toolResults: AgentToolResult[] = [];
   const startedAt = Date.now();
 
   const logContext = {
@@ -256,6 +332,7 @@ export async function consumeFullStream(options: ConsumeFullStreamOptions): Prom
       if (chunk.type === "tool-call") {
         const toolCallId = getToolCallId(chunk);
         if (toolCallId) activeToolCallIds.add(toolCallId);
+        toolCalls.push({ toolCallId: toolCallId ?? null, toolName: getToolName(chunk) ?? null });
         setPhase("tool-running", chunk);
       } else if (
         chunk.type === "tool-result" ||
@@ -264,6 +341,12 @@ export async function consumeFullStream(options: ConsumeFullStreamOptions): Prom
       ) {
         const toolCallId = getToolCallId(chunk);
         if (toolCallId) activeToolCallIds.delete(toolCallId);
+        toolResults.push({
+          toolCallId: toolCallId ?? null,
+          toolName: getToolName(chunk) ?? null,
+          success: chunk.type === "tool-result",
+          result: chunk?.output ?? chunk?.result ?? chunk?.error ?? null,
+        });
         if (activeToolCallIds.size === 0) setPhase("model-streaming", chunk);
       }
 
@@ -313,6 +396,10 @@ export async function consumeFullStream(options: ConsumeFullStreamOptions): Prom
         toolInputBytes,
         durationMs: Date.now() - startedAt,
       });
+      attachTurnResult(
+        err,
+        turnResult({ text: fullResponse, state: "interrupted", completion: { finishReason: "limit" }, toolCalls, toolResults }),
+      );
       throw err;
     }
 
@@ -334,6 +421,16 @@ export async function consumeFullStream(options: ConsumeFullStreamOptions): Prom
         chunkCount,
         durationMs: Date.now() - startedAt,
       });
+      attachTurnResult(
+        timeoutError,
+        turnResult({
+          text: fullResponse,
+          state: "interrupted",
+          completion: { finishReason: "idle-timeout" },
+          toolCalls,
+          toolResults,
+        }),
+      );
       throw timeoutError;
     }
 
@@ -348,6 +445,10 @@ export async function consumeFullStream(options: ConsumeFullStreamOptions): Prom
         chunkCount,
         durationMs: Date.now() - startedAt,
       });
+      attachTurnResult(
+        err,
+        turnResult({ text: fullResponse, state: "aborted", completion: { finishReason: "abort" }, toolCalls, toolResults }),
+      );
       throw err;
     }
 
@@ -364,8 +465,21 @@ export async function consumeFullStream(options: ConsumeFullStreamOptions): Prom
       durationMs: Date.now() - startedAt,
       error: err,
     });
+    attachTurnResult(
+      err,
+      turnResult({ text: fullResponse, state: "failed", completion: { finishReason: "error" }, toolCalls, toolResults }),
+    );
     throw err;
   }
 
-  return fullResponse;
+  const completion = options.completion ? await options.completion.catch(() => null) : null;
+  return turnResult({ text: fullResponse, state: "finished", completion, toolCalls, toolResults });
+}
+
+/**
+ * Compatibility wrapper for agents that have not migrated to the structured
+ * Production Agent turn loop yet.
+ */
+export async function consumeFullStream(options: ConsumeFullStreamOptions): Promise<string> {
+  return (await consumeAgentTurn(options)).text;
 }

@@ -61,17 +61,22 @@ const videoModel = {
   durationResolutionMap: [{ duration: [3, 5, 10, 18], resolution: ["480p", "720p", "1080p"] }],
 };
 
-test("Agnes text model uses the OpenAI-compatible chat endpoint", () => {
+test("Agnes text models expose official metadata and use the OpenAI-compatible chat endpoint", () => {
   const runtime = loadVendor([]);
-  const result = runtime.exports.textRequest(
+  runtime.exports.vendor.inputValues.baseUrl = "https://agnes.example.test///";
+  const textModels = runtime.exports.vendor.models.filter((model: any) => model.type === "text");
+  assert.deepEqual(textModels, [
     { name: "Agnes 2.0 Flash", modelName: "agnes-2.0-flash", type: "text", think: false },
-    false,
-    0,
-  );
+    { name: "Agnes 2.5 Flash", modelName: "agnes-2.5-flash", type: "text", think: false },
+    { name: "Agnes 2.5 Pro Alpha", modelName: "agnes-2.5-pro-alpha", type: "text", think: true },
+  ]);
 
-  assert.equal(result.modelName, "agnes-2.0-flash");
-  assert.equal(result.options.baseURL, "https://apihub.agnes-ai.com/v1");
-  assert.equal(result.options.apiKey, "test-key");
+  for (const model of textModels) {
+    const result = runtime.exports.textRequest(model, model.think, 0);
+    assert.equal(result.modelName, model.modelName);
+    assert.equal(result.options.baseURL, "https://agnes.example.test/v1");
+    assert.equal(result.options.apiKey, "test-key");
+  }
 });
 
 test("Agnes image text-to-image requests base64 output", async () => {

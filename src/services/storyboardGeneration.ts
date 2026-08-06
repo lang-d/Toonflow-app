@@ -2,12 +2,13 @@ import crypto from "node:crypto";
 import u from "@/utils";
 import {
   assetIdsFromStoryboardRow,
+  parseStoryboardTableRow,
   StoryboardGroupPlanV2,
   StoryboardTableIssue,
-  StoryboardTableRowV2,
+  StoryboardTableRowV3,
   storyboardGroupPlanV2Schema,
   storyboardRowToDbPatch,
-  storyboardTableRowV2Schema,
+  storyboardTableRowV3Schema,
   validateStoryboardTableRows,
 } from "@/services/storyboardTableContract";
 import { fallbackGroupKey, syncVideoTracksForStoryboards } from "@/services/storyboardGroupPlanner";
@@ -32,7 +33,7 @@ export interface BeginStoryboardGenerationInput {
 export interface AppendStoryboardRowsInput {
   generationId: string;
   startIndex: number;
-  rows: StoryboardTableRowV2[];
+  rows: StoryboardTableRowV3[];
 }
 
 export interface ReadStoryboardGenerationDraftInput {
@@ -52,7 +53,16 @@ export type StoryboardGenerationFailure = {
 };
 
 export type CommitStoryboardGenerationResult =
-  | { status: "committed"; rowCount: number; groupCount: number; revision: number; repairs?: StoryboardGroupKeyRepair[] }
+  | {
+      status: "committed";
+      rowCount: number;
+      groupCount: number;
+      revision: number;
+      previousRevision: number | null;
+      previousRowCount: number;
+      previousGroupCount: number;
+      repairs?: StoryboardGroupKeyRepair[];
+    }
   | { status: "invalid"; issues: StoryboardTableIssue[]; repairs?: StoryboardGroupKeyRepair[] }
   | { status: "failed"; error: StoryboardGenerationFailure };
 
@@ -68,6 +78,37 @@ export type StoryboardGroupKeyRepair = {
 type StoredStoryboardGroupPlan = StoryboardGroupPlanV2 & {
   originalGroupKey?: string;
   groupKeyAliases?: string[];
+};
+
+export interface InspectStoryboardTableChangeInput {
+  projectId: number;
+  scriptId: number;
+  generationId?: string;
+  compareToGenerationId?: string;
+}
+
+type StoryboardIndexRange = {
+  indexes: number[];
+  min: number | null;
+  max: number | null;
+  contiguous: boolean;
+};
+
+type CommittedStoryboardGenerationSnapshot = {
+  generationId: string;
+  revision: number;
+  expectedRowCount: number;
+  rowCount: number;
+  groupCount: number;
+  groupKeys: string[];
+  indexRange: StoryboardIndexRange;
+  rows: StoryboardTableRowV3[];
+};
+
+type PreviousStoryboardFacts = {
+  previousRevision: number | null;
+  previousRowCount: number;
+  previousGroupCount: number;
 };
 
 function storyboardCommitScopeKey(projectId: unknown, scriptId: unknown) {
@@ -130,7 +171,7 @@ function buildGroupAliasMap(groups: StoredStoryboardGroupPlan[]) {
   return map;
 }
 
-function normalizeRowsWithStoredGroupPlan(rows: StoryboardTableRowV2[], groups: StoredStoryboardGroupPlan[]) {
+function normalizeRowsWithStoredGroupPlan(rows: StoryboardTableRowV3[], groups: StoredStoryboardGroupPlan[]) {
   const groupMap = buildGroupAliasMap(groups);
   return rows.map((row) => {
     const group = groupMap.get(row.groupKey);
@@ -138,8 +179,6 @@ function normalizeRowsWithStoredGroupPlan(rows: StoryboardTableRowV2[], groups: 
       ? {
           ...row,
           groupKey: group.groupKey,
-          groupName: group.groupName,
-          groupIntent: group.groupIntent,
         }
       : row;
   });
@@ -161,7 +200,7 @@ function buildUniqueGroupByStoryboardIndex(groups: StoredStoryboardGroupPlan[]) 
   return uniqueOwners;
 }
 
-function repairRowsWithStoryboardIndexOwners(rows: StoryboardTableRowV2[], groups: StoredStoryboardGroupPlan[]) {
+function repairRowsWithStoryboardIndexOwners(rows: StoryboardTableRowV3[], groups: StoredStoryboardGroupPlan[]) {
   const uniqueOwners = buildUniqueGroupByStoryboardIndex(groups);
   const repairs: StoryboardGroupKeyRepair[] = [];
   const repairedRows = rows.map((row) => {
@@ -178,8 +217,6 @@ function repairRowsWithStoryboardIndexOwners(rows: StoryboardTableRowV2[], group
     return {
       ...row,
       groupKey: group.groupKey,
-      groupName: group.groupName,
-      groupIntent: group.groupIntent,
     };
   });
   return { rows: repairedRows, repairs };
@@ -403,7 +440,7 @@ export async function appendStoryboardRows(input: AppendStoryboardRowsInput, kne
   const groups = parseStoredStoryboardGroupPlans(generation.groupPlanJson);
   const normalizedGroupPlanJson = groupPlanJson(groups);
   const rows = normalizeRowsWithStoredGroupPlan(
-    input.rows.map((row) => storyboardTableRowV2Schema.parse(row)),
+    input.rows.map((row) => storyboardTableRowV3Schema.parse(row)),
     groups,
   );
   const issues = validateStoryboardTableRows(rows);
@@ -465,7 +502,7 @@ export async function appendStoryboardRows(input: AppendStoryboardRowsInput, kne
     let existingHash = existing?.rowHash;
     if (existing?.rowJson) {
       try {
-        const existingRow = storyboardTableRowV2Schema.parse(JSON.parse(existing.rowJson));
+        const existingRow = storyboardTableRowV3Schema.parse(JSON.parse(existing.rowJson));
         const [normalizedExistingRow] = normalizeRowsWithStoredGroupPlan([existingRow], groups);
         existingHash = rowHash(JSON.stringify(normalizedExistingRow));
       } catch {
@@ -522,7 +559,7 @@ export async function appendStoryboardRows(input: AppendStoryboardRowsInput, kne
   };
 }
 
-async function validateAssets(knex: any, projectId: number, rows: StoryboardTableRowV2[]) {
+async function validateAssets(knex: any, projectId: number, rows: StoryboardTableRowV3[]) {
   const ids = [...new Set(rows.flatMap(assetIdsFromStoryboardRow))];
   if (!ids.length) return [] as StoryboardTableIssue[];
   const assets = await knex("o_assets").whereIn("id", ids).select("id", "projectId");
@@ -541,7 +578,7 @@ async function validateAssets(knex: any, projectId: number, rows: StoryboardTabl
 }
 
 function validateGroups(
-  rows: StoryboardTableRowV2[],
+  rows: StoryboardTableRowV3[],
   groups: StoryboardGroupPlanV2[],
   durationPolicy?: VideoDurationPolicy,
 ) {
@@ -690,6 +727,178 @@ export function storyboardValidationDecisionSummary(generationId: string, result
   };
 }
 
+function storyboardIndexes(rows: Array<{ index: number }>) {
+  return rows.map((row) => Number(row.index)).sort((a, b) => a - b);
+}
+
+function storyboardIndexRange(indexes: number[]): StoryboardIndexRange {
+  return {
+    indexes,
+    min: indexes.length ? indexes[0] : null,
+    max: indexes.length ? indexes[indexes.length - 1] : null,
+    contiguous: indexes.every((value, index) => value === index),
+  };
+}
+
+async function readCommittedGenerationSnapshot(
+  knex: any,
+  generation: any,
+): Promise<CommittedStoryboardGenerationSnapshot> {
+  const storedRows = await knex("o_storyboardGenerationRow")
+    .where({ generationId: generation.generationId })
+    .orderBy("rowIndex", "asc");
+  const groups = parseStoredStoryboardGroupPlans(generation.groupPlanJson);
+  let rows = storedRows.map((stored: any) => storyboardTableRowV3Schema.parse(JSON.parse(stored.rowJson)));
+  rows = repairRowsWithStoryboardIndexOwners(rows, groups).rows;
+  rows = normalizeRowsWithStoredGroupPlan(rows, groups).sort((a, b) => a.index - b.index);
+  const indexes = storyboardIndexes(rows);
+  return {
+    generationId: String(generation.generationId),
+    revision: Number(generation.revision || 0),
+    expectedRowCount: Number(generation.expectedRowCount || 0),
+    rowCount: rows.length,
+    groupCount: groups.length,
+    groupKeys: groups.map((group) => group.groupKey),
+    indexRange: storyboardIndexRange(indexes),
+    rows,
+  };
+}
+
+function storyboardChangedFields(baseline: Record<string, unknown>, target: Record<string, unknown>) {
+  return [...new Set([...Object.keys(baseline), ...Object.keys(target)])]
+    .filter((field) => JSON.stringify(baseline[field]) !== JSON.stringify(target[field]))
+    .sort();
+}
+
+export async function inspectStoryboardTableChange(
+  input: InspectStoryboardTableChangeInput,
+  knex: any = u.db,
+) {
+  let targetQuery = knex("o_storyboardGeneration").where({
+    projectId: input.projectId,
+    scriptId: input.scriptId,
+    state: "committed",
+  });
+  if (input.generationId) targetQuery = targetQuery.andWhere("generationId", input.generationId);
+  else targetQuery = targetQuery.orderBy("revision", "desc").orderBy("updatedAt", "desc");
+  const targetGeneration = await targetQuery.first();
+  if (!targetGeneration) throw new Error("committed storyboard generation not found in the current project and script");
+
+  let baselineGeneration: any = null;
+  if (input.compareToGenerationId) {
+    baselineGeneration = await knex("o_storyboardGeneration")
+      .where({
+        projectId: input.projectId,
+        scriptId: input.scriptId,
+        generationId: input.compareToGenerationId,
+        state: "committed",
+      })
+      .first();
+    if (!baselineGeneration) {
+      throw new Error("comparison storyboard generation not found in the current project and script");
+    }
+  } else {
+    baselineGeneration = await knex("o_storyboardGeneration")
+      .where({ projectId: input.projectId, scriptId: input.scriptId, state: "committed" })
+      .whereNot({ generationId: targetGeneration.generationId })
+      .andWhere("revision", "<", Number(targetGeneration.revision || Number.MAX_SAFE_INTEGER))
+      .orderBy("revision", "desc")
+      .orderBy("updatedAt", "desc")
+      .first();
+  }
+
+  const target = await readCommittedGenerationSnapshot(knex, targetGeneration);
+  const baseline = baselineGeneration ? await readCommittedGenerationSnapshot(knex, baselineGeneration) : null;
+  const formalRows = await knex("o_storyboard")
+    .where({ projectId: input.projectId, scriptId: input.scriptId })
+    .orderBy("index", "asc")
+    .select("index", "groupKey", "factRevision", "tableRowJson");
+  const formalParsedRows: Array<{ index: number; row: ReturnType<typeof parseStoryboardTableRow> }> = formalRows.map(
+    (stored: any) => ({
+      index: Number(stored.index),
+      row: parseStoryboardTableRow(stored.tableRowJson),
+    }),
+  );
+  const formalIndexes = formalParsedRows.map((item) => item.index).sort((a, b) => a - b);
+  const formalRevisionValues = [...new Set(formalRows.map((row: any) => Number(row.factRevision || 0)))];
+  const formalRevision = formalRevisionValues.length === 1 ? formalRevisionValues[0] : null;
+  const formalGroupKeys = [...new Set(formalRows.map((row: any) => String(row.groupKey || "")).filter(Boolean))];
+  const targetRowsByIndex = new Map(target.rows.map((row) => [row.index, row]));
+  const formalMatchesTarget =
+    formalRevision === target.revision &&
+    formalParsedRows.length === target.rowCount &&
+    formalParsedRows.every((item) => {
+      const targetRow = targetRowsByIndex.get(item.index);
+      return Boolean(item.row && targetRow && JSON.stringify(item.row) === JSON.stringify(targetRow));
+    });
+
+  let diff: null | {
+    addedIndexes: number[];
+    missingIndexes: number[];
+    changedRows: Array<{ index: number; fields: string[] }>;
+    unchangedCount: number;
+    addedGroupKeys: string[];
+    removedGroupKeys: string[];
+  } = null;
+  if (baseline) {
+    const baselineRows = new Map(baseline.rows.map((row) => [row.index, row]));
+    const targetRows = new Map(target.rows.map((row) => [row.index, row]));
+    const addedIndexes = target.indexRange.indexes.filter((index) => !baselineRows.has(index));
+    const missingIndexes = baseline.indexRange.indexes.filter((index) => !targetRows.has(index));
+    const changedRows: Array<{ index: number; fields: string[] }> = [];
+    let unchangedCount = 0;
+    for (const index of target.indexRange.indexes) {
+      const before = baselineRows.get(index);
+      const after = targetRows.get(index);
+      if (!before || !after) continue;
+      const fields = storyboardChangedFields(before, after);
+      if (fields.length) changedRows.push({ index, fields });
+      else unchangedCount += 1;
+    }
+    diff = {
+      addedIndexes,
+      missingIndexes,
+      changedRows,
+      unchangedCount,
+      addedGroupKeys: target.groupKeys.filter((groupKey) => !baseline.groupKeys.includes(groupKey)),
+      removedGroupKeys: baseline.groupKeys.filter((groupKey) => !target.groupKeys.includes(groupKey)),
+    };
+  }
+
+  return {
+    target: { ...target, rows: undefined },
+    baseline: baseline ? { ...baseline, rows: undefined } : null,
+    formal: {
+      revision: formalRevision,
+      revisionValues: formalRevisionValues,
+      rowCount: formalRows.length,
+      groupCount: formalGroupKeys.length,
+      groupKeys: formalGroupKeys,
+      indexRange: storyboardIndexRange(formalIndexes),
+      matchesTargetGeneration: formalMatchesTarget,
+    },
+    diff,
+  };
+}
+
+async function readPreviousFormalFactsForCommittedGeneration(
+  knex: any,
+  generation: any,
+): Promise<PreviousStoryboardFacts> {
+  const previous = await knex("o_storyboardGeneration")
+    .where({ projectId: generation.projectId, scriptId: generation.scriptId, state: "committed" })
+    .whereNot({ generationId: generation.generationId })
+    .andWhere("revision", "<", Number(generation.revision || Number.MAX_SAFE_INTEGER))
+    .orderBy("revision", "desc")
+    .orderBy("updatedAt", "desc")
+    .first();
+  return {
+    previousRevision: previous ? Number(previous.revision || 0) : null,
+    previousRowCount: previous ? Number(previous.expectedRowCount || 0) : 0,
+    previousGroupCount: previous ? parseStoredStoryboardGroupPlans(previous.groupPlanJson).length : 0,
+  };
+}
+
 export async function commitStoryboardGeneration(
   generationId: string,
   knex: any = u.db,
@@ -697,11 +906,14 @@ export async function commitStoryboardGeneration(
   let generation = await knex("o_storyboardGeneration").where({ generationId }).first();
   if (!generation) throw new Error("storyboard generation does not exist");
 
-  const committedResult = (row: any) => ({
-    status: "committed" as const,
+  const committedResult = async (
+    row: any,
+  ): Promise<Extract<CommitStoryboardGenerationResult, { status: "committed" }>> => ({
+    status: "committed",
     rowCount: Number(row.expectedRowCount),
-    groupCount: JSON.parse(row.groupPlanJson || "[]").length,
+    groupCount: parseStoredStoryboardGroupPlans(row.groupPlanJson).length,
     revision: Number(row.revision || 1),
+    ...(await readPreviousFormalFactsForCommittedGeneration(knex, row)),
   });
 
   const failedResult = (error: StoryboardGenerationFailure): CommitStoryboardGenerationResult => ({
@@ -788,11 +1000,11 @@ export async function commitStoryboardGeneration(
     try {
       generation = await knex("o_storyboardGeneration").where({ generationId }).first();
       const draftRows = await knex("o_storyboardGenerationRow").where({ generationId }).orderBy("rowIndex", "asc");
-      let rows: StoryboardTableRowV2[] = [];
+      let rows: StoryboardTableRowV3[] = [];
       const parseIssues: StoryboardTableIssue[] = [];
       for (const draft of draftRows) {
         try {
-          rows.push(storyboardTableRowV2Schema.parse(JSON.parse(draft.rowJson)));
+          rows.push(storyboardTableRowV3Schema.parse(JSON.parse(draft.rowJson)));
         } catch (error: any) {
           parseIssues.push(generationIssue(`row.${draft.rowIndex}`, error?.message || "invalid row JSON"));
         }
@@ -839,9 +1051,16 @@ export async function commitStoryboardGeneration(
         .max({ revision: "factRevision" })
         .first();
       const revision = Number(revisionRow?.revision || 0) + 1;
-      const existingIds = (
-        await knex("o_storyboard").where({ projectId: generation.projectId, scriptId: generation.scriptId }).select("id")
-      ).map((row: any) => Number(row.id));
+      const existingRows = await knex("o_storyboard")
+        .where({ projectId: generation.projectId, scriptId: generation.scriptId })
+        .select("id", "factRevision", "groupKey");
+      const existingIds = existingRows.map((row: any) => Number(row.id));
+      const previousRevisionValues = [...new Set(existingRows.map((row: any) => Number(row.factRevision || 0)))];
+      const previousFacts: PreviousStoryboardFacts = {
+        previousRevision: previousRevisionValues.length === 1 ? Number(previousRevisionValues[0]) : null,
+        previousRowCount: existingRows.length,
+        previousGroupCount: new Set(existingRows.map((row: any) => String(row.groupKey || "")).filter(Boolean)).size,
+      };
       const hasArchivedColumn = await knex.schema.hasColumn("o_videoTrack", "archived");
 
       await knex.transaction(async (trx: any) => {
@@ -856,8 +1075,9 @@ export async function commitStoryboardGeneration(
         }
 
         for (const row of rows) {
+          const group = groups.find((item) => item.groupKey === row.groupKey);
           const [id] = await trx("o_storyboard").insert({
-            ...storyboardRowToDbPatch(row, revision),
+            ...storyboardRowToDbPatch(row, revision, group),
             projectId: generation.projectId,
             scriptId: generation.scriptId,
             index: row.index,
@@ -930,6 +1150,7 @@ export async function commitStoryboardGeneration(
         rowCount: rows.length,
         groupCount: groups.length,
         revision,
+        ...previousFacts,
         ...(repairs.length ? { repairs } : {}),
       };
     } catch (error) {
@@ -979,11 +1200,11 @@ async function commitStoryboardGenerationUnsafe(generationId: string, knex: any 
   try {
   generation = await knex("o_storyboardGeneration").where({ generationId }).first();
   const draftRows = await knex("o_storyboardGenerationRow").where({ generationId }).orderBy("rowIndex", "asc");
-  const rows: StoryboardTableRowV2[] = [];
+  const rows: StoryboardTableRowV3[] = [];
   const parseIssues: StoryboardTableIssue[] = [];
   for (const draft of draftRows) {
     try {
-      rows.push(storyboardTableRowV2Schema.parse(JSON.parse(draft.rowJson)));
+      rows.push(storyboardTableRowV3Schema.parse(JSON.parse(draft.rowJson)));
     } catch (error: any) {
       parseIssues.push(generationIssue(`row.${draft.rowIndex}`, error?.message || "invalid row JSON"));
     }
@@ -1030,8 +1251,9 @@ async function commitStoryboardGenerationUnsafe(generationId: string, knex: any 
     }
 
     for (const row of rows) {
+      const group = groups.find((item: StoredStoryboardGroupPlan) => item.groupKey === row.groupKey);
       const [id] = await trx("o_storyboard").insert({
-        ...storyboardRowToDbPatch(row, revision),
+        ...storyboardRowToDbPatch(row, revision, group),
         projectId: generation.projectId,
         scriptId: generation.scriptId,
         index: row.index,

@@ -39,6 +39,7 @@ import {
   musicProjectIsolationKey,
 } from "@/services/musicScope";
 import { listAvailableMusicModels } from "@/services/musicModelCapability";
+import { getProjectDefaultMusicModel } from "@/services/musicModelSelection";
 import { readMusicModelProfile } from "@/services/musicCueCompiler";
 import type { AgentRunContext } from "@/services/agentRun";
 
@@ -189,9 +190,12 @@ async function latestPlan(projectId: number, mode: MusicScopeMode, scriptId?: nu
 
 export default function useMusicProductionTools(config: MusicToolConfig) {
   const list_available_music_models = tool({
-    description: "List actual enabled music models. `model` is the only executable vendor:modelName key; `name` is display text only. Read this before choosing a model-specific prompt compiler.",
+    description: "List actual enabled music models and this project's defaultModel. `model` is the only executable vendor:modelName key; `name` is display text only.",
     inputSchema: jsonSchema<Record<string, never>>(z.object({}).toJSONSchema()),
-    execute: async () => ({ models: await listAvailableMusicModels() }),
+    execute: async () => ({
+      defaultModel: await getProjectDefaultMusicModel(projectIdFrom(config.resTool)),
+      models: await listAvailableMusicModels(),
+    }),
   });
 
   const read_music_model_profile = tool({
@@ -329,9 +333,9 @@ export default function useMusicProductionTools(config: MusicToolConfig) {
   });
 
   const compile_music_cue_prompt = tool({
-    description: "Create an async task to compile a cue into a model-friendly music prompt. `model` must be the exact vendor:modelName value from list_available_music_models, never its display name.",
-    inputSchema: jsonSchema<{ cueId: number; model: string; instruction?: string }>(
-      z.object({ cueId: z.number(), model: z.string(), instruction: z.string().optional() }).toJSONSchema(),
+    description: "Create an async task to compile a cue for an exact music model. Pass an explicit vendor:modelName when the user selected one; otherwise the project default is used.",
+    inputSchema: jsonSchema<{ cueId: number; model?: string; instruction?: string }>(
+      z.object({ cueId: z.number(), model: z.string().optional(), instruction: z.string().optional() }).toJSONSchema(),
     ),
     execute: async ({ cueId, model, instruction }) => {
       const scope = thinking(config, "Creating cue prompt compile task");
@@ -355,8 +359,8 @@ export default function useMusicProductionTools(config: MusicToolConfig) {
   });
 
   const compile_model_music_prompt = tool({
-    description: "Queue model-specific prompt compilation for an exact enabled vendor:model key from list_available_music_models. Do not pass the display-only name field.",
-    inputSchema: jsonSchema<any>(z.object({ targetType: z.enum(["cue", "edition"]), cueId: z.number().optional(), editionId: z.number().optional(), model: z.string().min(1), instruction: z.string().optional(), effectiveMusicDurationSec: z.number().optional(), requestedDurationSec: z.number().optional(), lyricsVersionId: z.number().nullable().optional() }).toJSONSchema()),
+    description: "Queue model-specific prompt compilation. Pass an exact enabled vendor:model key when explicitly selected; otherwise the project default is used.",
+    inputSchema: jsonSchema<any>(z.object({ targetType: z.enum(["cue", "edition"]), cueId: z.number().optional(), editionId: z.number().optional(), model: z.string().min(1).optional(), instruction: z.string().optional(), effectiveMusicDurationSec: z.number().optional(), requestedDurationSec: z.number().optional(), lyricsVersionId: z.number().nullable().optional() }).toJSONSchema()),
     execute: async (input) => {
       const projectId = projectIdFrom(config.resTool);
       if (input.targetType === "cue") {
@@ -418,23 +422,25 @@ export default function useMusicProductionTools(config: MusicToolConfig) {
   });
 
   const generate_music_cue_audio = tool({
-    description: "Create an async task to generate audio for a cue. The final audio must be fetched from cue list after task completion.",
-    inputSchema: jsonSchema<{ cueId: number; promptVersionId: number; select?: boolean; acknowledgeWarnings?: boolean }>(
+    description: "Create an async task to generate cue audio with the explicit model or the project default. The prompt version's historical model does not select the execution endpoint.",
+    inputSchema: jsonSchema<{ cueId: number; promptVersionId: number; model?: string; select?: boolean; acknowledgeWarnings?: boolean }>(
       z
         .object({
           cueId: z.number(),
           promptVersionId: z.number(),
+          model: z.string().min(1).optional(),
           select: z.boolean().optional(),
           acknowledgeWarnings: z.boolean().optional(),
         })
         .toJSONSchema(),
     ),
-    execute: async ({ cueId, promptVersionId, select, acknowledgeWarnings }) => {
+    execute: async ({ cueId, promptVersionId, model, select, acknowledgeWarnings }) => {
       const scope = thinking(config, "Creating cue audio generation task");
       const result = await queueMusicCueGenerate({
         projectId: projectIdFrom(config.resTool),
         cueId,
         promptVersionId,
+        model,
         select,
         acknowledgeWarnings,
       });
@@ -561,8 +567,8 @@ export default function useMusicProductionTools(config: MusicToolConfig) {
   });
 
   const compile_music_library_prompt = tool({
-    description: "Queue model-specific prompt compilation for a project music edition and persist the resulting prompt version.",
-    inputSchema: jsonSchema<any>(z.object({ editionId: z.number(), model: z.string(), instruction: z.string().optional(), effectiveMusicDurationSec: z.number().optional(), requestedDurationSec: z.number().optional(), lyricsVersionId: z.number().nullable().optional() }).toJSONSchema()),
+    description: "Queue model-specific prompt compilation for a project music edition. Pass an explicit vendor:modelName or use the project default.",
+    inputSchema: jsonSchema<any>(z.object({ editionId: z.number(), model: z.string().min(1).optional(), instruction: z.string().optional(), effectiveMusicDurationSec: z.number().optional(), requestedDurationSec: z.number().optional(), lyricsVersionId: z.number().nullable().optional() }).toJSONSchema()),
     execute: async (input) => queueTaskResult(config, queueMusicLibraryCompilePrompt({ projectId: projectIdFrom(config.resTool), ...input })),
   });
 
@@ -585,8 +591,8 @@ export default function useMusicProductionTools(config: MusicToolConfig) {
   });
 
   const generate_music_library_audio = tool({
-    description: "Queue audio generation using exactly one saved prompt version and, for vocal music, one confirmed lyrics version.",
-    inputSchema: jsonSchema<{ editionId: number; promptVersionId: number; lyricsVersionId?: number | null }>(z.object({ editionId: z.number(), promptVersionId: z.number(), lyricsVersionId: z.number().nullable().optional() }).toJSONSchema()),
+    description: "Queue audio generation using one saved prompt version and the explicit model or project default; for vocal music, use one confirmed lyrics version.",
+    inputSchema: jsonSchema<{ editionId: number; promptVersionId: number; model?: string; lyricsVersionId?: number | null }>(z.object({ editionId: z.number(), promptVersionId: z.number(), model: z.string().min(1).optional(), lyricsVersionId: z.number().nullable().optional() }).toJSONSchema()),
     execute: async (input) => queueTaskResult(config, queueMusicLibraryGenerate({ projectId: projectIdFrom(config.resTool), ...input })),
   });
 

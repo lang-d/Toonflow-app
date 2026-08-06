@@ -412,6 +412,7 @@ export default async (knex: Knex): Promise<void> => {
   };
   await fixAssetSchema(knex);
   await ensureMusicTables();
+  await addColumn("o_project", "musicModel", "string");
 
   // 添加新字段
   await addColumn("o_prompt", "useData", "text");
@@ -541,8 +542,9 @@ export default async (knex: Knex): Promise<void> => {
     data: [
       "# Video Prompt Generation Skill",
       "",
-      "The backend provides structured <trackStoryboard ...> facts and visual references.",
-      "Read only structured attributes: duration, location, timeOfDay, scene, picture, action, shotSize, cameraMove, dialogue, sound, visibleEmotion, groupKey, groupName, groupIntent, beatId, characters, requiredAssets.",
+      "The backend provides compact <trackStoryboard ...> temporal facts and visual references.",
+      "Interpret every storyboard row by factVersion. V3 uses shotDescription as its chronological source; historical V1/V2 use picture/action without cross-version synthesis.",
+      "When a storyboard image reference exists, it is the only initial visual source. Otherwise use the version-native textual opening fallback. Keep duration, cameraMove, dialogue/voiceTone and diegetic sound; do not consume group metadata, axis plans, director-plan prose or legacy performance fields.",
       "Do not parse or infer business facts from videoDesc, Markdown, XML text, image prompts, chat text, or any other prose.",
       "Generate the target model video prompt only. Dialogue, voice tone and diegetic sound effects must come from structured fields; BGM, score and OST are not valid video prompt content.",
     ].join("\\n"),
@@ -1018,12 +1020,14 @@ export default async (knex: Knex): Promise<void> => {
       table.string("state").notNullable().defaultTo("writing");
       table.integer("textAssetId");
       table.integer("version");
+      table.text("videoStyle");
       table.string("contentHash");
       table.text("errorJson");
       table.integer("createdAt").notNullable();
       table.integer("updatedAt").notNullable();
     });
   }
+  await addColumn("o_directorPlanGeneration", "videoStyle", "text");
   await knex.raw(
     "CREATE INDEX IF NOT EXISTS idx_director_plan_generation_scope ON o_directorPlanGeneration(projectId, scriptId, state)",
   );

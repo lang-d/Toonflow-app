@@ -1,6 +1,7 @@
 import u from "@/utils";
 import { toLegacyTaskState, toTaskStatus } from "@/lib/taskStatus";
 import { createImageFlowTask } from "@/services/imageFlowTask";
+import { resolveStoryboardFactStatus } from "@/services/storyboardFacts";
 
 function normalizeQuality(value: unknown) {
   const quality = String(value || "").trim();
@@ -23,6 +24,11 @@ export async function enqueueStoryboardImageGeneration(input: {
     .orderBy("index", "asc")
     .orderBy("id", "asc");
   if (!storyboardData.length) throw new Error("No storyboard data found for this project and script");
+  const generateList = compulsory ? storyboardData : storyboardData.filter((item: any) => item.shouldGenerateImage !== 0);
+  const nonReady = generateList.filter((item: any) => resolveStoryboardFactStatus(item) !== "ready");
+  if (nonReady.length) {
+    throw new Error(`Storyboard facts are not ready for image generation: ${nonReady.map((item: any) => Number(item.index) + 1).join(", ")}`);
+  }
 
   const project = await u.db("o_project").where("id", projectId).select("imageModel", "imageQuality", "videoRatio").first();
   if (!project?.imageModel) throw new Error("Project image model is not configured");
@@ -53,7 +59,6 @@ export async function enqueueStoryboardImageGeneration(input: {
 
   const taskByStoryboard = new Map<number, Awaited<ReturnType<typeof createImageFlowTask>>>();
   const errors: Array<{ storyboardId: number; error: string }> = [];
-  const generateList = compulsory ? storyboardData : storyboardData.filter((item: any) => item.shouldGenerateImage !== 0);
   for (const item of generateList) {
     try {
       const task = await createImageFlowTask({

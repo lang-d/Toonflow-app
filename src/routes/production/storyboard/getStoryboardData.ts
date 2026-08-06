@@ -41,6 +41,7 @@ export default router.post(
           groupIntent: i.groupIntent,
           beatId: i.beatId,
           scene: fact.scene,
+          shotDescription: fact.shotDescription,
           picture: fact.picture,
           action: fact.action,
           shotSize: fact.shotSize,
@@ -58,6 +59,7 @@ export default router.post(
           tableRowJson: i.tableRowJson,
           factSource: fact.factSource,
           factStatus: fact.factStatus,
+          factVersion: fact.factVersion,
           duration: fact.duration == null ? undefined : Number(fact.duration),
         };
       }),

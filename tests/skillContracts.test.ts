@@ -11,6 +11,7 @@ const skillsRoot = path.join(root, "data", "skills");
 test("production stages expose only their declared skills and tools", () => {
   assert.deepEqual(PRODUCTION_STAGE_DEFINITIONS.directorPlan.tools, [
     "get_flowData",
+    "resource_access",
     "update_agent_progress",
     "await_user_decision",
     "list_director_plan_generations",
@@ -24,6 +25,7 @@ test("production stages expose only their declared skills and tools", () => {
   ]);
   assert.deepEqual(PRODUCTION_STAGE_DEFINITIONS.supervisionDirectorPlan.tools, [
     "get_flowData",
+    "resource_access",
     "update_agent_progress",
     "await_user_decision",
     "list_director_plan_generations",
@@ -35,41 +37,42 @@ test("production stages expose only their declared skills and tools", () => {
   ]);
   assert.deepEqual(PRODUCTION_STAGE_DEFINITIONS.deriveAssets.tools, [
     "get_flowData",
+    "resource_access",
     "update_agent_progress",
     "await_user_decision",
     "add_deriveAsset",
   ]);
   assert.deepEqual(PRODUCTION_STAGE_DEFINITIONS.generateAssets.tools, [
     "get_flowData",
+    "resource_access",
     "update_agent_progress",
     "await_user_decision",
     "generate_deriveAsset",
   ]);
   assert.deepEqual(PRODUCTION_STAGE_DEFINITIONS.storyboardPanel.tools, [
     "get_flowData",
-    "update_agent_progress",
-    "await_user_decision",
-    "list_storyboard_generations",
-    "read_storyboard_generation",
-    "list_production_reviews",
-    "read_production_review",
-    "read_text_asset",
-    "update_storyboard_panel_v2",
-  ]);
-  assert.deepEqual(PRODUCTION_STAGE_DEFINITIONS.supervisionStoryboardPanel.tools, [
-    "get_flowData",
+    "resource_access",
     "read_storyboard_panel_targets",
     "read_storyboard_panel_sources",
     "update_agent_progress",
     "await_user_decision",
-    "list_storyboard_generations",
-    "read_storyboard_generation",
+    "list_production_reviews",
+    "read_production_review",
+    "read_text_asset",
+    "update_storyboard_panel",
+  ]);
+  assert.deepEqual(PRODUCTION_STAGE_DEFINITIONS.supervisionStoryboardPanel.tools, [
+    "read_storyboard_panel_targets",
+    "read_storyboard_panel_sources",
+    "update_agent_progress",
+    "await_user_decision",
     "list_production_reviews",
     "read_production_review",
     "read_text_asset",
   ]);
   assert.deepEqual(PRODUCTION_STAGE_DEFINITIONS.supervisionStoryboardTable.tools, [
     "get_flowData",
+    "resource_access",
     "update_agent_progress",
     "await_user_decision",
     "list_storyboard_generations",
@@ -81,6 +84,7 @@ test("production stages expose only their declared skills and tools", () => {
   ]);
   assert.deepEqual(PRODUCTION_STAGE_DEFINITIONS.storyboardGenerate.tools, [
     "get_flowData",
+    "resource_access",
     "update_agent_progress",
     "await_user_decision",
     "generate_storyboard",
@@ -89,10 +93,12 @@ test("production stages expose only their declared skills and tools", () => {
     PRODUCTION_STAGE_DEFINITIONS.storyboardTable.tools,
     [
       "get_flowData",
+      "resource_access",
       "update_agent_progress",
       "await_user_decision",
       "list_storyboard_generations",
       "read_storyboard_generation",
+      "inspect_storyboard_table_change",
       "list_production_reviews",
       "read_production_review",
       "read_text_asset",
@@ -161,32 +167,22 @@ test("production and script workflow tool contracts match registered tool names"
   assert.match(directorSkill, /begin_director_plan/);
   assert.match(directorSkill, /append_director_plan_section/);
   assert.match(directorSkill, /commit_director_plan/);
+  assert.match(directorSkill, /公开媒介名称 → 轮廓\/造型语言 → 稳定材质表现 → 整体光色原则/);
+  assert.match(directorSkill, /只适用于某个镜头或场景的内容就不属于 `videoStyle`/);
+  assert.match(directorSkill, /不得写具体场景、天气、时段、人物、动物、道具、功能区/);
   assert.match(directorSkill, /content.*只提交该 section 的正文/);
-  assert.match(directorSkill, /④ 段落与节奏规划、⑤ 分场景执行规划.*禁止使用 Markdown 表格/);
-  assert.match(directorSkill, /人物站位与视轴图/);
-  assert.match(directorSkill, /真实空间俯视关系图/);
-  assert.match(directorSkill, /初态/);
-  assert.match(directorSkill, /关键变位/);
-  assert.match(directorSkill, /不得把“画面左\/右”当作人物的真实站位/);
-  assert.match(directorSkill, /不得把“放到”改成“推到”/);
-  assert.match(directorSkill, /关键可见设定账本/);
-  assert.match(directorSkill, /覆盖只能根据顶层父资产 `prompt` 或明确衍生资产 `prompt` 的文字内容判断/);
-  assert.match(directorSkill, /`设定已覆盖，图片已生成`、`设定已覆盖，图片待生成` 或 `资产缺口`/);
-  assert.match(directorSkill, /覆盖资产 ID\/衍生 ID/);
-  assert.match(directorSkill, /图片状态均不能代替 Prompt 覆盖依据/);
-  assert.match(directorSupervision, /图文、轴线、机位半区和资产状态一致/);
-  assert.match(directorSupervision, /实际变位漏图/);
-  assert.match(directorSupervision, /关键物理动作、道具转移和动作结果/);
-  assert.match(directorSupervision, /分析中的“可推断但需确认”不得进入最终清单/);
-  assert.match(directorSupervision, /“角色侧机位”“正反打”或“同侧”本身不构成守轴证明/);
-  assert.match(directorSupervision, /模型不读取或分析图片内容/);
-  assert.match(directorSupervision, /图片状态只记录已生成\/待生成\/未知，不能代替 Prompt 覆盖证明/);
-  assert.match(directorSupervision, /`设定已覆盖，图片已生成`、`设定已覆盖，图片待生成` 或 `资产缺口`/);
-  assert.doesNotMatch(directorSupervision, /愤怒~4 字\/秒/);
-  assert.doesNotMatch(directorSupervision, /出现"正反打"/);
+  assert.match(directorSkill, /不代替分镜表预先编排逐镜头/);
+  assert.match(directorSkill, /一个核心导演目标，最多三项执行原则/);
+  assert.match(directorSkill, /只记录本集真实发生变化且需要跨场继承的项目/);
+  assert.match(directorSkill, /不得输出：[\s\S]*`axis-map`、逐场机位图或全局机位半区/);
+  assert.match(directorSkill, /只写画内声音和叙事性静默/);
+  assert.match(directorSkill, /普通硬切不列清单/);
+  assert.match(directorSupervision, /同版本 `videoStyle`/);
+  assert.match(directorSupervision, /内部目录 ID/);
+  assert.match(directorSupervision, /稳定适用于整集/);
+  assert.match(directorSupervision, /没有逐镜清单、强制轴线图、全局机位半区或复杂机位预演/);
+  assert.match(directorSupervision, /声音只处理画内声源和叙事静默/);
   assert.doesNotMatch(directorSkill, /表格可用 Markdown/);
-  assert.match(directorSupervision, /长叙述格式/);
-  assert.match(directorSupervision, /④段落与节奏规划、⑤分场景执行规划.*字段块\/短列表/);
   assert.doesNotMatch(directorSkill, /<scriptPlan>内容<\/scriptPlan>/);
   assert.doesNotMatch(scriptDecision, /set_planData_|insert_script_to_sqlite/);
   assert.doesNotMatch(fs.readFileSync(path.join(skillsRoot, "production_agent_decision.md"), "utf8"), /prompts:/);
@@ -219,7 +215,10 @@ test("production supervision workflows complete four passes before one final rep
     assert.match(content, /同一根因影响多个位置时合并为一项并列出全部受影响位置/);
     assert.match(content, /返修后的审核仍执行完整四遍/);
     assert.match(content, /## 最终报告结构/);
-    assert.match(content, /当前目标字段中找不到直接证据时|当前规划中找不到直接证据时/);
+    assert.match(
+      content,
+      /当前目标字段(?:中找不到|没有)直接证据时|当前规划中找不到直接证据时|证据不在当前目标字段中/,
+    );
     if (stage === "storyboardPanel") {
       assert.match(content, /已修复.*仍存在.*新发现（基线不可判定）/s);
       assert.match(content, /不得.*猜测.*返修回归.*历史漏检/s);
@@ -229,7 +228,7 @@ test("production supervision workflows complete four passes before one final rep
     }
     assert.match(content, /当前.*真实原文|当前.*真实值/);
     assert.match(content, /第四遍.*再次读取|第四遍.*再次调用/);
-    assert.match(content, /逐字.*存在|逐值存在/);
+    assert.match(content, /逐(?:字|值).*存在/);
   }
 
   const director = fs.readFileSync(path.join(skillsRoot, files.directorPlan), "utf8");
@@ -241,13 +240,13 @@ test("production supervision workflows complete four passes before one final rep
   assert.doesNotMatch(table, /^## 分镜面板审核$/m);
   assert.doesNotMatch(panel, /^## 导演规划审核$/m);
   assert.doesNotMatch(panel, /^## 分镜表审核$/m);
-  assert.match(table, /第四遍完成后才调用一次 `record_storyboard_table_review`/);
+  assert.match(table, /第四遍[^\n]*完成后只调用一次 `record_storyboard_table_review`/);
   assert.match(table, /不得分批保存/);
   assert.match(director, /R1 资产合法/);
   assert.match(director, /R6 衍生选择正确/);
-  assert.match(table, /R1 资产合法/);
-  assert.match(table, /R6 衍生选择正确/);
-  assert.match(panel, /## 本阶段硬性边界/);
+  assert.match(table, /镜头切分质量/);
+  assert.match(table, /`requiredAssets` 中有合法项目内 ID/);
+  assert.match(panel, /当前目标只有正式保存的 `prompt`、`associateAssetsIds` 和 `shouldGenerateImage`/);
   assert.match(panel, /read_storyboard_panel_targets/);
   assert.match(panel, /read_storyboard_panel_sources/);
   assert.match(panel, /禁止调用 `get_flowData\("storyboard"\)`/);

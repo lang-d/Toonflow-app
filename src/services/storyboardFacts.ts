@@ -2,8 +2,13 @@ import {
   factStatusForStoryboardJson,
   parseStoryboardJsonObject,
   parseStoryboardTableRow,
+  legacyStoryboardCharacters,
+  legacyStoryboardGroupIntent,
+  legacyStoryboardGroupName,
+  legacyStoryboardVisibleEmotion,
   StoryboardFactStatus,
-  StoryboardTableRowV2,
+  StoryboardTableRow,
+  StoryboardTableRowV1,
   stringifyDialogue,
   stringifySoundEffects,
 } from "@/services/storyboardTableContract";
@@ -20,6 +25,8 @@ export interface StoryboardVideoFact {
   location: string;
   timeOfDay: string;
   sceneContinuityId: string;
+  factVersion: number | null;
+  shotDescription: string;
   picture: string;
   action: string;
   shotSize: string;
@@ -30,15 +37,16 @@ export interface StoryboardVideoFact {
   dialogue: string;
   sound: string;
   visibleEmotion: string;
-  characters: StoryboardTableRowV2["characters"];
-  requiredAssets: StoryboardTableRowV2["requiredAssets"];
+  /** Historical V1 compatibility only. V2/V3 rows always expose an empty list. */
+  characters: StoryboardTableRowV1["characters"];
+  requiredAssets: StoryboardTableRow["requiredAssets"];
   groupKey?: string;
   groupName?: string;
   groupIntent?: string;
   beatId?: string;
   shouldGenerateImage?: number;
   associateAssetsIds: number[];
-  tableRow?: StoryboardTableRowV2;
+  tableRow?: StoryboardTableRow;
   rawVideoDesc: string;
 }
 
@@ -87,8 +95,10 @@ export function buildStoryboardVideoFact(row: any, associateAssetsIds: number[] 
     location: text(structured?.location) || (factStatus === "legacy" ? text(row.location || row.scene) : ""),
     timeOfDay: text(structured?.timeOfDay) || (factStatus === "legacy" ? text(row.timeOfDay) : ""),
     sceneContinuityId: text(structured?.sceneContinuityId) || (factStatus === "legacy" ? text(row.sceneContinuityId) : ""),
-    picture: text(structured?.picture) || (factStatus === "legacy" ? text(row.picture) : ""),
-    action: text(structured?.action) || (factStatus === "legacy" ? text(row.action) : ""),
+    factVersion: tableRow?.version ?? (Number.isFinite(Number(object?.version)) ? Number(object?.version) : null),
+    shotDescription: tableRow?.version === 3 ? tableRow.shotDescription : "",
+    picture: tableRow?.version === 3 ? "" : text((structured as any)?.picture) || (factStatus === "legacy" ? text(row.picture) : ""),
+    action: tableRow?.version === 3 ? "" : text((structured as any)?.action) || (factStatus === "legacy" ? text(row.action) : ""),
     shotSize: text(structured?.shotSize) || (factStatus === "legacy" ? text(row.shotSize) : ""),
     cameraMove: text(structured?.cameraMove) || (factStatus === "legacy" ? text(row.cameraMove) : ""),
     cameraAngle: text(structured?.cameraAngle),
@@ -100,12 +110,18 @@ export function buildStoryboardVideoFact(row: any, associateAssetsIds: number[] 
     sound: tableRow
       ? stringifySoundEffects(tableRow.soundEffects)
       : objectSound(object?.soundEffects) || (factStatus === "legacy" ? text(row.sound) : ""),
-    visibleEmotion: text(structured?.visibleEmotion) || (factStatus === "legacy" ? text(row.visibleEmotion) : ""),
-    characters: tableRow?.characters || [],
+    visibleEmotion: tableRow
+      ? legacyStoryboardVisibleEmotion(tableRow)
+      : factStatus === "legacy"
+        ? text(row.visibleEmotion)
+        : "",
+    characters: tableRow ? legacyStoryboardCharacters(tableRow) : [],
     requiredAssets: tableRow?.requiredAssets || [],
     groupKey: text(structured?.groupKey) || (factStatus === "legacy" ? text(row.groupKey) : "") || undefined,
-    groupName: text(structured?.groupName) || (factStatus === "legacy" ? text(row.groupName) : "") || undefined,
-    groupIntent: text(structured?.groupIntent) || (factStatus === "legacy" ? text(row.groupIntent) : "") || undefined,
+    groupName:
+      (tableRow ? legacyStoryboardGroupName(tableRow) : "") || text(row.groupName) || undefined,
+    groupIntent:
+      (tableRow ? legacyStoryboardGroupIntent(tableRow) : "") || text(row.groupIntent) || undefined,
     beatId: text(structured?.beatId) || (factStatus === "legacy" ? text(row.beatId) : "") || undefined,
     shouldGenerateImage: row.shouldGenerateImage ?? undefined,
     associateAssetsIds,

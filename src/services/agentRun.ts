@@ -14,7 +14,7 @@ export type AgentRunStatus =
   | (typeof AGENT_RUN_TERMINAL_STATUSES)[number];
 
 export type AgentRunTerminalIntent = {
-  status: Extract<AgentRunStatus, "awaiting_user" | "completed" | "failed">;
+  status: Extract<AgentRunStatus, "awaiting_user" | "completed" | "failed" | "interrupted">;
   stage?: string;
   subAgent?: string;
   reason: string;
@@ -34,6 +34,8 @@ export type AgentRunContext = {
   runId: string;
   terminalIntent?: AgentRunTerminalIntent;
   pendingDecision?: Omit<AgentRunTerminalIntent, "status">;
+  contextOverflowCount: number;
+  latestContextCheckpoint?: string;
   abortReason?: "user_stop" | "terminal_stop" | "replaced" | "timeout";
   requestStop?: () => void;
   markStage(stage: string, subAgent?: string): void;
@@ -43,6 +45,9 @@ export type AgentRunContext = {
   setCompleted(input: Omit<AgentRunTerminalIntent, "status">): void;
   setAwaitingUser(input: Omit<AgentRunTerminalIntent, "status">): void;
   setFailed(input: Omit<AgentRunTerminalIntent, "status">): void;
+  setInterrupted(input: Omit<AgentRunTerminalIntent, "status">): void;
+  recordContextOverflow(): number;
+  setContextCheckpoint(checkpoint: string): void;
   stopForTerminal(): void;
 };
 
@@ -133,6 +138,17 @@ const AGENT_RUN_TIMELINE_KIND: Record<string, string> = {
   runtime_restarted: "runtime_restarted",
   active_scope_deduplicated: "active_scope_deduplicated",
   model_stream_finished: "model_stream_finished",
+  agent_turn_started: "agent_turn_started",
+  agent_turn_finished: "agent_turn_finished",
+  agent_turn_interrupted: "agent_turn_interrupted",
+  agent_turn_continued: "agent_turn_continued",
+  agent_turn_context_boundary: "agent_turn_context_boundary",
+  agent_tool_result: "agent_tool_result",
+  agent_context_compacted: "agent_context_compacted",
+  agent_context_compaction_failed: "agent_context_compaction_failed",
+  agent_resumable_checkpoint: "agent_resumable_checkpoint",
+  agent_run_resumed_from: "agent_run_resumed_from",
+  agent_continuation_exhausted: "agent_continuation_exhausted",
   terminal_declaration_missing: "terminal_declaration_missing",
   finished: "finished",
 };
@@ -181,24 +197,135 @@ export async function recordAgentRunEvent(runId: string, eventType: string, payl
   await insertEvent(runId, eventType, payload, knex);
 }
 
+function compactModelUsage(value: unknown) {
+  const usage = value as { inputTokens?: unknown; outputTokens?: unknown; totalTokens?: unknown } | null;
+  const finite = (token: unknown) => {
+    const parsed = Number(token);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  };
+  return {
+    inputTokens: finite(usage?.inputTokens),
+    outputTokens: finite(usage?.outputTokens),
+    totalTokens: finite(usage?.totalTokens),
+  };
+}
+
 export async function recordAgentModelStreamFinished(runId: string, completion: unknown, knex = u.db) {
   const result = completion as {
     finishReason?: unknown;
-    steps?: unknown;
+    usage?: unknown;
+    totalUsage?: unknown;
+    steps?: Array<{ usage?: unknown }>;
     toolCalls?: unknown;
     text?: unknown;
   };
+  const steps = Array.isArray(result?.steps) ? result.steps : [];
+  const stepInputTokens = steps
+    .map((step) => compactModelUsage(step?.usage).inputTokens)
+    .filter((token): token is number => token != null);
   await insertEvent(
     runId,
     "model_stream_finished",
     {
       finishReason: typeof result?.finishReason === "string" ? result.finishReason : null,
-      stepCount: Array.isArray(result?.steps) ? result.steps.length : null,
+      stepCount: steps.length || null,
       toolCallCount: Array.isArray(result?.toolCalls) ? result.toolCalls.length : null,
       textLength: typeof result?.text === "string" ? result.text.length : 0,
+      finalStepUsage: compactModelUsage(result?.usage),
+      totalUsage: compactModelUsage(result?.totalUsage),
+      maxStepInputTokens: stepInputTokens.length ? Math.max(...stepInputTokens) : null,
     },
     knex,
   );
+}
+
+function compactEventResult(value: unknown) {
+  if (value == null) return value;
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized.length <= 16_000) return value;
+    const resource = value as Record<string, unknown>;
+    if (typeof resource.resourceRef === "string") {
+      return {
+        resourceRef: resource.resourceRef,
+        key: resource.key ?? null,
+        version: resource.version ?? null,
+        returnedRange: resource.returnedRange ?? null,
+        nextCursor: resource.nextCursor ?? null,
+        eof: resource.eof ?? null,
+        omitted: true,
+        size: serialized.length,
+        reason: "resource_payload_archived_by_reference",
+      };
+    }
+    return { omitted: true, size: serialized.length, reason: "agent_tool_result_too_large" };
+  } catch {
+    return { omitted: true, reason: "agent_tool_result_not_serializable" };
+  }
+}
+
+export async function recordAgentTurnStarted(
+  runId: string,
+  input: {
+    turnId: string;
+    turnNumber: number;
+    messageId?: string | null;
+    stage?: string | null;
+    subAgent?: string | null;
+    continuedFrom?: string | null;
+  },
+  knex = u.db,
+) {
+  await insertEvent(runId, "agent_turn_started", input, knex);
+}
+
+export async function recordAgentTurnResult(
+  runId: string,
+  input: {
+    turnId: string;
+    turnNumber: number;
+    messageId?: string | null;
+    stage?: string | null;
+    subAgent?: string | null;
+    state: string;
+    finishReason: string;
+    usage?: unknown;
+    textLength: number;
+    toolCalls?: Array<{ toolCallId: string | null; toolName: string | null }>;
+    toolResults?: Array<{ toolCallId: string | null; toolName: string | null; success: boolean; result: unknown }>;
+  },
+  knex = u.db,
+) {
+  const eventType = input.state === "interrupted" ? "agent_turn_interrupted" : "agent_turn_finished";
+  await insertEvent(
+    runId,
+    eventType,
+    {
+      ...input,
+      toolResults: undefined,
+      toolCallCount: input.toolCalls?.length ?? 0,
+      toolResultCount: input.toolResults?.length ?? 0,
+    },
+    knex,
+  );
+  for (const result of input.toolResults || []) {
+    await insertEvent(
+      runId,
+      "agent_tool_result",
+      {
+        turnId: input.turnId,
+        turnNumber: input.turnNumber,
+        messageId: input.messageId ?? null,
+        stage: input.stage ?? null,
+        subAgent: input.subAgent ?? null,
+        toolCallId: result.toolCallId,
+        toolName: result.toolName,
+        success: result.success,
+        result: compactEventResult(result.result),
+      },
+      knex,
+    );
+  }
 }
 
 export async function interruptExpiredAgentRuns(knex = u.db) {
@@ -306,6 +433,33 @@ export async function getUnresolvedAgentDecision(
   return null;
 }
 
+export async function getResumableAgentInterruption(
+  scope: Pick<RunScope, "agentKey" | "projectId" | "scriptId" | "isolationKey">,
+  knex = u.db,
+) {
+  if (!(await hasAgentRunTables(knex))) return null;
+  const candidate = await knex("o_agentRun")
+    .where({
+      agentKey: scope.agentKey,
+      projectId: scope.projectId,
+      scriptId: scope.scriptId,
+      isolationKey: scope.isolationKey,
+    })
+    .orderBy("startedAt", "desc")
+    .first();
+  if (!candidate || candidate.status !== "interrupted") return null;
+  const error = parseJson(candidate.errorJson) as { code?: unknown } | null;
+  if (error?.code !== "AGENT_CONTEXT_OVERFLOW_REPEATED") return null;
+  const checkpointEvent = await knex("o_agentRunEvent")
+    .where({ runId: candidate.runId, eventType: "agent_resumable_checkpoint" })
+    .orderBy("id", "desc")
+    .first();
+  if (!checkpointEvent) return null;
+  const checkpoint = parseJson(checkpointEvent.payloadJson) as { checkpoint?: unknown } | null;
+  if (typeof checkpoint?.checkpoint !== "string" || !checkpoint.checkpoint.trim()) return null;
+  return { run: normalizeRun(candidate)!, checkpoint };
+}
+
 export async function createAgentRun(input: CreateRunInput, knex = u.db) {
   if (!(await hasAgentRunTables(knex))) throw new Error("Agent run tables are not initialized");
   await interruptExpiredAgentRuns(knex);
@@ -411,6 +565,7 @@ export async function getAgentRunDetail(runId: string, knex = u.db) {
 export function createAgentRunContext(runId: string): AgentRunContext {
   const context: AgentRunContext = {
     runId,
+    contextOverflowCount: 0,
     markStage(stage, subAgent) {
       void updateAgentRunStage(runId, { currentStage: stage, currentSubAgent: subAgent }).catch((error) => {
         console.warn("[agentRun] failed to update stage", error);
@@ -435,6 +590,17 @@ export function createAgentRunContext(runId: string): AgentRunContext {
     },
     setFailed(input) {
       context.terminalIntent = { ...input, status: "failed" };
+    },
+    setInterrupted(input) {
+      context.terminalIntent = { ...input, status: "interrupted" };
+      context.pendingDecision = undefined;
+    },
+    recordContextOverflow() {
+      context.contextOverflowCount += 1;
+      return context.contextOverflowCount;
+    },
+    setContextCheckpoint(checkpoint) {
+      context.latestContextCheckpoint = checkpoint;
     },
     stopForTerminal() {
       context.abortReason = "terminal_stop";

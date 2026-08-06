@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import u from "@/utils";
+import { getCommittedDirectorPlanVideoStyle } from "@/services/directorPlanGeneration";
+import { parseStoryboardTableRow } from "@/services/storyboardTableContract";
 
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 20;
@@ -9,6 +11,7 @@ interface StoryboardPanelScopeRow {
   index: number | null;
   prompt: string;
   associateAssetsIds: number[];
+  associateAssets: Array<{ assetId: number; name: string | null }>;
   shouldGenerateImage: boolean;
   factStatus: string;
   tableRowJson: unknown;
@@ -50,15 +53,56 @@ function parseTableRow(value: unknown) {
   }
 }
 
-function snapshotFor(projectId: number, scriptId: number, rows: StoryboardPanelScopeRow[]) {
+function staticPanelSource(value: unknown, factStatus: string) {
+  const parsed = parseTableRow(value);
+  if (!parsed.tableRowJson) {
+    return {
+      sourceError: parsed.sourceError || "invalid_table_row_json",
+      source: null,
+    };
+  }
+  const row = parseStoryboardTableRow(parsed.tableRowJson);
+  if (!row || factStatus !== "ready") {
+    return {
+      sourceError: factStatus === "draft" ? "storyboard_fact_not_ready" : "invalid_table_row_json",
+      source: null,
+    };
+  }
+  if (row.version === 3) {
+    return {
+      sourceError: null,
+      source: {
+        version: 3,
+        shotDescription: row.shotDescription,
+        shotSize: row.shotSize,
+        cameraAngle: row.cameraAngle || null,
+        requiredAssets: row.requiredAssets,
+      },
+    };
+  }
+  return {
+    sourceError: null,
+    source: {
+      version: row.version,
+      picture: row.picture,
+      shotSize: row.shotSize,
+      cameraAngle: row.cameraAngle || null,
+      requiredAssets: row.requiredAssets,
+    },
+  };
+}
+
+function snapshotFor(projectId: number, scriptId: number, rows: StoryboardPanelScopeRow[], videoStyle: string) {
   const value = JSON.stringify({
     projectId,
     scriptId,
+    videoStyle,
     rows: rows.map((row) => ({
       id: row.id,
       index: row.index,
       prompt: row.prompt,
       associateAssetsIds: row.associateAssetsIds,
+      associateAssets: row.associateAssets,
       shouldGenerateImage: row.shouldGenerateImage,
       factStatus: row.factStatus,
       tableRowJson: row.tableRowJson,
@@ -68,6 +112,7 @@ function snapshotFor(projectId: number, scriptId: number, rows: StoryboardPanelS
 }
 
 async function loadStoryboardPanelScope(projectId: number, scriptId: number) {
+  const videoStyle = await getCommittedDirectorPlanVideoStyle({ projectId, scriptId });
   const dbRows = await u
     .db("o_storyboard")
     .where({ projectId, scriptId })
@@ -78,27 +123,32 @@ async function loadStoryboardPanelScope(projectId: number, scriptId: number) {
   const assetLinks = storyboardIds.length
     ? await u
         .db("o_assets2Storyboard")
-        .whereIn("storyboardId", storyboardIds)
-        .orderBy("storyboardId", "asc")
-        .orderBy("rowid", "asc")
-        .select("storyboardId", "assetId")
+        .whereIn("o_assets2Storyboard.storyboardId", storyboardIds)
+        .leftJoin("o_assets", "o_assets.id", "o_assets2Storyboard.assetId")
+        .orderBy("o_assets2Storyboard.storyboardId", "asc")
+        .orderBy("o_assets2Storyboard.rowid", "asc")
+        .select("o_assets2Storyboard.storyboardId", "o_assets2Storyboard.assetId", "o_assets.name as assetName")
     : [];
-  const assetsByStoryboard = new Map<number, number[]>();
+  const assetsByStoryboard = new Map<number, Array<{ assetId: number; name: string | null }>>();
   for (const link of assetLinks) {
     const storyboardId = Number(link.storyboardId);
     if (!assetsByStoryboard.has(storyboardId)) assetsByStoryboard.set(storyboardId, []);
-    assetsByStoryboard.get(storyboardId)!.push(Number(link.assetId));
+    assetsByStoryboard.get(storyboardId)!.push({
+      assetId: Number(link.assetId),
+      name: link.assetName == null ? null : String(link.assetName),
+    });
   }
   const rows: StoryboardPanelScopeRow[] = dbRows.map((row: any) => ({
     id: Number(row.id),
     index: row.index == null ? null : Number(row.index),
     prompt: String(row.prompt || ""),
-    associateAssetsIds: assetsByStoryboard.get(Number(row.id)) || [],
+    associateAssets: assetsByStoryboard.get(Number(row.id)) || [],
+    associateAssetsIds: (assetsByStoryboard.get(Number(row.id)) || []).map((asset) => asset.assetId),
     shouldGenerateImage: Number(row.shouldGenerateImage) !== 0,
     factStatus: String(row.factStatus || "legacy"),
     tableRowJson: row.tableRowJson ?? null,
   }));
-  return { rows, snapshotId: snapshotFor(projectId, scriptId, rows) };
+  return { rows, videoStyle, snapshotId: snapshotFor(projectId, scriptId, rows, videoStyle) };
 }
 
 function assertSnapshot(expected: string | undefined, actual: string) {
@@ -153,12 +203,38 @@ export async function readStoryboardPanelSources(input: ReadStoryboardPanelSourc
   const selectedRows = selectRowsById(scope.rows, storyboardIds);
   return {
     snapshotId: scope.snapshotId,
+    videoStyle: scope.videoStyle,
     items: selectedRows.map((row) => ({
       storyboardId: row.id,
       index: row.index,
       factStatus: row.factStatus,
-      ...parseTableRow(row.tableRowJson),
+      ...staticPanelSource(row.tableRowJson, row.factStatus),
     })),
   };
 }
 
+/**
+ * Builds one immutable, version-native fact package for a single model-only
+ * storyboard-panel audit. This is deliberately a read-only transport shape:
+ * it does not classify issues, score prompts, or mutate panel fields.
+ */
+export async function readStoryboardPanelReviewBundle(input: { projectId: number; scriptId: number }) {
+  const scope = await loadStoryboardPanelScope(input.projectId, input.scriptId);
+  return {
+    snapshotId: scope.snapshotId,
+    videoStyle: scope.videoStyle,
+    total: scope.rows.length,
+    items: scope.rows.map((row) => ({
+      storyboardId: row.id,
+      index: row.index,
+      prompt: row.prompt,
+      associateAssets: row.associateAssets.map((asset, position) => ({
+        reference: `@Image${position + 1}`,
+        ...asset,
+      })),
+      shouldGenerateImage: row.shouldGenerateImage,
+      factStatus: row.factStatus,
+      ...staticPanelSource(row.tableRowJson, row.factStatus),
+    })),
+  };
+}

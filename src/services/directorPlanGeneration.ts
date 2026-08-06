@@ -24,7 +24,7 @@ export const DIRECTOR_PLAN_SECTION_TITLES: Record<DirectorPlanSectionKey, string
   continuity: "③ 资产与连续性锁定",
   rhythm: "④ 段落与节奏规划",
   sceneExecution: "⑤ 分场景执行规划",
-  soundBoundary: "⑥ 声音与配乐方向",
+  soundBoundary: "⑥ 声音边界",
   transitions: "⑦ 转场与视觉连续性",
   derivedAssets: "⑧ 衍生资产预划清单",
 };
@@ -34,12 +34,19 @@ const COMMIT_STALE_MS = 5 * 60 * 1000;
 const activeCommits = new Map<string, Promise<CommitDirectorPlanResult>>();
 
 export type CommitDirectorPlanResult =
-  | { status: "committed"; generationId: string; textAssetId: number; version: number; sectionCount: number }
+  | { status: "committed"; generationId: string; textAssetId: number; version: number; sectionCount: number; videoStyle: string }
   | { status: "invalid"; issues: Array<{ sectionKey?: string; message: string }> }
   | { status: "failed"; error: { code?: string; message: string; retryable?: boolean } };
 
 function hash(value: string) {
   return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function normalizeVideoStyle(value: unknown) {
+  const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) throw new Error("director plan videoStyle cannot be empty");
+  if (normalized.length > 400) throw new Error("director plan videoStyle must be 400 characters or fewer");
+  return normalized;
 }
 
 function normalizeDirectorPlanHeading(value: string) {
@@ -141,6 +148,7 @@ export async function beginDirectorPlanGeneration(input: { projectId: number; sc
       state: "writing",
       textAssetId: null,
       version: null,
+      videoStyle: null,
       contentHash: null,
       errorJson: null,
       createdAt: now,
@@ -235,6 +243,7 @@ function assembleDirectorPlan(chunks: any[]) {
 
 export async function commitDirectorPlanGeneration(
   generationId: string,
+  videoStyle: string,
   database: any = u.db,
 ): Promise<CommitDirectorPlanResult> {
   const initial = await database("o_directorPlanGeneration").where({ generationId }).first();
@@ -246,11 +255,13 @@ export async function commitDirectorPlanGeneration(
       textAssetId: Number(initial.textAssetId),
       version: Number(initial.version),
       sectionCount: Number(initial.expectedSectionCount),
+      videoStyle: String(initial.videoStyle || ""),
     };
   }
   if (initial.state === "superseded") {
     return { status: "failed", error: { code: "GENERATION_SUPERSEDED", message: "generation was superseded" } };
   }
+  const normalizedVideoStyle = normalizeVideoStyle(videoStyle);
   const scopeKey = `${initial.projectId}:${initial.scriptId}`;
   const active = activeCommits.get(scopeKey);
   if (active) return { status: "failed", error: { code: "COMMIT_IN_PROGRESS", message: "commit is in progress" } };
@@ -315,6 +326,7 @@ export async function commitDirectorPlanGeneration(
             state: "committed",
             textAssetId: Number(asset.id),
             version: Number(asset.version),
+            videoStyle: normalizedVideoStyle,
             contentHash,
             errorJson: null,
             updatedAt: Date.now(),
@@ -341,6 +353,7 @@ export async function commitDirectorPlanGeneration(
         textAssetId: Number(asset.id),
         version: Number(asset.version),
         sectionCount: DIRECTOR_PLAN_SECTION_KEYS.length,
+        videoStyle: normalizedVideoStyle,
       };
     } catch (error) {
       const serialized = serializeError(error);
@@ -354,6 +367,18 @@ export async function commitDirectorPlanGeneration(
   })().finally(() => activeCommits.delete(scopeKey));
   activeCommits.set(scopeKey, promise);
   return promise;
+}
+
+export async function getCommittedDirectorPlanVideoStyle(
+  input: { projectId: number; scriptId: number },
+  database: any = u.db,
+) {
+  const generation = await database("o_directorPlanGeneration")
+    .where({ projectId: input.projectId, scriptId: input.scriptId, state: "committed" })
+    .orderBy("updatedAt", "desc")
+    .orderBy("generationId", "desc")
+    .first("videoStyle");
+  return String(generation?.videoStyle || "").trim();
 }
 
 export async function getDirectorPlanGenerationState(projectId: number, scriptId: number, database: any = u.db) {
@@ -414,5 +439,19 @@ export async function readDirectorPlanAsset(input: {
   const asset = await query.orderBy("version", "desc").orderBy("id", "desc").first();
   if (!asset) throw new Error("director plan text asset not found");
   const result = await getFullTextAssetContent({ id: Number(asset.id), projectId: input.projectId }, database);
-  return { id: Number(asset.id), version: Number(asset.version), content: result.content };
+  const generation = await database("o_directorPlanGeneration")
+    .where({
+      projectId: input.projectId,
+      scriptId: input.scriptId,
+      textAssetId: Number(asset.id),
+      state: "committed",
+    })
+    .first("generationId", "videoStyle");
+  return {
+    id: Number(asset.id),
+    version: Number(asset.version),
+    generationId: generation?.generationId == null ? null : String(generation.generationId),
+    videoStyle: generation?.videoStyle == null ? null : String(generation.videoStyle).trim(),
+    content: result.content,
+  };
 }

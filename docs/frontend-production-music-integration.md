@@ -2,6 +2,42 @@
 
 配乐页面不使用专用阶段状态接口。`POST /production/music/stage/state` 已删除，也不提供兼容或回退。
 
+## 音乐模型选择与执行端点（2026-08）
+
+本节优先于下方历史说明。前端只负责传递用户选择，后端负责验证并冻结实际执行模型；不得用 Prompt 版本的建议模型覆盖当前选择。
+
+### 项目默认音乐模型
+
+```ts
+POST /production/music/model/default
+
+// 读取（请求体不含 model）
+{ projectId: number }
+
+// 设置
+{ projectId: number; model: "vendorId:modelName" }
+
+// 清除
+{ projectId: number; model: null }
+```
+
+响应 `data.musicModel` 为精确的 `vendor:modelName` 或 `null`。页面模型选择器必须保存原始模型键，不能保存显示名；选择后调用该接口设置项目默认值。不得在无默认值时静默选择目录中的第一项。
+
+### 编译与生成
+
+- `POST /production/music/library/compilePrompt`
+- `POST /production/music/cue/compilePrompt`
+- `POST /production/music/library/generate`
+- `POST /production/music/cue/generate`
+
+四个接口均接受可选 `model?: string`。后端使用顺序固定为：本次请求的精确模型 → 项目默认音乐模型；两者均不存在时返回 `data.code = "MUSIC_MODEL_REQUIRED"`，且不创建任务或候选。
+
+Prompt 版本上的 `model` 只表示编译来源或历史建议，不是执行端点。`generic` 与 `modelSpecific` Prompt 均可在本次执行模型确定后生成，供应商请求契约由实际模型适配器检查。
+
+统一任务的 `model`、任务 payload、Worker、候选版本都记录同一实际执行模型。任务和候选列表应展示该值对应的供应商，不能根据 Prompt 版本反推。
+
+当前 `best:chirp-fenix` 已暂停：不出现在可用模型目录中。旧页面或缓存若仍提交它，后端在入队前返回 `data.code = "MUSIC_MODEL_UNAVAILABLE"`；前端应刷新模型目录并提示用户重新选择，不能静默切换到其他供应商。历史 Best Prompt、失败候选和审核记录仍可查看。
+
 ## Scope
 
 | 范围 | isolationKey | Agent Run scriptId |
@@ -41,9 +77,9 @@
 Prompt 版本包含 `promptMode`：
 
 - `generic`：无模型绑定，可以保存、编辑、复制、审核，并可作为后续模型专用版本的 `basedOnId`。
-- `modelSpecific`：必须有精确 `vendor:model` 和实际 `profileSource`。只有此模式可进入音频生成队列。
+- `modelSpecific`：必须有精确 `vendor:model` 和实际 `profileSource`；其模型只表示该版本的编译来源。
 
-通用 Prompt 请求音频生成时后端会在创建任务前直接拒绝；不会创建一个注定失败的任务。
+通用 Prompt 与模型专用 Prompt 都可生成；生成接口必须传当前精确模型，或让后端使用项目默认模型。后端会在创建任务前用实际执行模型的适配器检查请求契约。
 
 Music Agent 使用下列数据与执行工具：
 

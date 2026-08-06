@@ -16,9 +16,9 @@ import {
 import {
   buildMusicProviderRequest,
   resolveMusicModelCapabilities,
-  validateMusicGenerationConfig,
 } from "@/services/musicModelCapability";
 import type { MusicOutputCandidate } from "@/utils/ai";
+import { musicRequestCheck } from "@/utils/ai";
 
 function now() {
   return Date.now();
@@ -84,6 +84,7 @@ async function generateIntoLibrary(input: {
   projectId: number;
   editionId: number;
   promptVersionId: number;
+  model: string;
   lyricsVersionId?: number | null;
   scriptId?: number | null;
   name: string;
@@ -92,9 +93,6 @@ async function generateIntoLibrary(input: {
 }) {
   const edition = await getMusicLibraryEdition(input.projectId, input.editionId);
   const promptVersion = await loadCompiledMusicPromptVersion(input.projectId, input.promptVersionId);
-  if (promptVersion.promptMode !== "modelSpecific") {
-    throw new Error("A provider-neutral music prompt must be compiled for a specific model before audio generation");
-  }
   assertMusicPromptGenerationAllowed(promptVersion.reviewStatus, input.acknowledgeWarnings);
   if (promptVersion.targetType === "edition" && Number(promptVersion.editionId) !== input.editionId) throw new Error("Prompt version does not belong to this edition");
   if (input.lyricsVersionId != null && Number(promptVersion.lyricsVersionId || 0) !== Number(input.lyricsVersionId)) {
@@ -107,33 +105,38 @@ async function generateIntoLibrary(input: {
   if (lyricsVersionId != null && !lyrics) throw new Error("The prompt's confirmed lyrics version no longer exists");
   if (lyrics?.reviewStatus === "blocked") throw new Error("The prompt's lyrics version has blocking review issues");
   if (edition.vocalMode === "vocal" && !lyrics) throw new Error("A confirmed lyrics version is required for vocal music");
-  const capabilities = await resolveMusicModelCapabilities(promptVersion.model);
+  const capabilities = await resolveMusicModelCapabilities(input.model);
   const generationConfig = parseJsonValue<Record<string, any>>(promptVersion.generationConfigJson, {});
-  const validatedConfig = validateMusicGenerationConfig(capabilities, generationConfig, { vocalMode: edition.vocalMode, lyrics: lyrics?.content });
-  const durationSec = validatedConfig.durationSec;
+  const configuredDuration = Number(generationConfig.durationSec ?? generationConfig.duration);
+  const durationSec = capabilities.durationParameter && Number.isInteger(configuredDuration) && configuredDuration > 0
+    ? configuredDuration
+    : undefined;
   const effectiveMusicDurationSec = Number(generationConfig.effectiveMusicDurationSec || durationSec || 0);
+  const outputFormat = normalizeExt(generationConfig.outputFormat || generationConfig.format || capabilities.outputFormats[0] || "mp3");
+  const request = buildMusicProviderRequest({
+    config: { ...generationConfig, ...(durationSec == null ? {} : { durationSec }), outputFormat },
+    prompt: promptVersion.prompt,
+    negativePrompt: promptVersion.negativePrompt,
+    lyrics: lyrics?.content,
+    vocalMode: edition.vocalMode,
+    durationParameter: capabilities.durationParameter,
+  });
+  const contract = await musicRequestCheck(input.model as `${string}:${string}`, request);
+  if (contract.issues.length) throw new Error(contract.issues.map((issue) => issue.message).join("; "));
   const createCandidateVersion = () => createMusicLibraryVersion({
     projectId: input.projectId,
     editionId: input.editionId,
     promptVersionId: input.promptVersionId,
     lyricsVersionId,
-    model: promptVersion.model,
+    model: input.model,
     generationConfig,
-    generationDurationSec: durationSec || null,
+    generationDurationSec: durationSec ?? null,
     effectiveMusicDurationSec: effectiveMusicDurationSec || null,
   });
   // Retain a failed version if the provider request itself cannot yield any candidate.
   const firstLibraryVersion = await createCandidateVersion();
   try {
-    const outputFormat = normalizeExt(validatedConfig.outputFormat);
-    const request = buildMusicProviderRequest({
-      config: { ...generationConfig, durationSec, referenceList: validatedConfig.referenceList, outputFormat },
-      prompt: promptVersion.prompt,
-      negativePrompt: promptVersion.negativePrompt,
-      lyrics: lyrics?.content,
-      vocalMode: edition.vocalMode,
-    });
-    const ai = await u.Ai.Music(promptVersion.model as `${string}:${string}`).run(request as any);
+    const ai = await u.Ai.Music(input.model as `${string}:${string}`).run(request as any);
     const candidates = ai.getCandidates();
     const versions: any[] = [];
     const audioAssets: any[] = [];
@@ -156,7 +159,7 @@ async function generateIntoLibrary(input: {
         const localFilePath = await u.oss.getLocalFilePath(savePath);
         const inspected = await inspectGeneratedMusicFile({
           filePath: localFilePath,
-          model: promptVersion.model,
+          model: input.model,
           maxDurationSec: capabilities.durationRange.max,
         });
         const persisted = await persistAudioAsset({
@@ -206,6 +209,7 @@ export async function generateMusicLibraryAsset(input: {
   projectId: number;
   editionId: number;
   promptVersionId: number;
+  model: string;
   lyricsVersionId?: number | null;
   acknowledgeWarnings?: boolean;
 }) {
@@ -218,6 +222,7 @@ export async function generateMusicLibraryAsset(input: {
     projectId: input.projectId,
     editionId: input.editionId,
     promptVersionId: input.promptVersionId,
+    model: input.model,
     lyricsVersionId: input.lyricsVersionId,
     acknowledgeWarnings: input.acknowledgeWarnings,
     name: item.title || item.workKey,
@@ -228,6 +233,7 @@ export async function generateMusicLibraryAsset(input: {
 export async function generateMusicCueAsset(input: {
   projectId: number;
   cueId: number;
+  model: string;
   select?: boolean;
   taskCenterId?: number;
   promptVersionId: number;
@@ -240,9 +246,6 @@ export async function generateMusicCueAsset(input: {
   try {
     const promptVersionId = Number(input.promptVersionId);
     const promptVersion = await loadCompiledMusicPromptVersion(input.projectId, promptVersionId);
-    if (promptVersion.promptMode !== "modelSpecific") {
-      throw new Error("A provider-neutral music prompt must be compiled for a specific model before audio generation");
-    }
     if (promptVersion.targetType !== "cue" || Number(promptVersion.cueId) !== input.cueId) throw new Error("Prompt version does not belong to this cue");
     let editionId = Number(binding?.editionId || 0);
     if (!editionId) {
@@ -257,6 +260,7 @@ export async function generateMusicCueAsset(input: {
       projectId: input.projectId,
       editionId,
       promptVersionId,
+      model: input.model,
       scriptId: cue.scriptId,
       name: cue.title || cue.cueKey || `Music cue ${cue.id}`,
       describe: cue.narrativePurpose || "",
@@ -278,7 +282,7 @@ export async function generateMusicCueAsset(input: {
         childAssetId: libraryVersion.childAssetId,
         prompt: promptVersion.prompt,
         compiledPromptJson: JSON.stringify({ prompt: promptVersion.prompt, negativePrompt: promptVersion.negativePrompt, generationConfig: promptVersion.generationConfig, promptVersionId }),
-        model: promptVersion.model,
+        model: input.model,
         state: "complete",
         selected: selected ? 1 : 0,
         createTime: now(),

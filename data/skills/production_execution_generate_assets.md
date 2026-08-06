@@ -29,6 +29,7 @@ description: >-
 
 1. 获取 `assets`，收集所有需要生成图片的资产 id
 2. 调用 `generate_deriveAsset({ ids: [资产id列表] })` 生成图片（通过前端确认提交结果）
+3. 按工具返回的 `complete | partial`、实际提交 ID 和失败 ID 判断结果；`partial` 时由模型决定补交、调整或报告，不得声称全部完成。
 
 ### 约束
 

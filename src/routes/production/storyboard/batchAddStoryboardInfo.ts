@@ -78,8 +78,6 @@ export default router.post(
             index,
             durationSec: item.duration,
             groupKey: item.groupKey || groupMeta.groupKey,
-            groupName: item.groupName || groupMeta.groupName,
-            groupIntent: item.groupIntent || groupMeta.groupIntent,
             beatId: item.beatId || groupMeta.beatId,
             soundEffects: item.soundEffects ?? item.sound,
           },
@@ -88,11 +86,11 @@ export default router.post(
         const parsed = storyboardTableRowV2Schema.safeParse(factObject);
         const [id] = await trx("o_storyboard").insert({
           ...(parsed.success
-            ? storyboardRowToDbPatch(parsed.data, 1)
+            ? storyboardRowToDbPatch(parsed.data, 1, groupMeta)
             : {
                 tableRowJson: JSON.stringify(factObject),
                 factStatus: "draft",
-                factVersion: 1,
+                factVersion: 2,
                 factRevision: 1,
                 duration: String(item.duration),
                 videoDesc: "",

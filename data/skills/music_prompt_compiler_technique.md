@@ -6,6 +6,8 @@ Read formal musical facts, the target's confirmed mode, any confirmed lyrics ver
 
 Reduce story intent to audible intent: function, style family, pulse, instrumentation, harmonic color, texture, dynamics, silence, cadence, and emotional movement. Remove plot recap, biographies, camera language, symbolic explanation, and contradictory adjective piles. Translate narrative intent into rhythm, register, harmony, texture, dynamics, rests, or ending behavior.
 
+When the confirmed input supplies a suggested use duration, treat it as part of the musical brief rather than an engineering command. You may express it naturally through approximate duration, compactness, pacing, development, or ending behavior in the final Prompt. Do not promise an exact generated runtime. Never invent a duration that the brief does not provide.
+
 For a model-specific prompt, let the selected model Profile and Technique own field names, mode rules, negative handling, and unavailable-feature boundaries. For a generic prompt, keep only portable musical intent and do not claim provider flags, exact duration control, formats, or advanced generation modes.
 
 Preserve the resulting text in an immutable prompt version. A vocal target links the exact confirmed lyricsVersionId; never embed raw lyrics in generationConfig.

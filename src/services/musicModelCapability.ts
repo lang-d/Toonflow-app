@@ -5,6 +5,8 @@ export interface MusicModelCapabilities {
   name: string;
   durationRange: { min?: number; max?: number };
   durationControl?: "exact" | "targetOnly";
+  /** Whether this provider accepts durationSec as an actual request parameter. */
+  durationParameter: boolean;
   outputFormats: string[];
   vocal?: "optional" | boolean;
   lyrics?: "optional" | boolean;
@@ -26,25 +28,30 @@ export function parseMusicModelKey(model: string) {
   return { vendorId, modelName };
 }
 
-export async function resolveMusicModelCapabilities(model: string): Promise<MusicModelCapabilities> {
-  const { vendorId, modelName } = parseMusicModelKey(model);
-  const models = await u.vendor.getModelList(vendorId);
-  const detail = models.find((item: any) => item.modelName === modelName && item.type === "music");
-  if (!detail) throw new Error("Music model does not exist or is no longer available");
+function capabilityFromModel(model: string, detail: any): MusicModelCapabilities {
   return {
     model,
-    name: detail.name || modelName,
+    name: detail.name || detail.modelName,
     durationRange: {
       min: Number.isFinite(Number(detail.durationRange?.min)) ? Number(detail.durationRange.min) : undefined,
       max: Number.isFinite(Number(detail.durationRange?.max)) ? Number(detail.durationRange.max) : undefined,
     },
     durationControl: detail.durationControl === "targetOnly" ? "targetOnly" : "exact",
+    durationParameter: detail.durationParameter === true,
     outputFormats: Array.isArray(detail.outputFormats) ? detail.outputFormats.map(String) : [],
     vocal: detail.vocal,
     lyrics: detail.lyrics,
     referenceAudio: detail.referenceAudio,
     loop: detail.loop,
   };
+}
+
+export async function resolveMusicModelCapabilities(model: string): Promise<MusicModelCapabilities> {
+  const { vendorId, modelName } = parseMusicModelKey(model);
+  const models = await u.vendor.getModelList(vendorId);
+  const detail = models.find((item: any) => item.modelName === modelName && item.type === "music");
+  if (!detail) throw new Error("Music model does not exist or is no longer available");
+  return capabilityFromModel(model, detail);
 }
 
 export async function listAvailableMusicModels(): Promise<AvailableMusicModel[]> {
@@ -57,20 +64,9 @@ export async function listAvailableMusicModels(): Promise<AvailableMusicModel[]>
         return models
           .filter((item: any) => item?.type === "music" && item?.modelName)
           .map((item: any): AvailableMusicModel => ({
-            model: `${vendorId}:${item.modelName}`,
+            ...capabilityFromModel(`${vendorId}:${item.modelName}`, item),
             vendorId,
             modelName: String(item.modelName),
-            name: String(item.name || item.modelName),
-            durationRange: {
-              min: Number.isFinite(Number(item.durationRange?.min)) ? Number(item.durationRange.min) : undefined,
-              max: Number.isFinite(Number(item.durationRange?.max)) ? Number(item.durationRange.max) : undefined,
-            },
-            durationControl: item.durationControl === "targetOnly" ? "targetOnly" : "exact",
-            outputFormats: Array.isArray(item.outputFormats) ? item.outputFormats.map(String) : [],
-            vocal: item.vocal,
-            lyrics: item.lyrics,
-            referenceAudio: item.referenceAudio,
-            loop: item.loop,
           }));
       } catch {
         return [] as AvailableMusicModel[];
@@ -83,59 +79,39 @@ export async function listAvailableMusicModels(): Promise<AvailableMusicModel[]>
 export function resolveMusicGenerationDuration(input: {
   effectiveMusicDurationSec?: number | null;
   requestedDurationSec?: number | null;
-  capabilities: Pick<MusicModelCapabilities, "durationRange"> & Partial<Pick<MusicModelCapabilities, "durationControl">>;
+  capabilities: Pick<MusicModelCapabilities, "durationRange"> & Partial<Pick<MusicModelCapabilities, "durationControl" | "durationParameter">>;
 }) {
-  const effective = Math.max(1, Math.ceil(Number(input.effectiveMusicDurationSec || input.requestedDurationSec || 30)));
+  const rawTarget = input.effectiveMusicDurationSec ?? input.requestedDurationSec;
+  const parsedTarget = Number(rawTarget);
+  const effective = Number.isFinite(parsedTarget) && parsedTarget > 0 ? Math.ceil(parsedTarget) : undefined;
   const min = Number(input.capabilities.durationRange.min || 0);
   const max = Number(input.capabilities.durationRange.max || 0);
   const durationControl: "exact" | "targetOnly" = input.capabilities.durationControl === "targetOnly" ? "targetOnly" : "exact";
+  const durationParameter = input.capabilities.durationParameter === true;
+  if (!effective || !durationParameter) {
+    return {
+      effectiveMusicDurationSec: effective,
+      generationDurationSec: undefined,
+      hasSilentTail: false,
+      durationControl,
+      durationParameter,
+      durationRange: { min: min || undefined, max: max || undefined },
+    };
+  }
   const requested = durationControl === "targetOnly"
     ? Math.max(effective, Math.ceil(Number(input.requestedDurationSec || effective)))
     : Math.max(effective, Math.ceil(Number(input.requestedDurationSec || effective)), min || 0);
   if (max > 0 && requested > max) {
-    throw new Error(`建议用乐时长 ${effective} 秒超过当前音乐模型上限 ${max} 秒，请缩短、使用循环版本或拆分叙事段落。`);
+    throw new Error(`Suggested music duration ${effective} seconds exceeds the selected model limit of ${max} seconds`);
   }
   return {
     effectiveMusicDurationSec: effective,
     generationDurationSec: requested,
     hasSilentTail: durationControl === "exact" && requested > effective,
     durationControl,
+    durationParameter,
     durationRange: { min: min || undefined, max: max || undefined },
   };
-}
-
-export function assertMusicVocalCapability(
-  capabilities: MusicModelCapabilities,
-  input: { vocalMode?: string | null; lyrics?: string | null },
-) {
-  const wantsVocal = input.vocalMode === "vocal" || Boolean(String(input.lyrics || "").trim());
-  if (!wantsVocal) return;
-  if (capabilities.vocal === false) throw new Error("当前音乐模型不支持人声，请更换模型或改为纯音乐版本。");
-  if (String(input.lyrics || "").trim() && capabilities.lyrics === false) {
-    throw new Error("当前音乐模型不支持歌词输入，请更换模型。");
-  }
-}
-
-export function validateMusicGenerationConfig(
-  capabilities: MusicModelCapabilities,
-  config: Record<string, unknown>,
-  input: { vocalMode?: string | null; lyrics?: string | null },
-) {
-  assertMusicVocalCapability(capabilities, input);
-  const duration = Number(config.durationSec ?? config.duration);
-  if (!Number.isInteger(duration) || duration <= 0) throw new Error("Music generation duration must be a positive integer");
-  const min = Number(capabilities.durationRange.min || 0);
-  const max = Number(capabilities.durationRange.max || 0);
-  if (min > 0 && duration < min) throw new Error(`Music generation duration cannot be shorter than ${min} seconds for this model`);
-  if (max > 0 && duration > max) throw new Error(`Music generation duration cannot exceed ${max} seconds for this model`);
-  const outputFormat = String(config.outputFormat || config.format || capabilities.outputFormats[0] || "mp3").toLowerCase();
-  if (capabilities.outputFormats.length && !capabilities.outputFormats.map((item) => item.toLowerCase()).includes(outputFormat)) {
-    throw new Error(`Music output format ${outputFormat} is not supported by this model`);
-  }
-  const references = Array.isArray(config.referenceList) ? config.referenceList : [];
-  if (references.length && capabilities.referenceAudio === false) throw new Error("This music model does not support reference audio");
-  if (config.loop === true && capabilities.loop === false) throw new Error("This music model does not support loop generation");
-  return { durationSec: duration, outputFormat, referenceList: references };
 }
 
 export function buildMusicProviderRequest(input: {
@@ -144,6 +120,7 @@ export function buildMusicProviderRequest(input: {
   negativePrompt?: string | null;
   lyrics?: string | null;
   vocalMode?: string | null;
+  durationParameter?: boolean;
 }) {
   const request = { ...input.config } as Record<string, unknown>;
   for (const key of [
@@ -155,6 +132,10 @@ export function buildMusicProviderRequest(input: {
     "lyricsHash",
     "generationConfigHash",
   ]) delete request[key];
+  if (input.durationParameter !== true) {
+    delete request.durationSec;
+    delete request.duration;
+  }
   delete request.lyrics;
   request.prompt = input.prompt;
   request.negativePrompt = input.negativePrompt || "";

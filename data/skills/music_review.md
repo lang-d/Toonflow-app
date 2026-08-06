@@ -25,14 +25,14 @@ Lyrics:
 
 Prompt:
 - review the exact promptVersionId used for generation
-- model-specific prompts follow their target model format and dynamic duration/vocal/lyrics capabilities
+- model-specific prompts follow their target model format and dynamic duration/vocal/lyrics capabilities; approximate duration may be part of the Prompt, while provider timing metadata is not itself a model-authored config field
 - generic prompts are checked for complete portable musical intent and must not claim provider-only flags
 - concise, audible, structurally coherent, and free of plot/camera prose
 - check the full field contract: prompt direction, tags as a compact style index, negativePrompt as audible avoid traits, and title as a take name
 - flag a decorative instrument pile when a named instrument or part has no distinct audible role; roles must resolve to motif carrier, rhythmic/low foundation, harmonic support, spatial texture, or transition
 - flag conflicting role assignments when parts are asked to do the same job without an audible contrast or hierarchy
 - flag an abstract emotion pile when the prompt does not turn it into a recognizable motif gesture, pulse, register, texture, dynamic movement, rest, or cadence
-- flag a prompt that lacks an audible entry and close relationship; it may describe establishment and development or turn, but must not claim note names, chord charts, bar counts, exact timecodes, or mechanically guaranteed duration
+- flag a prompt that lacks an audible entry and close relationship; it may describe establishment and development or turn, and may use an approximate duration when supplied by the brief, but must not claim note names, chord charts, bar counts, exact timecodes, or mechanically guaranteed duration
 - for instrumental work, any dialogue, narration, character reference, voice, singing, humming, chanting, choir, lyrics, or verse/chorus structure in the prompt, tags, or negative prompt is a blocking mode conflict; identify the field and require an audible musical replacement instead
 - for vocal work, require one confirmed lyrics version and reject lyric copies, paraphrases, or story prose in the other generation fields
 - unreviewed and blocking versions cannot generate; warning requires explicit user acknowledgement

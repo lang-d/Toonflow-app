@@ -8,6 +8,8 @@ export const vendorModelSchema = z.discriminatedUnion("type", [
     type: z.literal("text"),
     think: z.boolean(),
     supportsTemperature: z.boolean().optional(),
+    contextWindowTokens: z.number().int().positive().optional(),
+    maxOutputTokens: z.number().int().positive().optional(),
   }),
   z.object({
     name: z.string(),
@@ -46,6 +48,7 @@ export const vendorModelSchema = z.discriminatedUnion("type", [
           max: z.number().optional(),
         })
         .optional(),
+      durationParameter: z.boolean().optional(),
       outputFormats: z.array(z.string()).optional(),
       vocal: z.union([z.literal("optional"), z.boolean()]).optional(),
       lyrics: z.union([z.literal("optional"), z.boolean()]).optional(),

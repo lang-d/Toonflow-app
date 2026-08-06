@@ -22,6 +22,12 @@ test("asset foundation backend prompt enforces stable base asset boundaries", ()
   assert.match(source, /场景 assetFoundation 只允许写固定布局、常设家具、常设设备、长期陈设/);
   assert.match(source, /手机、电脑、录音笔等载体不得在基础设定中固化具体聊天对象、金额、录音内容/);
   assert.match(source, /资产基础设定边界补充/);
+  assert.match(source, /角色 assetFoundation 可以保留项目制作参考包明确的稳定声音\/台词表现/);
+  assert.match(source, /assetImagePrompt 不得包含声线、音区、语速、咬字、方言、口音、台词/);
+  assert.match(source, /function selectAssetFoundationContextPack/);
+  assert.match(source, /项目硬事实/);
+  assert.match(source, /资产复用参考/);
+  assert.doesNotMatch(source, /contextPackContent\.slice\(0, 7000\)/);
 });
 
 test("asset foundation flow skill separates base assets from derived assets and storyboard state", () => {
@@ -32,6 +38,8 @@ test("asset foundation flow skill separates base assets from derived assets and 
   assert.match(flow, /分镜图 prompt 用于表达具体镜头中的临时摆放、屏幕内容、证据展示和动作关系/);
   assert.match(flow, /餐厅可以写桌椅、收银台、后厨连接、常见调味架/);
   assert.match(flow, /不能写某顿饭的菜碟数量、生日宴菜品、临时账单、冲突证据/);
+  assert.match(flow, /角色可保留资料明确的“声音\/台词表现”/);
+  assert.match(flow, /静态图片 Prompt，不得包含声线、音区、语速/);
 });
 
 test("asset foundation technique skill forbids temporary scene props and standalone information records", () => {
@@ -41,6 +49,8 @@ test("asset foundation technique skill forbids temporary scene props and standal
   assert.match(technique, /聊天记录、转账记录、录音、通话记录、通知文字、屏幕内容等信息内容默认绑定到载体/);
   assert.match(technique, /只有当信息记录已经成为独立实体物件时/);
   assert.match(technique, /这些内容应进入衍生资产或分镜图 prompt/);
+  assert.match(technique, /项目制作参考包明确角色声音设计时/);
+  assert.match(technique, /不得进入 `assetImagePrompt`/);
 });
 
 test("asset foundation review skill blocks episode state and carrier/content boundary violations", () => {
@@ -49,4 +59,6 @@ test("asset foundation review skill blocks episode state and carrier/content bou
   assert.match(review, /把某场戏临时出现的菜品、账单、手机、纸条、证据、录音、礼物、药品等写成常设物/);
   assert.match(review, /聊天记录、转账记录、录音、通话记录、通知文字、屏幕内容等信息内容作为无载体的独立基础资产/);
   assert.match(review, /打印聊天记录、纸质转账凭证、独立文件、独立物证等已经成为实体物件时/);
+  assert.match(review, /角色声音\/台词表现/);
+  assert.match(review, /assetImagePrompt.*不可见声音信息/);
 });

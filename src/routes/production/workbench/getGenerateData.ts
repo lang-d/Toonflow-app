@@ -74,6 +74,7 @@ interface TrackMedia {
   videoReferenceIndex?: number;
   videoDesc?: string;
   scene?: string;
+  shotDescription?: string;
   picture?: string;
   action?: string;
   shotSize?: string;
@@ -170,6 +171,7 @@ export default router.post(
       const factSummary = [
         fact.location,
         fact.timeOfDay,
+        fact.shotDescription,
         fact.picture,
         fact.action,
         fact.dialogue,
@@ -185,6 +187,7 @@ export default router.post(
           prompt: factSummary,
           videoDesc: fact.rawVideoDesc,
           scene: fact.scene,
+          shotDescription: fact.shotDescription,
           picture: fact.picture,
           action: fact.action,
           shotSize: fact.shotSize,
@@ -208,6 +211,7 @@ export default router.post(
             prompt: factSummary,
             videoDesc: fact.rawVideoDesc,
             scene: fact.scene,
+            shotDescription: fact.shotDescription,
             picture: fact.picture,
             action: fact.action,
             shotSize: fact.shotSize,

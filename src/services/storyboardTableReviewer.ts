@@ -4,7 +4,7 @@ import { upsertReviewSuggestion } from "@/services/productionReview";
 import { getProjectDefaultVideoPolicy } from "@/services/videoModelPolicy";
 import { invokeAiObjectWithFallback } from "@/services/aiJsonObject";
 import { z } from "zod";
-import { parseStoryboardTableRow, storyboardTableRowV2Schema } from "@/services/storyboardTableContract";
+import { parseStoryboardTableRow, storyboardTableRowV3Schema } from "@/services/storyboardTableContract";
 
 const reviewOutputSchema = z.object({
   issues: z.array(
@@ -14,7 +14,7 @@ const reviewOutputSchema = z.object({
       severity: z.enum(["info", "warning", "blocking"]),
       evidence: z.string(),
       reason: z.string(),
-      suggestedRow: storyboardTableRowV2Schema.optional(),
+      suggestedRow: storyboardTableRowV3Schema.optional(),
     }),
   ),
 });
@@ -26,12 +26,19 @@ function normalizeSeverity(value: unknown): "info" | "warning" | "blocking" {
 }
 
 async function reviewStoryboardRowsWithAi(rows: any[]) {
-  if (!rows.length) return [];
+  const reviewRows = rows
+    .map((row) => ({ id: row.id, fact: parseStoryboardTableRow(row.tableRowJson) }))
+    .filter((row) => row.fact?.version === 3);
+  if (!reviewRows.length) return [];
   const system = `You are Toonflow's storyboard-table reviewer.
 Review storyboard rows semantically. Do not use a fixed banned-word list.
 Return valid JSON that matches the schema.
 Rules:
-- Main emotion concretization belongs in the storyboard table: convert abstract emotion into visible behavior, gaze, breath, posture, hand motion, walking rhythm or dialogue delivery.
+- Review only ready V3 rows for suggested rewrites. shotDescription is chronological: earliest visible state, trigger, continuous visible change, ending state.
+- Do not request picture/action or separate emotion and character-performance fields.
+- Check shot boundaries: one continuous causal action should not be split for decorative shot-size rotation, while independent visual subjects, information recipients, causal actions, or substantive time/space changes should not be forced into one shot.
+- Check that dialogue, necessary pauses and visible action can plausibly fit durationSec without unsupported speed-up.
+- Repeated action across adjacent rows, multiple competing visual centers, continuous generic medium shots and cuts inside an indivisible action are concrete review concerns.
 - Do not mark diegetic sound effects as BGM. Footsteps, breathing, fabric rustle, station ambience and action sounds are allowed production facts.
 - BGM and non-diegetic music are post-production suggestions only.
 - Focus on vague emotion, unsafe expression, continuity drift, and generic wording that harms later image/video generation.
@@ -45,10 +52,7 @@ Rules:
       {
         role: "user",
         content: JSON.stringify(
-          rows.map((row) => ({
-            id: row.id,
-            fact: parseStoryboardTableRow(row.tableRowJson),
-          })),
+          reviewRows,
           null,
           2,
         ),
@@ -127,7 +131,7 @@ export async function reviewStoryboardTable(projectId: number, scriptId: number)
               values: {
                 tableRowJson: JSON.stringify(suggestedRow),
                 factStatus: "ready",
-                factVersion: 1,
+                factVersion: 3,
               },
               source: "ai_review",
             }

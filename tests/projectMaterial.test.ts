@@ -63,6 +63,8 @@ before(async () => {
     { id: 3, name: "Project C", intro: "都市短剧", type: "series", artStyle: "真人都市" },
     { id: 4, name: "Project D", intro: "都市短剧", type: "series", artStyle: "真人都市" },
     { id: 5, name: "Project E", intro: "都市短剧", type: "series", artStyle: "真人都市" },
+    { id: 6, name: "Project F", intro: "都市短剧", type: "series", artStyle: "真人都市" },
+    { id: 7, name: "Project G", intro: "都市短剧", type: "series", artStyle: "真人都市" },
   ]);
 });
 
@@ -166,12 +168,16 @@ test("archives material so default list and read no longer return it", async () 
   );
 });
 
-async function withMockAiText(outputs: string[], fn: () => Promise<void>) {
+type MockAiOutput = string | ((input: any, index: number) => string);
+
+async function withMockAiText(outputs: MockAiOutput[], fn: () => Promise<void>) {
   const original = u.Ai.Text;
   let index = 0;
   (u.Ai as any).Text = () => ({
-    invoke: async () => {
-      const text = outputs[index++];
+    invoke: async (input: any) => {
+      const output = outputs[index];
+      const text = typeof output === "function" ? output(input, index) : output;
+      index += 1;
       if (text == null) throw new Error("Unexpected AI call");
       return { text };
     },
@@ -186,10 +192,10 @@ async function withMockAiText(outputs: string[], fn: () => Promise<void>) {
 const validContextPack = [
   "## 项目硬事实",
   "- 主角林若溪在现代城市工作。",
+  "## 资产复用参考",
+  "- 林若溪：鹅蛋脸、齐肩黑发、常穿浅灰衬衫；声音/台词表现待设定；作为同一角色资产复用。",
   "## 连续性锚点",
   "- 林若溪保持冷静克制，常用停顿和视线回避表达压力。",
-  "## 资产复用参考",
-  "- 林若溪作为同一角色资产复用，不因单集情绪变化重复创建。",
   "## 视觉与导演参考",
   "- 室内戏优先自然窗光和克制构图。",
   "## 配乐参考",
@@ -197,6 +203,54 @@ const validContextPack = [
   "## 缺资料与不确定项",
   "- 角色年龄暂无明确资料。",
 ].join("\n");
+
+test("context-pack skills require compact asset facts and evidence-based role voice design", () => {
+  const flow = fs.readFileSync(path.join(process.cwd(), "data", "skills", "project_context_pack_flow.md"), "utf8");
+  const technique = fs.readFileSync(path.join(process.cwd(), "data", "skills", "project_context_pack_technique.md"), "utf8");
+  const review = fs.readFileSync(path.join(process.cwd(), "data", "skills", "project_context_pack_review.md"), "utf8");
+
+  assert.match(flow, /人物的稳定外形与声音\/台词表现/);
+  assert.match(flow, /不得生成 TTS 供应商、音色 ID、真人模仿对象、克隆参数或音频文件/);
+  assert.match(technique, /角色事实卡：身份和关系边界、年龄感、面部\/发型\/体态锚点/);
+  assert.match(technique, /声音\/台词表现/);
+  assert.match(technique, /不得由性别、年龄、职业或地域推断/);
+  assert.match(review, /音色 ID/);
+  const extraction = fs.readFileSync(path.join(process.cwd(), "data", "skills", "project_context_pack_extraction.md"), "utf8");
+  assert.match(extraction, /只处理当前输入的一段原始项目资料/);
+  assert.match(extraction, /声音\/台词表现/);
+  assert.match(extraction, /本段未出现某项就写“待设定”/);
+});
+
+test("splits complete source text at boundaries without dropping any characters", () => {
+  const content = `${"开头资料。\n".repeat(80)}\n声音绑定设定：中低音、咬字清晰。\n${"结尾资料。\n".repeat(80)}`;
+  const chunks = materialService.buildProjectMaterialSourceChunks({
+    material: { id: 91, projectId: 3, category: "character", name: "long-character.md" },
+    content,
+    maxChars: 512,
+  });
+  assert.ok(chunks.length > 1);
+  assert.equal(chunks.map((item) => item.content).join(""), content);
+  assert.equal(chunks[0].start, 0);
+  assert.equal(chunks.at(-1)?.end, content.length);
+  assert.ok(chunks.some((item) => item.content.includes("声音绑定设定")));
+});
+
+test("asset foundation receives full hard-fact and reusable-asset sections instead of a leading pack slice", async () => {
+  const { selectAssetFoundationContextPack } = await import("../src/services/assetFoundation");
+  const pack = [
+    "## 项目硬事实",
+    "- 项目硬事实。",
+    "## 资产复用参考",
+    `- 林若溪：稳定声音/台词表现为中低音、咬字清晰。${"外形锚点。".repeat(2000)}`,
+    "## 连续性锚点",
+    "- 不应发送给资产基础设定的后续栏目。",
+  ].join("\n");
+  const selected = selectAssetFoundationContextPack(pack);
+  assert.match(selected, /项目硬事实/);
+  assert.match(selected, /稳定声音\/台词表现/);
+  assert.ok(selected.length > 7000);
+  assert.doesNotMatch(selected, /不应发送给资产基础设定/);
+});
 
 test("generates and saves complete project context pack from XML output", async () => {
   await materialService.saveProjectMaterial({
@@ -208,6 +262,7 @@ test("generates and saves complete project context pack from XML output", async 
 
   await withMockAiText(
     [
+      `<projectMaterialFacts>- 林若溪：现代城市职场女性，冷静克制。</projectMaterialFacts>`,
       `<projectContextPack>${validContextPack}</projectContextPack>`,
       `{"status":"passed","issues":[]}`,
     ],
@@ -221,6 +276,89 @@ test("generates and saves complete project context pack from XML output", async 
       assert.equal(latest?.content, validContextPack);
     },
   );
+});
+
+test("compresses every ready material and sends tail facts beyond 6000 characters", async () => {
+  const longVoiceFact = "声音绑定设定：林若溪为中低音、清爽偏干、咬字清晰，忙时语速略快但不尖喊。";
+  await materialService.saveProjectMaterial({
+    projectId: 6,
+    category: "character",
+    name: "long-character-source.md",
+    textContent: `${"人物前文资料。\n".repeat(1000)}\n${longVoiceFact}`,
+  });
+  for (let index = 0; index < 6; index += 1) {
+    await materialService.saveProjectMaterial({
+      projectId: 6,
+      category: "character",
+      name: `character-${index + 1}.md`,
+      textContent: `角色 ${index + 1} 的稳定资料。`,
+    });
+  }
+
+  const inputs: any[] = [];
+  await withMockAiText(
+    [
+      (input) => {
+        inputs.push(input);
+        return `<projectMaterialFacts>${String(input.messages?.[0]?.content || "").includes(longVoiceFact) ? `- ${longVoiceFact}` : "- 已确认资料事实。"}</projectMaterialFacts>`;
+      },
+      (input) => {
+        inputs.push(input);
+        return `<projectMaterialFacts>- 已确认资料事实。</projectMaterialFacts>`;
+      },
+      (input) => {
+        inputs.push(input);
+        return `<projectMaterialFacts>- 已确认资料事实。</projectMaterialFacts>`;
+      },
+      (input) => {
+        inputs.push(input);
+        return `<projectMaterialFacts>- 已确认资料事实。</projectMaterialFacts>`;
+      },
+      (input) => {
+        inputs.push(input);
+        return `<projectMaterialFacts>- 已确认资料事实。</projectMaterialFacts>`;
+      },
+      (input) => {
+        inputs.push(input);
+        return `<projectMaterialFacts>- 已确认资料事实。</projectMaterialFacts>`;
+      },
+      (input) => {
+        inputs.push(input);
+        return `<projectMaterialFacts>- 已确认资料事实。</projectMaterialFacts>`;
+      },
+      (input) => {
+        inputs.push(input);
+        return `<projectMaterialFacts>- 已确认资料事实。</projectMaterialFacts>`;
+      },
+      `<projectContextPack>${validContextPack}</projectContextPack>`,
+      `{"status":"passed","issues":[]}`,
+    ],
+    async () => {
+      await materialService.generateProjectContextPack({ projectId: 6 });
+    },
+  );
+  const extractionInputs = inputs.filter((item) => String(item?.system || "").includes("项目资料片段事实提取"));
+  assert.equal(extractionInputs.length, 8);
+  assert.ok(extractionInputs.some((item) => String(item.messages?.[0]?.content || "").includes(longVoiceFact)));
+  assert.ok(extractionInputs.some((item) => String(item.messages?.[0]?.content || "").includes("character-6.md")));
+});
+
+test("does not save a context pack when any material fact extraction is malformed", async () => {
+  const before = await db("o_textAsset").where({ projectId: 7, targetType: "projectContextPack" }).count("* as count").first();
+  await materialService.saveProjectMaterial({
+    projectId: 7,
+    category: "notes",
+    name: "broken-extraction.md",
+    textContent: "资料必须完整提取。",
+  });
+  await withMockAiText(["not the required XML"], async () => {
+    await assert.rejects(
+      () => materialService.generateProjectContextPack({ projectId: 7 }),
+      /Project material fact extraction failed/,
+    );
+  });
+  const after = await db("o_textAsset").where({ projectId: 7, targetType: "projectContextPack" }).count("* as count").first();
+  assert.equal(Number(after.count), Number(before.count));
 });
 
 test("adjusts previous project context pack with one generate call and keeps versions", async () => {

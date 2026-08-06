@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import knexFactory, { type Knex } from "knex";
 import getPath from "@/utils/getPath";
+import { toLegacyTaskState } from "@/lib/taskStatus";
 
 const MIGRATION_KEY = "migration:video-queue-v2";
 const RECOVERY_KEY = "migration:video-queue-v2-recover-interrupted-queued";
@@ -149,6 +150,76 @@ async function markFailed(knex: Knex | Knex.Transaction, task: any, reason: stri
   if (task.taskCenterId != null) {
     await knex("o_tasks").where("id", task.taskCenterId).update({ state: "生成失败", reason });
   }
+}
+
+async function synchronizeTerminalTaskCenter(
+  knex: Knex,
+  queueTask: any,
+  status: "completed" | "failed" | "cancelled",
+  reason?: string,
+) {
+  if (queueTask.taskCenterId == null) return false;
+  return knex.transaction(async (trx) => {
+    const taskCenter = await trx("o_tasks").where("id", queueTask.taskCenterId).first();
+    if (!taskCenter || !ACTIVE_STATUSES.includes(taskCenter.status)) return false;
+
+    const now = Date.now();
+    const nextVersion = Number(taskCenter.version || 0) + 1;
+    const resolvedReason = reason || queueTask.errorReason || "";
+    await trx("o_tasks").where("id", taskCenter.id).update({
+      status,
+      phase: status,
+      state: toLegacyTaskState(status),
+      ...(status === "completed" ? { progress: 100 } : {}),
+      reason: resolvedReason,
+      finishTime: now,
+      updateTime: now,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      version: nextVersion,
+    });
+
+    if (await trx.schema.hasTable("o_taskEvent")) {
+      await trx("o_taskEvent").insert({
+        taskId: taskCenter.taskId,
+        legacyTaskId: taskCenter.id,
+        version: nextVersion,
+        taskType: taskCenter.taskType || "video",
+        projectId: taskCenter.projectId,
+        scriptId: taskCenter.scriptId ?? taskCenter.episode ?? null,
+        targetType: taskCenter.targetType || null,
+        targetId: taskCenter.targetId == null ? null : String(taskCenter.targetId),
+        nodeId: taskCenter.nodeId || null,
+        status,
+        phase: status,
+        progress: status === "completed" ? 100 : taskCenter.progress ?? null,
+        resultJson: taskCenter.resultJson ?? null,
+        reason: resolvedReason || null,
+        createdAt: now,
+      });
+    }
+    return true;
+  });
+}
+
+async function reconcileTerminalTaskCenters(knex: Knex) {
+  const terminalQueueTasks = await knex("o_videoGenerationTask")
+    .whereIn("status", ["completed", "failed", "cancelled"])
+    .whereNotNull("taskCenterId")
+    .orderBy("id", "asc");
+  let reconciled = 0;
+  for (const queueTask of terminalQueueTasks) {
+    if (
+      await synchronizeTerminalTaskCenter(
+        knex,
+        queueTask,
+        queueTask.status as "completed" | "failed" | "cancelled",
+      )
+    ) {
+      reconciled += 1;
+    }
+  }
+  return reconciled;
 }
 
 export async function migrateVideoQueueV2(knex: Knex, options: MigrationOptions = {}) {
@@ -314,6 +385,7 @@ export async function recoverVideoQueueAfterRestart(knex: Knex) {
     confirming: 0,
     processing: 0,
     failed: 0,
+    taskCenterReconciled: 0,
   };
   for (const task of tasks) {
     if (task.status === "queued") {
@@ -353,7 +425,9 @@ export async function recoverVideoQueueAfterRestart(knex: Knex) {
       summary.processing += 1;
       continue;
     }
-    await markFailed(knex, task, "软件重启后无法确认供应商任务已创建，未自动重提以避免重复扣费。");
+    const reason = "软件重启后无法确认供应商任务已创建，未自动重提以避免重复扣费。";
+    await markFailed(knex, task, reason);
+    if (await synchronizeTerminalTaskCenter(knex, task, "failed", reason)) summary.taskCenterReconciled += 1;
     summary.failed += 1;
     console.warn(
       `[video-queue-recovery] ${JSON.stringify({
@@ -366,5 +440,6 @@ export async function recoverVideoQueueAfterRestart(knex: Knex) {
       })}`,
     );
   }
+  summary.taskCenterReconciled += await reconcileTerminalTaskCenters(knex);
   console.info(`[video-queue-recovery] ${JSON.stringify({ event: "restart.completed", ...summary })}`);
 }

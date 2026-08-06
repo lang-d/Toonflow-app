@@ -36,10 +36,36 @@ function vectorSearch(rows: MemoryRow[], queryEmbedding: number[], limit: number
 class Memory {
   private agentType: string;
   private isolationKey: string;
+  private policy: {
+    autoSummarize: boolean;
+    allowedRoles: string[] | null;
+    includeSummaries: boolean;
+    includeAutomaticRag: boolean;
+  };
 
-  constructor(agentType: string, isolationKey: string) {
+  constructor(
+    agentType: string,
+    isolationKey: string,
+    policy?: {
+      autoSummarize?: boolean;
+      allowedRoles?: string[];
+      includeSummaries?: boolean;
+      includeAutomaticRag?: boolean;
+    },
+  ) {
     this.agentType = agentType;
     this.isolationKey = isolationKey;
+    this.policy = {
+      autoSummarize: policy?.autoSummarize ?? true,
+      allowedRoles: policy?.allowedRoles?.length ? [...policy.allowedRoles] : null,
+      includeSummaries: policy?.includeSummaries ?? true,
+      includeAutomaticRag: policy?.includeAutomaticRag ?? true,
+    };
+  }
+
+  private filterAllowedRoles<T>(query: T): T {
+    if (this.policy.allowedRoles) (query as any).whereIn("role", this.policy.allowedRoles);
+    return query;
   }
 
   private async generateSummary(contents: string[]): Promise<string> {
@@ -102,13 +128,17 @@ class Memory {
       createTime: options?.createTime ?? Date.now(),
     } as any);
 
+    if (!this.policy.autoSummarize) return;
+
     // 检查未总结消息数量
-    const unsummarized = await u.db("memories").where({ isolationKey, type: "message", summarized: 0 }).orderBy("createTime", "asc");
+    const unsummarized = await this.filterAllowedRoles(
+      u.db("memories").where({ isolationKey, type: "message", summarized: 0 }),
+    ).orderBy("createTime", "asc");
 
     if (unsummarized.length >= Number(messagesPerSummary)) {
       const batch = unsummarized.slice(0, Number(messagesPerSummary));
-      const batchIds = batch.map((m) => m.id);
-      const batchContents = batch.map((m) => m.content);
+      const batchIds = batch.map((m: any) => m.id);
+      const batchContents = batch.map((m: any) => m.content);
 
       const summaryContent = await this.generateSummary(batchContents);
       const summaryEmbedding = await getEmbedding(summaryContent);
@@ -139,21 +169,27 @@ class Memory {
 
     const isolationKey = this.isolationKey;
     // shortTerm: 最近未被总结的 messages
-    const shortTerm = await u
-      .db("memories")
-      .where({ isolationKey, type: "message", summarized: 0 })
+    const shortTerm = await this.filterAllowedRoles(
+      u.db("memories").where({ isolationKey, type: "message", summarized: 0 }),
+    )
       .orderBy("createTime", "desc")
       .limit(Number(shortTermLimit));
     shortTerm.reverse(); // 最旧在前
 
     // summaries: 最近的 summary
-    const summaries = await u.db("memories").where({ isolationKey, type: "summary" }).orderBy("createTime", "desc").limit(Number(summaryLimit));
+    const summaries = this.policy.includeSummaries
+      ? await u.db("memories").where({ isolationKey, type: "summary" }).orderBy("createTime", "desc").limit(Number(summaryLimit))
+      : [];
     summaries.reverse();
 
     // rag: 向量搜索所有 messages
-    const queryEmbedding = await getEmbedding(text);
-    const allMessages = await u.db("memories").where({ isolationKey, type: "message" });
-    const ragResults = vectorSearch(allMessages, queryEmbedding, Number(ragLimit));
+    const ragResults = this.policy.includeAutomaticRag
+      ? vectorSearch(
+          await this.filterAllowedRoles(u.db("memories").where({ isolationKey, type: "message" })),
+          await getEmbedding(text),
+          Number(ragLimit),
+        )
+      : [];
 
     return {
       shortTerm: shortTerm.map((m: any) => ({ id: m.id, role: m.role, name: m.name, content: m.content, createTime: m.createTime })),
@@ -173,6 +209,12 @@ class Memory {
     const isolationKey = this.isolationKey;
     // 步骤1: 向量搜索 summary
     const queryEmbedding = await getEmbedding(keyword);
+    if (!this.policy.includeSummaries) {
+      const messages = await this.filterAllowedRoles(u.db("memories").where({ isolationKey, type: "message" }));
+      const directMatches = vectorSearch(messages, queryEmbedding, Number(deepRetrieveSummaryLimit));
+      return directMatches.map((m) => ({ id: m.id, content: m.content, createTime: m.createTime }));
+    }
+
     const allSummaries = await u.db("memories").where({ isolationKey, type: "summary" });
     const topSummaries = vectorSearch(allSummaries, queryEmbedding, Number(deepRetrieveSummaryLimit));
 

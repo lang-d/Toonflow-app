@@ -29,6 +29,26 @@ before(async () => {
     table.integer("storyboardId");
     table.integer("assetId");
   });
+  await db.schema.createTable("o_assets", (table: any) => {
+    table.integer("id").primary();
+    table.text("name");
+  });
+  await db.schema.createTable("o_directorPlanGeneration", (table: any) => {
+    table.string("generationId").primary();
+    table.integer("projectId");
+    table.integer("scriptId");
+    table.string("state");
+    table.text("videoStyle");
+    table.integer("updatedAt");
+  });
+  await db("o_directorPlanGeneration").insert({
+    generationId: "panel-style",
+    projectId: 1,
+    scriptId: 11,
+    state: "committed",
+    videoStyle: "三维卡通乡村漫剧，清晰轮廓、哑光材质和自然光色。",
+    updatedAt: 1,
+  });
   await db("o_storyboard").insert([
     {
       id: 101,
@@ -38,7 +58,21 @@ before(async () => {
       prompt: "当前提示词一",
       shouldGenerateImage: 1,
       factStatus: "ready",
-      tableRowJson: JSON.stringify({ index: 1, picture: "上游旧句一", action: "放下筷子" }),
+      tableRowJson: JSON.stringify({
+        version: 2,
+        index: 1,
+        groupKey: "G01",
+        beatId: "B01",
+        durationSec: 4,
+        location: "院坝",
+        timeOfDay: "日",
+        picture: "上游旧句一",
+        action: "放下筷子",
+        shotSize: "中景",
+        dialogue: [],
+        soundEffects: [],
+        requiredAssets: [],
+      }),
     },
     {
       id: 102,
@@ -48,7 +82,20 @@ before(async () => {
       prompt: "当前提示词二",
       shouldGenerateImage: 0,
       factStatus: "ready",
-      tableRowJson: JSON.stringify({ index: 2, picture: "上游旧句二" }),
+      tableRowJson: JSON.stringify({
+        version: 3,
+        index: 2,
+        groupKey: "G01",
+        beatId: "B02",
+        durationSec: 5,
+        location: "院坝",
+        timeOfDay: "日",
+        shotDescription: "苏晴扶着纸箱站在台边。她听见门外车声后抬头；镜头结束时，她向院门迈出一步。",
+        shotSize: "中景",
+        dialogue: [],
+        soundEffects: ["门外车声"],
+        requiredAssets: [{ assetId: 503, name: "苏晴", type: "role", order: 0 }],
+      }),
     },
     {
       id: 201,
@@ -66,6 +113,12 @@ before(async () => {
     { storyboardId: 101, assetId: 502 },
     { storyboardId: 102, assetId: 503 },
     { storyboardId: 201, assetId: 999 },
+  ]);
+  await db("o_assets").insert([
+    { id: 501, name: "asset-501" },
+    { id: 502, name: "asset-502" },
+    { id: 503, name: "asset-503" },
+    { id: 999, name: "other-project-asset" },
   ]);
 });
 
@@ -111,15 +164,55 @@ test("panel review sources return parsed facts without current target fields", a
     snapshotId: targets.snapshotId,
     storyboardIds: [101, 102],
   });
-  assert.deepEqual(sources.items[0].tableRowJson, {
-    index: 1,
+  assert.equal(sources.videoStyle, "三维卡通乡村漫剧，清晰轮廓、哑光材质和自然光色。");
+  const source = sources.items[0].source;
+  assert.ok(source);
+  assert.deepEqual(source, {
+    version: 2,
     picture: "上游旧句一",
-    action: "放下筷子",
+    shotSize: "中景",
+    cameraAngle: null,
+    requiredAssets: [],
   });
   assert.equal(sources.items[0].sourceError, null);
+  assert.equal("tableRowJson" in sources.items[0], false);
+  assert.equal("action" in source, false);
+  assert.equal("dialogue" in source, false);
+  assert.equal("soundEffects" in source, false);
   assert.equal("prompt" in sources.items[0], false);
   assert.equal("associateAssetsIds" in sources.items[0], false);
   assert.equal("shouldGenerateImage" in sources.items[0], false);
+
+  const v3Source = sources.items[1].source;
+  assert.deepEqual(v3Source, {
+    version: 3,
+    shotDescription: "苏晴扶着纸箱站在台边。她听见门外车声后抬头；镜头结束时，她向院门迈出一步。",
+    shotSize: "中景",
+    cameraAngle: null,
+    requiredAssets: [{ assetId: 503, name: "苏晴", type: "role", order: 0 }],
+  });
+  assert.equal("picture" in v3Source, false);
+  assert.equal("action" in v3Source, false);
+});
+
+test("single-call review bundle keeps every target, source, and ordered asset name", async () => {
+  const bundle = await reviewScope.readStoryboardPanelReviewBundle({ projectId: 1, scriptId: 11 });
+  assert.equal(bundle.snapshotId.length, 64);
+  assert.equal(bundle.total, 2);
+  assert.deepEqual(bundle.items[0].associateAssets, [
+    { reference: "@Image1", assetId: 501, name: "asset-501" },
+    { reference: "@Image2", assetId: 502, name: "asset-502" },
+  ]);
+  assert.equal(bundle.items[0].prompt, "当前提示词一");
+  assert.deepEqual(bundle.items[0].source, {
+    version: 2,
+    picture: "上游旧句一",
+    shotSize: "中景",
+    cameraAngle: null,
+    requiredAssets: [],
+  });
+  assert.equal(bundle.items[1].associateAssets[0].name, "asset-503");
+  assert.equal(bundle.items[1].source?.version, 3);
 });
 
 test("panel review target reread is scoped and rejects missing or cross-project ids", async () => {
@@ -169,5 +262,34 @@ test("panel review snapshot becomes stale when targets or sources change", async
     }),
     /审核对象已变化/,
   );
-});
 
+  const restoredV2 = {
+    version: 2,
+    index: 1,
+    groupKey: "G01",
+    beatId: "B01",
+    durationSec: 4,
+    location: "院坝",
+    timeOfDay: "日",
+    picture: "上游旧句一",
+    action: "放下箱子",
+    shotSize: "中景",
+    dialogue: [],
+    soundEffects: [],
+    requiredAssets: [],
+  };
+  await db("o_storyboard").where({ id: 101 }).update({ tableRowJson: JSON.stringify(restoredV2) });
+  const styleSnapshot = await reviewScope.readStoryboardPanelTargets({ projectId: 1, scriptId: 11 });
+  await db("o_directorPlanGeneration")
+    .where({ generationId: "panel-style" })
+    .update({ videoStyle: "updated stable video style", updatedAt: 2 });
+  await assert.rejects(
+    reviewScope.readStoryboardPanelSources({
+      projectId: 1,
+      scriptId: 11,
+      snapshotId: styleSnapshot.snapshotId,
+      storyboardIds: [101],
+    }),
+    /审核对象已变化/,
+  );
+});

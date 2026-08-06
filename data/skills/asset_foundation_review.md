@@ -45,6 +45,7 @@ description: 审核塑角造景资产基础设定、视觉设计推导和图片 
 - 角色 `visualDesignRationale` 没有处理主角亲和度、灰黑塌缩、疲惫苦相、证件照感、素人试衣照感等审美风险。
 - 角色 `assetFoundation` 缺少可画的面部锚点、体态锚点或默认服装锚点。
 - 角色 `assetFoundation` 只写清秀、沉稳、都市感、真实感、年轻等泛词，没有落到具体可画细节。
+- 项目制作参考包已明确角色声音/台词表现，但角色 `assetFoundation` 遗漏该稳定表达锚点；或把没有资料依据的声线、方言、口音、真人模仿、TTS 供应商、音色 ID、克隆参数写成角色事实。
 - `assetFoundation` 写成导演规划、分镜、视频提示词或图片 prompt。
 - `assetFoundation` 出现镜头、构图、景别、运镜。
 - `assetFoundation` 出现电影感、高级感、治愈感等风格化表现。
@@ -55,6 +56,7 @@ description: 审核塑角造景资产基础设定、视觉设计推导和图片 
 - 手机、电脑、录音笔等载体道具的 `assetFoundation` 固化了具体聊天对象、金额、录音内容、屏幕文字、证据结论或后续剧情状态。
 - `assetImagePrompt` 新增了 `assetFoundation` 和 `visualDesignRationale` 没有的人设、关系、世界规则或剧情功能。
 - `assetImagePrompt` 没有落实 `visualDesignRationale` 的识别度策略和审美修正。
+- `assetImagePrompt` 包含声线、音区、语速、咬字、方言、口音、台词、TTS 供应商、音色 ID 或其他不可见声音信息。
 - 角色 `assetImagePrompt` 不是角色设定图/turnaround，或缺少头像特写、正面、侧面、背面、完整全身、中性背景等约束。
 - 角色 `assetImagePrompt` 写成工作场景、情绪场景、剧情动作、影视镜头或分镜画面。
 - `assetImagePrompt` 与当前项目 `artStyle` 或资产类型视觉手册明显冲突。
@@ -66,6 +68,7 @@ description: 审核塑角造景资产基础设定、视觉设计推导和图片 
 以下情况不要直接 blocking：
 
 - 面部、体态、服装、布局、材质、磨损等可见细节来自保守视觉补全，并且没有改变身份、关系、地点、职业、能力、世界规则或剧情功能。
+- 角色 `assetFoundation` 记录了资料明确的稳定声音/台词表现，同时 `assetImagePrompt` 没有尝试把它画出来。
 - 视觉补全没有逐字出现在参考包里，但能从资产名称、初始描述、已有基础设定或视觉手册合理推出。
 - `assetImagePrompt` 使用了视觉手册中的构图、光线、材质、视图模板等表现规则，只要没有新增资产事实。
 - 视觉手册中的类型速查、状态词典、材质表或服化参考被用于视觉转译，并且没有反向改写 `assetFoundation`。

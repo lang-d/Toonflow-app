@@ -9,6 +9,8 @@ import {
 } from "@/services/productionReview";
 import { readMusicModelTechnique, resolveMusicPromptProfile } from "@/services/musicPromptProfile";
 import { getMusicLibraryEdition, getMusicPromptVersion } from "@/services/musicLibrary";
+import { resolveMusicModelCapabilities } from "@/services/musicModelCapability";
+import { musicRequestCheck } from "@/utils/ai";
 
 export const musicReviewIssueSchema = z.object({
   issueType: z.string().min(1),
@@ -31,6 +33,22 @@ const reviewSchema = z.object({
 });
 
 type ReviewIssue = z.infer<typeof musicReviewIssueSchema>;
+
+export function splitMusicPromptTimingConfig(config: Record<string, any>, durationParameter: boolean) {
+  const modelGenerationConfig = { ...config };
+  const timing = {
+    suggestedDurationSec: Number(config.effectiveMusicDurationSec || 0) || null,
+    providerDurationSec: durationParameter ? Number((config.durationSec ?? config.duration) || 0) || null : null,
+    providerAcceptsDurationParameter: durationParameter,
+  };
+  delete modelGenerationConfig.effectiveMusicDurationSec;
+  delete modelGenerationConfig.generationDurationSec;
+  if (!durationParameter) {
+    delete modelGenerationConfig.durationSec;
+    delete modelGenerationConfig.duration;
+  }
+  return { modelGenerationConfig, timing };
+}
 
 function textTooGeneric(text: string) {
   const value = String(text || "").trim();
@@ -234,29 +252,43 @@ export async function reviewMusicPrompt(input: {
   const edition = promptVersion.targetType === "edition"
     ? await getMusicLibraryEdition(input.projectId, Number(promptVersion.editionId))
     : null;
+  const lyrics = promptVersion.lyricsVersionId == null
+    ? null
+    : await (u.db as any)("o_musicLyricsVersion").where({ projectId: input.projectId, id: promptVersion.lyricsVersionId }).first();
   if (!cue && !edition) throw new Error("Music prompt target does not exist");
   if (input.cueId != null && Number(promptVersion.cueId) !== input.cueId) throw new Error("Prompt version does not belong to this cue");
   if (input.editionId != null && Number(promptVersion.editionId) !== input.editionId) throw new Error("Prompt version does not belong to this edition");
   const isModelSpecific = promptVersion.promptMode === "modelSpecific";
-  const profile = isModelSpecific ? await resolveMusicPromptProfile(String(promptVersion.model)) : null;
+  const [profile, capabilities] = await Promise.all([
+    isModelSpecific ? resolveMusicPromptProfile(String(promptVersion.model)) : Promise.resolve(null),
+    isModelSpecific ? resolveMusicModelCapabilities(String(promptVersion.model)) : Promise.resolve(null),
+  ]);
   const modelTechnique = profile ? await readMusicModelTechnique(profile) : null;
   const skill = await readMusicSkill("music_review.md", "Review music bible, music plan and music prompt quality.");
-  const localIssues: ReviewIssue[] = [];
-  if (promptVersion.prompt.length > 1800) {
-    localIssues.push({
-      issueType: "music_prompt_too_long",
-      severity: "warning",
-      message: "Music prompt is likely too long for a generation model.",
-      reason: "Music prompts should contain musical generation requirements rather than full story material.",
-      proposedAction: "Reduce to duration, emotion arc, instrumentation, structure, vocal/lyrics and avoid fields.",
-    });
-  }
+  const requestContract = {
+    ...promptVersion.generationConfig,
+    prompt: promptVersion.prompt,
+    negativePrompt: promptVersion.negativePrompt,
+    lyrics: lyrics?.content ?? undefined,
+    vocalMode: edition?.vocalMode ?? (lyrics ? "vocal" : "instrumental"),
+  };
+  const adapterIssues = isModelSpecific
+    ? (await musicRequestCheck(String(promptVersion.model) as `${string}:${string}`, requestContract)).issues
+    : [];
+  const localIssues: ReviewIssue[] = adapterIssues.map((issue) => ({
+    issueType: `music_provider_${issue.code}`,
+    severity: "blocking",
+    message: issue.message,
+    reason: "The selected provider adapter reported that this exact request cannot be submitted.",
+    proposedAction: "Resolve the reported provider request-contract issue, then review this exact Prompt version again.",
+  }));
   const aiReview = await runAiReview({
     system: [
       isModelSpecific
         ? "Review only the compiled music prompt against its target model profile. Do not evaluate generated audio."
         : "Review only the provider-neutral music prompt for musical completeness and later model adaptation. Do not evaluate generated audio.",
       "Check duration, emotional arc, instrumentation, structure, vocal/lyrics mode and avoid/negative prompt.",
+      "Approximate duration and form may be natural parts of the Prompt. Do not treat timing metadata as a model field, and do not require or reject a provider duration parameter unless the capability payload says the provider accepts one.",
       skill.content,
       ...(profile ? ["# Target Music Model Prompt Profile", profile.content] : []),
       ...(modelTechnique ? ["# Target Music Model Prompt Technique", modelTechnique.content] : []),
@@ -282,7 +314,7 @@ export async function reviewMusicPrompt(input: {
       } : null,
       prompt: promptVersion.prompt,
       negativePrompt: promptVersion.negativePrompt,
-      generationConfig: promptVersion.generationConfig,
+      ...splitMusicPromptTimingConfig(promptVersion.generationConfig, capabilities?.durationParameter === true),
     },
   });
   const issues = [...localIssues, ...aiReview.issues];

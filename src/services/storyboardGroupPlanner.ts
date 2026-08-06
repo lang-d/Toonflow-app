@@ -1,6 +1,10 @@
 import { buildTrackBgmSuggestion, TrackBgmSuggestion } from "@/services/musicSuggestion";
 import { getProjectDefaultVideoPolicy, VideoDurationPolicy } from "@/services/videoModelPolicy";
-import { parseStoryboardTableRow } from "@/services/storyboardTableContract";
+import {
+  legacyStoryboardGroupIntent,
+  legacyStoryboardGroupName,
+  parseStoryboardTableRow,
+} from "@/services/storyboardTableContract";
 
 export interface StoryboardGroupPlan {
   groupKey: string;
@@ -42,11 +46,18 @@ export function fallbackGroupKey(index: number) {
 
 export function deriveStoryboardGroupMeta(item: any, index: number): StoryboardGroupMeta {
   const fact = parseStoryboardTableRow(item.tableRowJson);
+  const factDescription = fact?.version === 3 ? fact.shotDescription : fact?.action || fact?.picture || "";
   const rawKey = safeText(fact?.groupKey) || safeText(item.groupKey) || safeText(item.track);
   const groupKey = compactKey(rawKey) || fallbackGroupKey(index);
-  const groupName = safeText(fact?.groupName) || safeText(item.groupName) || safeText(item.track) || groupKey;
+  const groupName =
+    (fact ? legacyStoryboardGroupName(fact) : "") || safeText(item.groupName) || safeText(item.track) || groupKey;
   const groupIntent =
-    safeText(fact?.groupIntent) || safeText(item.groupIntent) || safeText(item.action) || safeText(item.picture) || groupName;
+    (fact ? legacyStoryboardGroupIntent(fact) : "") ||
+    safeText(item.groupIntent) ||
+    safeText(factDescription) ||
+    safeText(item.action) ||
+    safeText(item.picture) ||
+    groupName;
   return {
     groupKey,
     groupName,
@@ -98,16 +109,12 @@ export function buildStoryboardGroupPlans(
       });
     }
 
-    if (groupRows.length > 6) {
-      warnings.push({
-        issueType: "group_pacing_dragging",
-        severity: "warning",
-        message: "Storyboard group contains many shots and may feel slow for short drama pacing.",
-        reason: `shots=${groupRows.length}`,
-      });
-    }
-
-    const groupIntent = safeText(first.groupIntent) || safeText(first.action) || safeText(first.picture);
+    const firstFact = parseStoryboardTableRow(first.tableRowJson);
+    const groupIntent =
+      safeText(first.groupIntent) ||
+      safeText(firstFact?.version === 3 ? firstFact.shotDescription : firstFact?.action || firstFact?.picture) ||
+      safeText(first.action) ||
+      safeText(first.picture);
     return {
       groupKey,
       groupName: safeText(first.groupName) || groupKey,

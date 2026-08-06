@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { buildSkillPrompt, createSkillTools, parseFrontmatter } from "@/utils/agent/skillsTools";
+import { createSkillTools, parseFrontmatter } from "@/utils/agent/skillsTools";
 import {
   readConfiguredSkill,
   resolveManualFile,
@@ -40,6 +40,7 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
     ],
     tools: [
       "get_flowData",
+      "resource_access",
       "update_agent_progress",
       "await_user_decision",
       "list_director_plan_generations",
@@ -55,12 +56,12 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
   deriveAssets: {
     workflow: "production_execution_derive_assets.md",
     skills: [],
-    tools: ["get_flowData", "update_agent_progress", "await_user_decision", "add_deriveAsset"],
+    tools: ["get_flowData", "resource_access", "update_agent_progress", "await_user_decision", "add_deriveAsset"],
   },
   generateAssets: {
     workflow: "production_execution_generate_assets.md",
     skills: [],
-    tools: ["get_flowData", "update_agent_progress", "await_user_decision", "generate_deriveAsset"],
+    tools: ["get_flowData", "resource_access", "update_agent_progress", "await_user_decision", "generate_deriveAsset"],
   },
   storyboardTable: {
     workflow: "production_execution_storyboard_table.md",
@@ -75,10 +76,12 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
     ],
     tools: [
       "get_flowData",
+      "resource_access",
       "update_agent_progress",
       "await_user_decision",
       "list_storyboard_generations",
       "read_storyboard_generation",
+      "inspect_storyboard_table_change",
       "list_production_reviews",
       "read_production_review",
       "read_text_asset",
@@ -96,20 +99,21 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
     ],
     tools: [
       "get_flowData",
+      "resource_access",
+      "read_storyboard_panel_targets",
+      "read_storyboard_panel_sources",
       "update_agent_progress",
       "await_user_decision",
-      "list_storyboard_generations",
-      "read_storyboard_generation",
       "list_production_reviews",
       "read_production_review",
       "read_text_asset",
-      "update_storyboard_panel_v2",
+      "update_storyboard_panel",
     ],
   },
   storyboardGenerate: {
     workflow: "production_execution_storyboard_gen.md",
     skills: [],
-    tools: ["get_flowData", "update_agent_progress", "await_user_decision", "generate_storyboard"],
+    tools: ["get_flowData", "resource_access", "update_agent_progress", "await_user_decision", "generate_storyboard"],
   },
   supervisionDirectorPlan: {
     workflow: "production_supervision_director_plan.md",
@@ -119,6 +123,7 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
     ],
     tools: [
       "get_flowData",
+      "resource_access",
       "update_agent_progress",
       "await_user_decision",
       "list_director_plan_generations",
@@ -142,6 +147,7 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
     ],
     tools: [
       "get_flowData",
+      "resource_access",
       "update_agent_progress",
       "await_user_decision",
       "list_storyboard_generations",
@@ -158,13 +164,10 @@ export const PRODUCTION_STAGE_DEFINITIONS: Record<ProductionStage, ProductionSta
       { source: "configured", file: "production_skills/storyboard_prompt_techniques.md", name: "storyboard_prompt_techniques" },
     ],
     tools: [
-      "get_flowData",
       "read_storyboard_panel_targets",
       "read_storyboard_panel_sources",
       "update_agent_progress",
       "await_user_decision",
-      "list_storyboard_generations",
-      "read_storyboard_generation",
       "list_production_reviews",
       "read_production_review",
       "read_text_asset",
@@ -178,6 +181,27 @@ function resolveStageSkill(spec: SkillSpec, artStyle: string, directorManual: st
   return resolveManualFile(spec.kind, manualKey, spec.file);
 }
 
+function productionSkillBody(content: string) {
+  return content.replace(/^\uFEFF?---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, "").trim();
+}
+
+function buildPreloadedProductionSkillPrompt(
+  skills: Array<{ path: string; name: string; description: string; body: string }>,
+) {
+  if (!skills.length) return "";
+  const content = skills
+    .map(
+      (skill) => `<skill_content name="${skill.name}" source="${skill.path}">
+${skill.body}
+</skill_content>`,
+    )
+    .join("\n\n");
+  return `## Required Production Skills
+The following stage Skills are already loaded and remain stable across every continuation Turn. Follow their full instructions. Do not call activate_skill for them. Use read_skill_file only when a loaded Skill explicitly requires an additional resource file.
+
+${content}`;
+}
+
 export async function loadProductionStage(input: {
   stage: ProductionStage;
   artStyle: string;
@@ -185,18 +209,19 @@ export async function loadProductionStage(input: {
 }) {
   const definition = PRODUCTION_STAGE_DEFINITIONS[input.stage];
   const workflow = await readConfiguredSkill(definition.workflow);
-  const skills: Array<{ path: string; name: string; description: string }> = [];
+  const skills: Array<{ path: string; name: string; description: string; body: string }> = [];
 
   for (const spec of definition.skills) {
     const file = resolveStageSkill(spec, input.artStyle, input.directorManual);
     if (!file) {
       throw new Error(`Required skill missing for ${input.stage}: ${spec.name} (${spec.file})`);
     }
-    const parsed = parseFrontmatter(await fs.promises.readFile(file, "utf8"));
+    const raw = await fs.promises.readFile(file, "utf8");
+    const parsed = parseFrontmatter(raw);
     if (parsed.name !== spec.name) {
       throw new Error(`Skill contract mismatch: ${file}; expected name=${spec.name}, actual name=${parsed.name}`);
     }
-    skills.push({ path: file, ...parsed });
+    skills.push({ path: file, ...parsed, body: productionSkillBody(raw) });
   }
 
   const resolvedSources = [
@@ -218,17 +243,19 @@ export async function loadProductionStage(input: {
     tools: definition.tools,
   });
 
+  const skillTools = skills.length
+    ? createSkillTools(
+        skills,
+        { mainSkill: skills, secondarySkills: [], tertiarySkills: [] },
+        skillRootCandidates()[0] || path.dirname(skills[0].path),
+      )
+    : null;
+
   return {
     workflow: workflow.content,
     definition,
-    prompt: skills.length ? buildSkillPrompt(skills) : "",
-    tools: skills.length
-      ? createSkillTools(
-          skills,
-          { mainSkill: skills, secondarySkills: [], tertiarySkills: [] },
-          skillRootCandidates()[0] || path.dirname(skills[0].path),
-        )
-      : {},
+    prompt: buildPreloadedProductionSkillPrompt(skills),
+    tools: skillTools ? { read_skill_file: skillTools.read_skill_file } : {},
   };
 }
 

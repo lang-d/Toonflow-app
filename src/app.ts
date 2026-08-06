@@ -29,7 +29,7 @@ import {
 } from "@/services/storagePaths";
 import { isStorageMaintenanceActive } from "@/services/storageMigration";
 import { skillRootCandidates } from "@/services/skillResolver";
-import { syncBuiltinScriptSkills, syncBuiltinStyleSkills } from "@/services/builtinSkillSync";
+import { syncBuiltinProductionWorkflowSkills, syncBuiltinScriptSkills, syncBuiltinStyleSkills } from "@/services/builtinSkillSync";
 import { migrateScriptWorkspaceTextStorage } from "@/services/scriptWorkspaceText";
 import { initLogger, createLogger } from "@/logger";
 
@@ -73,6 +73,11 @@ async function startServeOnce(options: { startQueue?: boolean; portRetryMs?: num
   apiLog.info("Builtin style skills synchronized", { event: "skills.builtin-style-sync", ...skillSync });
   const scriptSkillSync = syncBuiltinScriptSkills();
   apiLog.info("Builtin script skills synchronized", { event: "skills.builtin-script-sync", ...scriptSkillSync });
+  const productionWorkflowSkillSync = syncBuiltinProductionWorkflowSkills();
+  apiLog.info("Builtin Production workflow skills synchronized", {
+    event: "skills.builtin-production-workflow-sync",
+    ...productionWorkflowSkillSync,
+  });
   if (options.startQueue !== false) startVideoGenerationQueue();
 
   await u.writeVersion();

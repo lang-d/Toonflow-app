@@ -1,156 +1,108 @@
 ---
 name: production_execution_storyboard_table
-description: 阶段4执行规则：读取剧本、导演规划和资产，激活分镜表技法，并通过结构化分批工具原子提交 StoryboardTableRow。
+description: 阶段4执行规则：以 StoryboardTableRow V3 分批写入并原子提交正式分镜表。
 ---
 
 # 阶段4：结构化分镜表写入
 
-本技能只定义执行流程、事实源边界、结构化写入契约和禁止项。拆镜方法、镜头连续性、机位串联、资产选择、台词时长、情绪表达等创作细则只看 `storyboard_table_techniques` 与当前导演手册的 `director_storyboard_table_narrative`。
+本 Skill 只定义事实读取、V3 写入契约、工具顺序和失败处理。拆镜、景别、时长与连续性方法来自 `storyboard_table_techniques`；题材 Skill 只补充该题材必须可见的事实、因果、关系和状态。
 
-## 规则优先级
+## 职责与事实来源
 
-1. 后端结构化工具和 `StoryboardTableRow` 契约。
-2. 本阶段的事实源边界和禁止项。
-3. `storyboard_table_techniques` 与当前导演手册 `director_storyboard_table_narrative` 中的创作方法。
+- 只生成或返修分镜表，不生成分镜图、图片 Prompt、视频 Prompt 或资产。
+- 剧本决定事件、动作、台词和因果；正式导演规划提供场面目标、必要空间约束和连续性基线；正式资产只提供可引用 ID。
+- 返修时读取指定 generation/revision、完整审核报告和全部授权问题，不用 Memory 摘要替代正式内容。
+- 不把导演分析、轴线预演、视觉说明或旧 `videoDesc` 填入逐镜事实。
+- 激活 `storyboard_table_techniques` 与当前 `director_storyboard_table_narrative`；不得加载废弃视觉分镜 Skill。
 
-工具、状态、唯一写入方式和失败处理以本技能为准；字段口径、资产锚定、时长、`soundEffects`、分组、机位串联和连续性以 `storyboard_table_techniques` 为准；题材拆镜、对话反应、节奏钩子以当前 `director_storyboard_table_narrative` 补充，但不得覆盖工程契约。
-
-如果技法内容与本阶段工具边界冲突，只吸收创作方法，不采用旧输出格式或旧事实源；题材方法只能来自当前加载的导演叙事手册。
-
-## 必须激活的技法
-
-开始写分镜前，必须调用 `activate_skill` 激活：
-
-- `storyboard_table_techniques`
-- `director_storyboard_table_narrative`
-
-激活后按技法完成拆镜、导演规划对齐、镜头串联、视觉连续性、资产引用、台词时长、转场与分组设计。
-不得激活 `director_storyboard_table_style`；分镜表只继承 `scriptPlan` 中已确定的视觉方案。
-
-## 唯一写入方式
-
-分镜事实只能通过以下工具写入；`prepare_storyboard_table` 只保存本轮内存预演，不写数据库：
-
-1. `prepare_storyboard_table`
-2. `begin_storyboard_table`
-3. `append_storyboard_rows`
-4. `commit_storyboard_table`
-
-续接失败草稿时，先用只读工具 `get_storyboard_generation_draft` 按页读取原 generation；需要用户决定时调用 `await_user_decision`。这两个工具都不是分镜事实写入入口。
-
-不得输出整张表文本、标签化正文、完整结构文本，或要求前端从聊天内容中恢复分镜事实。不得读取或生成旧的视频描述字段作为事实。
-
-## 执行流程
-
-### 同一 Agent 内部预演
-
-预演与正式分镜必须由当前 `storyboardTableAgent` 在同一次流式运行、同一份上下文中完成。禁止启动独立模型重复分析剧本。预演调用 `prepare_storyboard_table`，只保存在本轮工具闭包中，不写数据库，也不是用户可见的额外阶段。
-
-- 先在内部建立剧情事实、情绪曲线、镜头功能、时长、轴线与连续性 ledger；`prepare_storyboard_table` 只提交正式写表必须锁定的紧凑结构，不重复提交完整画面、台词、动作、资产或情绪文本。
-- 预演镜头 index 必须严格为 `0..N-1`；分组必须按顺序完整覆盖这些 index，不能遗漏、重复或越界。
-- 仅当预演返回 `ready` 才能开始 generation；`begin_storyboard_table` 的总行数与 groups 必须原样使用工具返回值。
-- 若单条不可分割长镜头超过动态模型能力，提交 `needs_user`，等待用户选择更换模型或明确授权重新设计镜头；不得先写表、自动拆镜或默认建议后期拼接。
-- 写表期间若发现必须增加、删除、移动镜头或改变分组，停止追加，重新调用 `prepare_storyboard_table`，再重新 `begin_storyboard_table`。旧草稿由后端标记 superseded 并保留诊断；不得在旧 generation 上制造索引漂移。
-
-1. 调用 `get_flowData` 读取 `script`、`scriptPlan`、`assets`。
-2. 激活本阶段要求的通用分镜表技法与当前题材叙事技法。
-3. 按 `storyboard_table_techniques` 建立剧情事实、情绪曲线、场景机位、站位连续性和镜头经济 ledger。
-4. 调用 `prepare_storyboard_table` 提交连续 index、事件标识覆盖、预计整数时长、轴线侧、连续性承接、可切点、不可拆长镜与完整分组计划。
-5. 使用准备工具返回的总行数与分组调用 `begin_storyboard_table`。
-6. 按 `index` 提交 5–10 条一批的 `StoryboardTableRow`。
-7. 如果工具调用中断，可重试完全相同内容；同一 generation 内不得用不同内容覆盖已写入 index。
-8. 全部 index 写满后调用 `commit_storyboard_table`。
-9. 成功后只回复简短结果；系统会自动启动独立只读审核。
-
-## 审核后返修
-
-当用户针对分镜表审核报告提出自然语言调整意见时，当前正式分镜表是唯一返修基线，不是失败草稿：
-
-1. 先理解用户本轮自然语言。历史审核报告只作参考，不能把旧报告或上一次待办自动当成用户本轮的返修授权；语义不清时只追问，不创建 generation。
-2. 用户明确提出新的分镜工作时，按新的工作目标读取当前事实，不继承旧审核返修范围。
-3. 用户明确要求针对审核调整、指定某版为基线，或引用“刚才/上一份/那几个建议”时，先调用 `list_production_reviews` / `read_production_review` / `list_storyboard_generations` / `read_storyboard_generation` 定位并读取审核报告全文和基线版本。
-4. 再调用 `get_flowData` 读取当前 `storyboard`、`scriptPlan` 与 `assets`，核对当前正式事实、用户要求和被指定的基线差异。
-5. 新建 generation，并完整提交修订后的分镜表；不得用图片 Prompt、聊天文本、Memory 摘要、结构化 suggestion rows 或旧 `videoDesc` 恢复事实。
-6. 未被用户要求调整的分镜必须保留既有结构化事实；只有被点名镜头及为轴线、站位、动作终态承接所必需的相邻镜头可以改写。
-7. 不得自行扩大返修范围，不得在返修中启动分镜面板或分镜图生成；提交后由系统再次安排只读审核。
-
-## 提交失败处理
-
-- `commit_storyboard_table` 返回 `committed` 时，才视为分镜表完成。
-- `commit_storyboard_table` 返回 `invalid` 时，本轮写入立即锁定；不得再次调用 begin/append/commit，也不得新建 generation 绕过失败。
-- `invalid` 后必须解释全部校验问题，给出明确调整方向，并调用 `await_user_decision` 提出一个具体问题；不得只输出工程字段名。
-- 用户下一轮确认调整时，必须先按 `generationId` 调用 `get_storyboard_generation_draft` 读取失败草稿，再创建新 generation；不得把当前正式分镜表误当成失败草稿。
-- `commit_storyboard_table` 返回 `failed`、`GENERATION_SUPERSEDED` 或 `COMMIT_IN_PROGRESS` 时，本轮必须停止并报告工程失败。
-- 所有机器状态字段均使用小写：`writing / invalid / failed / committing / superseded / committed / expired`；`GENERATION_SUPERSEDED`、`COMMIT_IN_PROGRESS` 只作为 `error.code`，不是状态。
-- 不得在同一轮里反复调用 `commit_storyboard_table`。
-- 不得在同一轮里新建 generation 试图绕过失败。
-- 遇到 `COMMIT_IN_PROGRESS` 时，只能回复：`提交仍被后端任务占用，请稍后重试或重新开始分镜表生成。`
-
-## StoryboardTableRow 写入契约
-
-每条分镜必须通过工具写入完整 `StoryboardTableRow`。字段含义、填写边界和质量规则不在本执行层展开，统一遵守 `storyboard_table_techniques`。
+## V3 正式结构
 
 ```ts
-{
-  version: 1;
+type StoryboardTableRowV3 = {
+  version: 3;
   index: number;
   sceneNo?: string;
-
   groupKey: string;
-  groupName: string;
-  groupIntent: string;
   beatId: string;
-
   durationSec: number;
-
   location: string;
   timeOfDay: string;
   sceneContinuityId?: string;
-
-  picture: string;
+  shotDescription: string;
   shotSize: string;
-  cameraMove: string;
+  cameraMove?: string;
   cameraAngle?: string;
   transitionFromPrevious?: string;
-
-  action: string;
-
-  characters: Array<{
-    assetId?: number;
-    name: string;
-    action: string;
-    orientation: string;
-    spatialPosition: string;
-    posture?: string;
-    expression?: string;
-    gaze?: string;
-    handAction?: string;
-    movement?: string;
-  }>;
-
-  visibleEmotion: string;
-
-  dialogue: Array<{
-    speaker: string;
-    text: string;
-    voiceTone?: string;
-  }>;
-
+  dialogue: Array<{ speaker: string; text: string; voiceTone?: string }>;
   soundEffects: string[];
-
   requiredAssets: Array<{
     assetId: number;
     name: string;
     type: "role" | "scene" | "tool" | "clip";
     order: number;
   }>;
+};
+```
+
+V3 禁止出现 `picture`、`action`、`characters`、`visibleEmotion`、行级 `groupName` 或行级 `groupIntent`，也不得把这些字段编码进字符串。
+
+`groupKey` 是稳定 ASCII 标识。展示名称和组意图属于正式 group plan，不重复写进每一行。
+
+`shotDescription` 按自然时间顺序写：
+
+```text
+最早成立的可见状态 → 触发 → 连续变化 → 结束状态
+```
+
+最早状态可以直接写明，也可以使用首个动作必然推出的前态，或相邻正式镜头已明确交接且本镜继续保持的状态。不得因此补写未提供的精确站位、朝向、背景布局、后续才出现的人物或物件、动作结果以及资产没有提供的外形细节。
+
+人物反应只有在关系位移、信息接收、判断、克制、犹豫、态度翻转或情绪失控等关键转折中承担新增信息时，才写入 `shotDescription`。将其写成触发后的视线、面部、呼吸、手部或姿态变化及可继承结果；不另设情绪标签，不为普通对白补表情，也不把一整套表演清单编码进字符串。
+
+## 准备与写入
+
+1. 读取 `script`、`scriptPlan`、`assets`；先依据通用技法完成拆镜和分组。景别选择、对白画面处理和时长估算的唯一技法来源是 `storyboard_table_techniques`。
+2. 调用 `prepare_storyboard_table`，只提交：
+
+```ts
+{
+  status: "ready" | "needs_user";
+  summary: string;
+  shots: Array<{ index: number; estimatedDurationSec: number }>;
+  groups: Array<{
+    groupKey: string;
+    groupName: string;
+    groupIntent: string;
+    storyboardIndexes: number[];
+    estimatedDurationSec: number;
+  }>;
 }
 ```
 
-## 阶段禁止项
+3. `needs_user` 时说明真实缺口并等待，不创建 generation。`ready` 时调用无重复参数的 `begin_storyboard_table`。
+4. 从 index 0 起按后端 `nextIndex`，每批 5–10 行调用 `append_storyboard_rows`；中断重试只能重送完全相同的批次。
+5. 全部行写入后，本 generation 只调用一次 `commit_storyboard_table`。返回 `committed` 后立即调用 `inspect_storyboard_table_change`，由模型根据用户目标判断本次正式写入是否符合意图；有问题时读取所需正式版本，重新 prepare 并写入一个新 generation，再次检验。检验工具只返回事实，不替模型判断正确性。
 
-- 不输出整张表文本或标签化正文。
-- 不把聊天内容当作数据交接方式。
-- 不生成图片 Prompt；图片 Prompt 属于阶段5。
-- 不把聊天文本、展示文本、图片 Prompt、历史旧描述当作分镜事实。
-- 不写 BGM 到 `soundEffects`；BGM 只可作为分镜组后期建议，由下游派生。
+分组只服从连续行动和真实切点，不以填满模型最大时长为目标。
+
+## 写入前自检
+
+- 每镜只有一个清楚的视觉中心和一个可连续理解的主要行动；独立行动不得为凑时长硬并。涉及可读视觉载体时，不得同时把载体内容和另一人物的独立反应或行动硬塞同镜。
+- 一个连续动作不得因装饰性换景别被重复拆写；相邻镜头不得重复同一动作。连续静场若没有各自新增事实、动作结果、必要反应或空间/声音交接，应合并或缩短。
+- 台词、必要停顿、可见反应和动作能在 `durationSec` 内完成。
+- 关键反应已写成可见表演链；若它与完整动作不能在当前景别和时长内同时清楚呈现，已选择自然切点或真正优先的信息。
+- `shotDescription` 的开头能成为单帧起点，结尾能与下一镜自然承接。
+- 景别服务本镜新增信息，连续中景不是默认答案。
+- `requiredAssets` 只使用当前项目正式资产 ID；台词原文、说话者和顺序保持不变。
+
+## 失败处理
+
+- prepare 结构失败：读取 `phase=prepare` 和全部 issues，修正准备数据；此时尚未创建 generation。
+- begin/append/commit 失败：报告返回的真实 phase、generationId 和 issues，不把它描述成未发生的数据库或网络故障。
+- commit 返回 `invalid` 后，本轮停止所有分镜写入；归并问题并等待用户决定，不新建 generation 逃避当前错误。
+- commit 返回 `failed` 后立即停止并报告真实错误。
+- commit 成功而审核失败时，正式 Revision 已保留，只重试审核，不重写分镜表。
+- 如果整轮没有调用 `prepare_storyboard_table`，这是没有发起写入尝试，不得描述为 commit 失败，也不得自动重跑模型。
+
+完成后只报告 revision、行数、分组数和模型对检验事实的结论，不在聊天中复制整张分镜表。
+
+不得激活已废弃的 `director_storyboard_table_style` 或 `director_storyboard`。

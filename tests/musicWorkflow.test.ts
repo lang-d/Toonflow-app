@@ -19,7 +19,7 @@ let resolveMusicIsolationKey: typeof import("../src/services/musicScope").resolv
 let musicProductionToolNames: typeof import("../src/agents/musicProductionAgent/tools").musicProductionToolNames;
 let musicAiContractFailureMessage: typeof import("../src/services/musicTaskHandlers").musicAiContractFailureMessage;
 let resolveMusicGenerationDuration: typeof import("../src/services/musicModelCapability").resolveMusicGenerationDuration;
-let validateMusicGenerationConfig: typeof import("../src/services/musicModelCapability").validateMusicGenerationConfig;
+let buildMusicProviderRequest: typeof import("../src/services/musicModelCapability").buildMusicProviderRequest;
 let assertMusicPromptGenerationAllowed: typeof import("../src/services/musicAsset").assertMusicPromptGenerationAllowed;
 let parseMusicModelProfile: typeof import("../src/services/musicPromptProfile").parseMusicModelProfile;
 let assertMusicProfileGenerationConfig: typeof import("../src/services/musicPromptProfile").assertMusicProfileGenerationConfig;
@@ -27,6 +27,7 @@ let missingMusicProfileGenerationConfig: typeof import("../src/services/musicPro
 let MusicPromptConfigValidationError: typeof import("../src/services/musicPromptProfile").MusicPromptConfigValidationError;
 let mergeMusicPromptGenerationConfig: typeof import("../src/services/musicLibrary").mergeMusicPromptGenerationConfig;
 let musicReviewIssueSchema: typeof import("../src/services/musicReviewer").musicReviewIssueSchema;
+let splitMusicPromptTimingConfig: typeof import("../src/services/musicReviewer").splitMusicPromptTimingConfig;
 let parseMusicModelKey: typeof import("../src/services/musicModelCapability").parseMusicModelKey;
 
 before(async () => {
@@ -54,7 +55,7 @@ before(async () => {
   musicProductionToolNames = musicTools.musicProductionToolNames;
   musicAiContractFailureMessage = musicTaskHandlers.musicAiContractFailureMessage;
   resolveMusicGenerationDuration = musicCapabilities.resolveMusicGenerationDuration;
-  validateMusicGenerationConfig = musicCapabilities.validateMusicGenerationConfig;
+  buildMusicProviderRequest = musicCapabilities.buildMusicProviderRequest;
   parseMusicModelKey = musicCapabilities.parseMusicModelKey;
   assertMusicPromptGenerationAllowed = musicAsset.assertMusicPromptGenerationAllowed;
   parseMusicModelProfile = musicPromptProfile.parseMusicModelProfile;
@@ -63,6 +64,7 @@ before(async () => {
   MusicPromptConfigValidationError = musicPromptProfile.MusicPromptConfigValidationError;
   mergeMusicPromptGenerationConfig = musicLibrary.mergeMusicPromptGenerationConfig;
   musicReviewIssueSchema = musicReviewer.musicReviewIssueSchema;
+  splitMusicPromptTimingConfig = musicReviewer.splitMusicPromptTimingConfig;
 });
 
 after(async () => {
@@ -167,33 +169,37 @@ test("music production agent exposes only music tools", () => {
   assert.equal((musicProductionToolNames as readonly string[]).includes("get_music_stage_state"), false);
 });
 
-test("music duration keeps an effective cue shorter than the model master", () => {
-  assert.deepEqual(resolveMusicGenerationDuration({ effectiveMusicDurationSec: 22, capabilities: { durationRange: { min: 30, max: 360 } } }), {
+test("music duration is an optional provider parameter only when the model declares it", () => {
+  assert.deepEqual(resolveMusicGenerationDuration({ effectiveMusicDurationSec: 22, capabilities: { durationRange: { min: 30, max: 360 }, durationParameter: true } }), {
     effectiveMusicDurationSec: 22,
     generationDurationSec: 30,
     hasSilentTail: true,
     durationControl: "exact",
+    durationParameter: true,
     durationRange: { min: 30, max: 360 },
   });
   assert.throws(
-    () => resolveMusicGenerationDuration({ effectiveMusicDurationSec: 400, capabilities: { durationRange: { min: 30, max: 360 } } }),
+    () => resolveMusicGenerationDuration({ effectiveMusicDurationSec: 400, capabilities: { durationRange: { min: 30, max: 360 }, durationParameter: true } }),
     /360/,
   );
 });
 
-test("target-only music duration preserves the cue target without promising provider precision", () => {
+test("music without a duration parameter retains only the soft suggested duration", () => {
   assert.deepEqual(resolveMusicGenerationDuration({
     effectiveMusicDurationSec: 22,
-    capabilities: { durationRange: { max: 480 }, durationControl: "targetOnly" },
+    capabilities: { durationRange: { max: 480 }, durationControl: "targetOnly", durationParameter: false },
   }), {
     effectiveMusicDurationSec: 22,
-    generationDurationSec: 22,
+    generationDurationSec: undefined,
     hasSilentTail: false,
     durationControl: "targetOnly",
+    durationParameter: false,
     durationRange: { min: undefined, max: 480 },
   });
   const compiler = fs.readFileSync(path.join(process.cwd(), "src", "services", "musicCueCompiler.ts"), "utf8");
-  assert.match(compiler, /provider does not support exact duration control/);
+  assert.match(compiler, /musicTimingContext/);
+  assert.match(compiler, /editionMusicSpec/);
+  assert.doesNotMatch(compiler, /durationInstruction/);
 });
 
 test("music generation enforces exact prompt review status", () => {
@@ -204,24 +210,32 @@ test("music generation enforces exact prompt review status", () => {
   assert.throws(() => assertMusicPromptGenerationAllowed("unreviewed"), /must pass review/);
 });
 
-test("music generation config cannot bypass dynamic model capabilities", () => {
+test("music without a duration parameter accepts a soft target and strips legacy duration fields from the provider request", () => {
   const capabilities = {
-    model: "test:model",
-    name: "Test",
-    durationRange: { min: 30, max: 60 },
+    model: "test:no-duration",
+    name: "No duration",
+    durationRange: { max: 480 },
+    durationParameter: false,
     outputFormats: ["mp3"],
-    vocal: false as const,
-    lyrics: false as const,
-    referenceAudio: false as const,
-    loop: false as const,
   };
-  assert.equal(validateMusicGenerationConfig(capabilities, { durationSec: 30, outputFormat: "mp3" }, { vocalMode: "instrumental" }).durationSec, 30);
-  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 29 }, { vocalMode: "instrumental" }), /shorter/);
-  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 61 }, { vocalMode: "instrumental" }), /exceed/);
-  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 30, outputFormat: "wav" }, { vocalMode: "instrumental" }), /format/);
-  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 30, referenceList: [{}] }, { vocalMode: "instrumental" }), /reference audio/);
-  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 30, loop: true }, { vocalMode: "instrumental" }), /loop/);
-  assert.throws(() => validateMusicGenerationConfig(capabilities, { durationSec: 30 }, { vocalMode: "vocal", lyrics: "text" }));
+  const request = buildMusicProviderRequest({
+    config: { durationSec: 75, effectiveMusicDurationSec: 75, title: "Take" },
+    prompt: "A compact instrumental of roughly seventy-five seconds, naturally resolving.",
+    durationParameter: false,
+  });
+  assert.equal(request.durationSec, undefined);
+  assert.equal(request.effectiveMusicDurationSec, undefined);
+  assert.equal(request.prompt, "A compact instrumental of roughly seventy-five seconds, naturally resolving.");
+});
+
+test("music review receives provider config separately from timing metadata", () => {
+  assert.deepEqual(
+    splitMusicPromptTimingConfig({ title: "Take", tags: "piano", durationSec: 75, effectiveMusicDurationSec: 75 }, false),
+    {
+      modelGenerationConfig: { title: "Take", tags: "piano" },
+      timing: { suggestedDurationSec: 75, providerDurationSec: null, providerAcceptsDurationParameter: false },
+    },
+  );
 });
 
 test("music Prompt Profile owns required generationConfig fields without vendor hardcoding", () => {
@@ -316,10 +330,27 @@ test("music schema, portable project and packaged trim dependencies cover the li
   }
   assert.match(initSource, /promptMode/);
   assert.match(initSource, /profileSource/);
+  assert.match(initSource, /table\.string\("musicModel"\)/);
   assert.equal(pkg.dependencies["ffmpeg-static"], "5.3.0");
   assert.equal(pkg.dependencies["ffprobe-static"], "3.1.0");
   assert.match(builder, /ffmpeg-static/);
   assert.match(builder, /ffprobe-static/);
+});
+
+test("music generation freezes the execution model instead of reusing prompt provenance", () => {
+  const queueSource = fs.readFileSync(path.join(process.cwd(), "src", "services", "musicTaskQueue.ts"), "utf8");
+  const assetSource = fs.readFileSync(path.join(process.cwd(), "src", "services", "musicAsset.ts"), "utf8");
+  const selectionSource = fs.readFileSync(path.join(process.cwd(), "src", "services", "musicModelSelection.ts"), "utf8");
+  assert.match(queueSource, /resolveMusicExecutionModel\(input\)/);
+  assert.match(queueSource, /payload:\s*\{ \.\.\.input, model \}/);
+  assert.match(queueSource, /model,\s*\n\s*describe: "Generate project music work audio"/);
+  assert.match(assetSource, /u\.Ai\.Music\(input\.model/);
+  assert.match(assetSource, /musicRequestCheck\(input\.model/);
+  assert.match(assetSource, /model:\s*input\.model/);
+  assert.doesNotMatch(assetSource, /u\.Ai\.Music\(promptVersion\.model/);
+  assert.match(selectionSource, /explicit \|\| projectDefault/);
+  assert.match(selectionSource, /MUSIC_MODEL_REQUIRED/);
+  assert.match(selectionSource, /MUSIC_MODEL_UNAVAILABLE/);
 });
 
 test("Suno profile and technique are model-specific while the default binding preserves user overrides", () => {
@@ -343,6 +374,7 @@ test("Suno profile and technique are model-specific while the default binding pr
   assert.match(reviewerSource, /readMusicModelTechnique\(profile\)/);
   assert.match(fs.readFileSync(profile, "utf8"), /modelTechnique:\s*music_suno_v55_prompt_technique\.md/);
   assert.match(fs.readFileSync(profile, "utf8"), /requiredGenerationConfig:\s*\[title, tags\]/);
+  assert.doesNotMatch(fs.readFileSync(profile, "utf8"), /120 Unicode characters|200 Unicode characters|3000 Unicode characters/);
   assert.doesNotMatch(fs.readFileSync(profile, "utf8"), /T8Star|https?:\/\/|Bearer|\/suno\//i);
   assert.doesNotMatch(fs.readFileSync(technique, "utf8"), /T8Star|https?:\/\/|Bearer|\/suno\//i);
   assert.match(fs.readFileSync(profile, "utf8"), /do not write lyrics or imply a human utterance/i);
@@ -371,6 +403,8 @@ test("Suno profile and technique are model-specific while the default binding pr
   assert.match(review, /Review output contains only actual issues/);
   assert.match(review, /Every blocking issue must include a non-empty reason/);
   assert.match(reviewerSource, /musicReviewIssueSchema/);
+  assert.match(reviewerSource, /musicRequestCheck/);
+  assert.match(reviewerSource, /musicRequestCheck/);
   assert.match(reviewerSource, /Blocking review issues require a reason/);
   const genericTechnique = fs.readFileSync(path.join(process.cwd(), "data", "skills", "music_prompt_compiler_technique.md"), "utf8");
   assert.match(genericTechnique, /selected model Profile and Technique own field names/);

@@ -8,13 +8,16 @@ import getPath from "@/utils/getPath";
 
 const vendorData = rawVendorData as Record<string, string>;
 const BEST_MUSIC_UPGRADE_MARKER = "/* toonflow-best-suno-v55 */";
+const BEST_MUSIC_DURATION_UPGRADE_MARKER = "/* toonflow-best-suno-v55-duration-parameter */";
+const BEST_MUSIC_PROTOCOL_UPGRADE_MARKER = "/* toonflow-best-suno-v55-protocol-v2 */";
+const BEST_MUSIC_DISABLED_MARKER = "/* toonflow-best-suno-v55-disabled */";
 
 export function upgradeBestMusicVendorCode(code: string) {
-  if (code.includes(BEST_MUSIC_UPGRADE_MARKER) || !/\bid\s*:\s*["']best["']/.test(code) || !/exports\.vendor\s*=\s*vendor/.test(code)) {
+  if (!/\bid\s*:\s*["']best["']/.test(code) || !/exports\.vendor\s*=\s*vendor/.test(code)) {
     return code;
   }
 
-  return `${code}\n\n${BEST_MUSIC_UPGRADE_MARKER}
+  if (!code.includes(BEST_MUSIC_UPGRADE_MARKER)) return upgradeBestMusicVendorCode(`${code}\n\n${BEST_MUSIC_UPGRADE_MARKER}
 if (!vendor.inputs.some((item: any) => item.key === "musicKey")) {
   vendor.inputs.push({ key: "musicKey", label: "音乐 API 密钥", type: "password", required: false, placeholder: "不填则使用 API 密钥" });
 }
@@ -23,7 +26,6 @@ if (!vendor.models.some((item: any) => item.type === "music" && item.modelName =
     name: "Suno V5.5",
     modelName: "chirp-fenix",
     type: "music",
-    durationRange: { max: 480 },
     durationControl: "targetOnly",
     outputFormats: ["mp3"],
     vocal: "optional",
@@ -69,8 +71,8 @@ const musicRequest = async (config: any, model: any) => {
   if (config?.loop === true) throw new Error("当前 Suno 模型不支持循环生成");
   if (Number(config?.durationSec || 0) > 480) throw new Error("当前 Suno 模型的目标时长不能超过 480 秒");
   const body: any = {
-    custom_mode: vocalMode === "vocal" ? 1 : 0,
-    make_instrumental: vocalMode === "instrumental" ? 1 : 0,
+    custom_mode: vocalMode === "vocal",
+    make_instrumental: vocalMode === "instrumental",
     prompt: vocalMode === "vocal" ? lyrics : prompt,
     mv: model.modelName,
     title,
@@ -109,7 +111,76 @@ const musicRequest = async (config: any, model: any) => {
   return { candidates };
 };
 exports.musicRequest = musicRequest;
+`);
+if (!code.includes(BEST_MUSIC_DURATION_UPGRADE_MARKER)) return upgradeBestMusicVendorCode(`${code}\n\n${BEST_MUSIC_DURATION_UPGRADE_MARKER}
+const bestSunoV55Model = vendor.models.find((item: any) => item && item.type === "music" && item.modelName === "chirp-fenix");
+if (bestSunoV55Model) bestSunoV55Model.durationParameter = false;
+`);
+  if (!code.includes(BEST_MUSIC_PROTOCOL_UPGRADE_MARKER)) return upgradeBestMusicVendorCode(`${code}\n\n${BEST_MUSIC_PROTOCOL_UPGRADE_MARKER}
+const bestSunoV55ProtocolModel = vendor.models.find((item: any) => item && item.type === "music" && item.modelName === "chirp-fenix");
+if (bestSunoV55ProtocolModel) {
+  delete bestSunoV55ProtocolModel.inputLimits;
+  delete bestSunoV55ProtocolModel.durationRange;
+  bestSunoV55ProtocolModel.durationControl = "targetOnly";
+  bestSunoV55ProtocolModel.durationParameter = false;
+}
+const bestMusicRequestCheck = (config: any, _model: any) => {
+  const issues: Array<{ code: string; field?: string; message: string }> = [];
+  const vocalMode = String(config?.vocalMode || "").trim();
+  const lyrics = String(config?.lyrics || "").trim();
+  const prompt = String(config?.prompt || "").trim();
+  const tags = String(config?.tags || "").trim();
+  const outputFormat = String(config?.outputFormat || config?.format || "mp3").trim().toLowerCase();
+  if (vocalMode !== "vocal" && vocalMode !== "instrumental") issues.push({ code: "vocal_mode_required", field: "vocalMode", message: "Best Suno requires vocalMode to be instrumental or vocal." });
+  if (!tags) issues.push({ code: "tags_required", field: "tags", message: "Best Suno requires music tags." });
+  if (vocalMode === "vocal" && !lyrics) issues.push({ code: "lyrics_required", field: "lyrics", message: "Best Suno vocal generation requires confirmed lyrics." });
+  if (vocalMode === "instrumental" && !prompt) issues.push({ code: "instrumental_prompt_required", field: "prompt", message: "Best Suno instrumental generation requires a music prompt." });
+  if (Array.isArray(config?.referenceList) && config.referenceList.length) issues.push({ code: "reference_audio_unsupported", field: "referenceList", message: "Best Suno chirp-fenix does not support reference audio in this adapter." });
+  if (config?.loop === true) issues.push({ code: "loop_unsupported", field: "loop", message: "Best Suno chirp-fenix does not support loop generation in this adapter." });
+  if (outputFormat && outputFormat !== "mp3") issues.push({ code: "output_format_unsupported", field: "outputFormat", message: "Best Suno chirp-fenix returns MP3 audio only." });
+  return { issues };
+};
+const bestMusicRequestV2 = async (config: any, model: any) => {
+  const contract = bestMusicRequestCheck(config, model);
+  if (contract.issues.length) throw new Error(contract.issues.map((issue: any) => issue.message).join("; "));
+  const vocalMode = String(config?.vocalMode || "").trim();
+  const body: any = {
+    custom_mode: vocalMode === "vocal",
+    make_instrumental: vocalMode === "instrumental",
+    prompt: vocalMode === "vocal" ? String(config?.lyrics || "").trim() : String(config?.prompt || "").trim(),
+    mv: model.modelName,
+    title: String(config?.title || "Toonflow Music").trim().slice(0, 200),
+    tags: String(config?.tags || "").trim(),
+    negative_tags: String(config?.negativePrompt || "").trim(),
+  };
+  const submitted = await axios.post(\`\${getBaseUrl()}/suno/submit/music\`, body, { headers: bestMusicHeaders() });
+  const immediate = bestMusicTracks(submitted.data);
+  if (immediate.length) return { candidates: immediate };
+  const taskIds = [...new Set(bestMusicTaskIds(submitted.data))];
+  if (!taskIds.length) throw new Error("Best Suno response has no task ID");
+  const resultGroups = await Promise.all(taskIds.map(async (taskId) => {
+    const result = await pollTask(async () => {
+      const response = await axios.get(\`\${getBaseUrl()}/suno/fetch/\${encodeURIComponent(taskId)}\`, { headers: bestMusicHeaders() });
+      const status = bestMusicStatus(response.data);
+      if (["FAILURE", "FAILED", "ERROR", "CANCELLED", "CANCELED"].includes(status)) return { completed: true, error: bestMusicFailure(response.data) };
+      const tracks = bestMusicTracks(response.data);
+      if (["SUCCESS", "SUCCEEDED", "COMPLETED", "COMPLETE", "DONE"].includes(status)) return tracks.length ? { completed: true, data: tracks } : { completed: true, error: "Best Suno completed without downloadable audio" };
+      return { completed: false };
+    }, 5000, 3000000);
+    if (result.error) throw new Error(result.error);
+    return Array.isArray(result.data) ? result.data : [];
+  }));
+  const candidates = resultGroups.flat();
+  if (!candidates.length) throw new Error("Best Suno completed without downloadable audio");
+  return { candidates };
+};
+exports.musicRequestCheck = bestMusicRequestCheck;
+exports.musicRequest = bestMusicRequestV2;
+`);
+  if (!code.includes(BEST_MUSIC_DISABLED_MARKER)) return `${code}\n\n${BEST_MUSIC_DISABLED_MARKER}
+vendor.models = vendor.models.filter((item: any) => !(item && item.type === "music" && item.modelName === "chirp-fenix"));
 `;
+  return code;
 }
 
 async function upgradeInstalledBestMusicVendor(knex: Knex) {
@@ -119,6 +190,21 @@ async function upgradeInstalledBestMusicVendor(knex: Knex) {
   const code = fs.readFileSync(file, "utf8");
   const upgraded = upgradeBestMusicVendorCode(code);
   if (upgraded !== code) fs.writeFileSync(file, upgraded);
+  const upgradedVendor = readVendorFromCode(upgraded);
+  const musicModel = upgradedVendor?.models?.find((item: any) => item?.type === "music" && item?.modelName === "chirp-fenix");
+  const stored = await knex("o_vendorConfig").where("id", "best").first();
+  let storedModels: any[] = [];
+  try {
+    const parsed = JSON.parse(stored?.models || "[]");
+    if (Array.isArray(parsed)) storedModels = parsed;
+  } catch {
+    storedModels = [];
+  }
+  const retainedModels = storedModels.filter((item) => !(item?.type === "music" && item?.modelName === "chirp-fenix"));
+  const mergedModels = musicModel ? [...retainedModels, musicModel] : retainedModels;
+  if (JSON.stringify(storedModels) !== JSON.stringify(mergedModels)) {
+    await knex("o_vendorConfig").where("id", "best").update({ models: JSON.stringify(mergedModels) });
+  }
 }
 
 function getVendorFile(id: string | number) {
@@ -220,9 +306,6 @@ export async function materializeVendorCodeFiles(knex: Knex) {
 async function ensureDefaultMusicPromptBindings(knex: Knex) {
   if (!(await knex.schema.hasTable("o_modelPrompt"))) return;
   const bindings = [{ vendorId: "t8star", model: "chirp-fenix", fileName: "suno-v55.md", path: "music/suno-v55.md" }];
-  if (await knex("o_vendorConfig").where("id", "best").first()) {
-    bindings.push({ vendorId: "best", model: "chirp-fenix", fileName: "suno-v55.md", path: "music/suno-v55.md" });
-  }
   for (const binding of bindings) {
     const existing = await knex("o_modelPrompt").where({ vendorId: binding.vendorId, model: binding.model }).first();
     if (!existing) {

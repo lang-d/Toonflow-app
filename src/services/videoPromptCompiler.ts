@@ -15,6 +15,7 @@ import {
   StoryboardVideoFact,
   summarizeFactSources,
 } from "@/services/storyboardFacts";
+import { getCommittedDirectorPlanVideoStyle } from "@/services/directorPlanGeneration";
 
 export interface CompileVideoPromptInput {
   projectId: number;
@@ -173,7 +174,7 @@ function referenceLine(item: ResolvedWorkbenchReference, meta: PromptReferenceMe
   referenceId='${escapeAttribute(item.id)}'
   name='${escapeAttribute(item.name)}'
   fileType='${item.fileType}'
-  note='该分镜图只作为视觉参考；完整分镜叙事以 trackId 查询到的分镜表事实为准'
+  note='该分镜图是对应分镜的唯一初始视觉依据；动作、台词和画内声音仍以 trackId 查询到的分镜表事实为准'
 ></visualReference>`;
   }
   if (item.sources === "merged") {
@@ -291,23 +292,11 @@ ${previousText}
 
 function buildTrackFacts(track: any) {
   if (!track) return "";
-  let groupPlan: any = null;
-  try {
-    groupPlan = track.groupPlanJson ? JSON.parse(track.groupPlanJson) : null;
-  } catch {}
-  const facts = [
-    track.groupKey ? `- groupKey: ${track.groupKey}` : "",
-    track.groupName ? `- groupName: ${track.groupName}` : "",
-    track.groupIntent ? `- groupIntent: ${track.groupIntent}` : "",
-    track.duration ? `- plannedDuration: ${track.duration}s` : "",
-    groupPlan?.transition ? `- transition: ${groupPlan.transition}` : "",
-    groupPlan?.pacing ? `- pacing: ${groupPlan.pacing}` : "",
-  ].filter(Boolean);
-  if (!facts.length) return "";
+  if (!track.duration) return "";
   return `
-**分镜组既定事实**
-${facts.join("\n")}
-这些是分镜表阶段已经规划的事实。不要重新拆组，不要把下一场景镜头混入本组。`;
+**当前生成组**
+- plannedDuration: ${track.duration}s
+按下方分镜顺序完成当前组，不重新拆组，也不混入其他组内容。`;
 }
 
 async function loadTrackStoryboards(input: CompileVideoPromptInput): Promise<StoryboardVideoFact[]> {
@@ -359,31 +348,48 @@ async function loadTrackStoryboards(input: CompileVideoPromptInput): Promise<Sto
   return rows.map((row: any) => buildStoryboardVideoFact(row, assetMap.get(Number(row.id)) || []));
 }
 
-function storyboardLine(item: StoryboardVideoFact, index: number) {
-  return `${index + 1}. <trackStoryboard
-  storyboardId='${item.storyboardId}'
-  displayIndex='${escapeAttribute(item.displayIndex)}'
-  factSource='${item.factSource}'
-  duration='${escapeAttribute(item.duration)}'
-  location='${escapeAttribute(item.location)}'
-  timeOfDay='${escapeAttribute(item.timeOfDay)}'
-  groupKey='${escapeAttribute(item.groupKey)}'
-  groupName='${escapeAttribute(item.groupName)}'
-  groupIntent='${escapeAttribute(item.groupIntent)}'
-  beatId='${escapeAttribute(item.beatId)}'
-  scene='${escapeAttribute(item.scene)}'
-  picture='${escapeAttribute(item.picture)}'
-  action='${escapeAttribute(item.action)}'
-  shotSize='${escapeAttribute(item.shotSize)}'
-  cameraMove='${escapeAttribute(item.cameraMove)}'
-  dialogue='${escapeAttribute(item.dialogue)}'
-  sound='${escapeAttribute(item.sound)}'
-  visibleEmotion='${escapeAttribute(item.visibleEmotion)}'
-  characters='${escapeAttribute(JSON.stringify(item.tableRow?.characters || []))}'
-  requiredAssets='${escapeAttribute(JSON.stringify(item.tableRow?.requiredAssets || []))}'
-  shouldGenerateImage='${item.shouldGenerateImage ?? ""}'
-  associateAssetsIds='${JSON.stringify(item.associateAssetsIds)}'
-></trackStoryboard>`;
+function storyboardReferenceIds(items: AnnotatedPromptReference[]) {
+  const ids = new Set<number>();
+  for (const { item } of items) {
+    if (item.fileType !== "image") continue;
+    if (item.sources === "storyboard") {
+      const id = Number(item.id);
+      if (Number.isFinite(id)) ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function storyboardLine(item: StoryboardVideoFact, index: number, hasStoryboardImage: boolean) {
+  const isV3 = item.factVersion === 3;
+  const attributes = [
+    `storyboardId='${item.storyboardId}'`,
+    `displayIndex='${escapeAttribute(item.displayIndex)}'`,
+    `factVersion='${escapeAttribute(item.factVersion)}'`,
+    `duration='${escapeAttribute(item.duration)}'`,
+    `visualStart='${hasStoryboardImage ? "storyboardReference" : "textFallback"}'`,
+    ...(isV3
+      ? [
+          `shotDescription='${escapeAttribute(item.shotDescription)}'`,
+          ...(hasStoryboardImage
+            ? [`shotDescriptionRole='temporalContinuation'`]
+            : [
+                `shotDescriptionRole='fullShot'`,
+                `shotSize='${escapeAttribute(item.shotSize)}'`,
+                ...(item.cameraAngle ? [`cameraAngle='${escapeAttribute(item.cameraAngle)}'`] : []),
+              ]),
+        ]
+      : [
+          ...(!hasStoryboardImage
+            ? [`picture='${escapeAttribute(item.picture)}'`, `shotSize='${escapeAttribute(item.shotSize)}'`]
+            : []),
+          `action='${escapeAttribute(item.action)}'`,
+        ]),
+    `cameraMove='${escapeAttribute(item.cameraMove)}'`,
+    `dialogue='${escapeAttribute(item.dialogue)}'`,
+    `sound='${escapeAttribute(item.sound)}'`,
+  ];
+  return `${index + 1}. <trackStoryboard\n  ${attributes.join("\n  ")}\n></trackStoryboard>`;
 }
 
 function mostCommon(values: string[]) {
@@ -409,35 +415,41 @@ function buildGroupSummary(storyboards: StoryboardVideoFact[], track: any) {
   };
 }
 
-function buildStoryboardFacts(storyboards: StoryboardVideoFact[], track: any) {
+function buildStoryboardFacts(storyboards: StoryboardVideoFact[], references: AnnotatedPromptReference[]) {
   if (!storyboards.length) {
     return `
 **分镜组完整明细**
 - 当前轨道未查询到分镜表明细。若引用区包含 storyboard，可使用引用区的视觉参考；否则不得臆造分镜数量。`;
   }
-  const summary = buildGroupSummary(storyboards, track);
   const sourceSummary = summarizeFactSources(storyboards);
-  const actionChain = storyboards
-    .map((item) => item.action || item.picture)
-    .filter(Boolean)
-    .map((item) => truncate(item, 80))
-    .join(" -> ");
-  return `
-**分镜表事实摘要**
-- storyboardCount: ${summary.storyboardCount}
-- totalDuration: ${summary.totalDuration || "未指定"}s
-- groupKey: ${summary.groupKey || "未指定"}
-- groupName: ${summary.groupName || "未指定"}
-- groupIntent: ${summary.groupIntent || "未指定"}
-- scene: ${summary.scene || "未指定"}
+  const storyboardImages = storyboardReferenceIds(references);
+  if (storyboards.every((item) => item.factVersion === 3)) {
+    return `
+**分镜事实（Storyboard V3）**
+- storyboardCount: ${storyboards.length}
 - factSources: storyboardTable=${sourceSummary.storyboardTable}, minimalFallback=${sourceSummary.minimalFallback}
-- actionContinuity: ${actionChain || "未指定"}
 
-**分镜组完整明细（以 trackId 查询结果为准）**
-- 必须按下面 ${storyboards.length} 个分镜逐条生成视频提示词，不得把合图、资产图或任意单张参考图当作唯一分镜。
-- 分镜图/合图只用于约束人物外观、场景空间、构图、光线和色彩；动作、台词、音效、节奏以分镜表事实为准。
-- visibleEmotion 只能作为表演线索，不能原样写成抽象情绪词。请转写为可见动作、面部表情、呼吸、步伐、手部动作或台词语气。
-${storyboards.map(storyboardLine).join("\n")}`;
+按顺序逐条生成。shotDescription 是唯一的时间事实正文。
+- visualStart=storyboardReference：分镜图是唯一开拍画面依据，只从 shotDescription 组织开拍后的变化与结束状态，不复述或重建初始构图。
+- visualStart=textFallback：使用完整 shotDescription、shotSize 和必要 cameraAngle 建立开拍状态及后续变化。
+${storyboards.map((item, index) => storyboardLine(item, index, storyboardImages.has(item.storyboardId))).join("\n")}`;
+  }
+  if (storyboards.some((item) => item.factVersion === 3)) {
+    return `
+**分镜事实（版本混合）**
+- storyboardCount: ${storyboards.length}
+- factSources: storyboardTable=${sourceSummary.storyboardTable}, minimalFallback=${sourceSummary.minimalFallback}
+
+逐条按 factVersion 原生解释：V3 使用 shotDescription；历史 V1/V2 使用 picture/action。不得在版本之间拼接或借用字段。每条 visualStart=storyboardReference 时，分镜图都是该条唯一初始画面依据。
+${storyboards.map((item, index) => storyboardLine(item, index, storyboardImages.has(item.storyboardId))).join("\n")}`;
+  }
+  return `
+**分镜事实**
+- storyboardCount: ${storyboards.length}
+- factSources: storyboardTable=${sourceSummary.storyboardTable}, minimalFallback=${sourceSummary.minimalFallback}
+
+按顺序逐条生成。以下为历史 V1/V2 事实：visualStart=storyboardReference 时，分镜图是唯一初始画面依据；textFallback 时才使用 picture 和 shotSize。action 是历史行的时间变化正文来源。
+${storyboards.map((item, index) => storyboardLine(item, index, storyboardImages.has(item.storyboardId))).join("\n")}`;
 }
 
 function buildGenerationConstraints() {
@@ -448,22 +460,40 @@ function buildGenerationConstraints() {
 - 音频引用只能写成“参考音频N”或音频素材名，用于声音、音色、台词语气或画内音效参考，不得当作视觉参考。
 - 分镜表事实是视频提示词主输入；分镜面板 prompt / imagePrompt 不作为视频主上下文。
 - 不创造新剧情，不自行改写场景时间、光影、色调、人物关系。
-- 有分镜图、合图或参考图时，沿用参考图中的环境、光线、色彩、人物外观、构图；不要强写与参考图冲突的站位和朝向。
-- 无参考图时，只能使用导演规划或分镜表中的最小必要场景事实。
-- 情绪必须尽量写成可见动作、眼神、呼吸、姿态、手部动作、步伐节奏或台词语气，避免只写“坚定、决绝、压迫、警惕”等抽象词。
+- visualStart=storyboardReference 时，分镜图已经锁定初始构图，不再用文字复述或重新规划人物站位、景别和机位；普通角色/场景/道具参考不能替代分镜图的这一职责。
+- visualStart=textFallback 时，按该条 factVersion 使用版本原生字段建立初始画面：V3 使用完整 shotDescription、shotSize 和必要 cameraAngle；历史 V1/V2 使用 picture 和 shotSize。
+- 时间变化只读取版本原生正文：V3 使用 shotDescription；历史 V1/V2 使用 action。不得跨版本寻找缺失字段，也不得另行扩写一套“情绪表演”。
 - 画内音效可以进入视频提示词，例如脚步声、广播声、衣料摩擦声、呼吸声、环境声、动作声。
 - BGM、配乐、OST、非画内音乐只属于后期建议，不得写入视频提示词。
 - 不要加入图片生成用画质堆叠词，例如“极致细节、发丝根根分明、面容细腻渲染、纹理细节超清晰、强对比度与极致细节”。
 - 生成阶段只输出视频提示词正文，不输出审校建议、分析过程或修订说明；审校建议由后续 reviewer 负责。`;
 }
 
-function buildVideoStyleGuide() {
+function buildStoryboardVersionConstraints() {
+  return `
+**Storyboard version interpretation**
+- factVersion=3: shotDescription is one chronological source: opening state, trigger, visible change, ending state.
+- factVersion=1/2: picture is the textual opening fallback and action is the temporal body.
+- When visualStart=storyboardReference, the storyboard image is the only opening visual. Use only the version-native temporal body for subsequent change and ending state; do not restate or replace the image composition.
+- Never merge fields across versions, split shotDescription with backend-style keywords, or invent a second opening state.
+`;
+}
+
+function buildFormalVideoStyleBlock(videoStyle: string) {
+  if (!videoStyle) return "";
+  return `
+**正式视频风格（当前已提交导演规划）**
+${videoStyle}
+- 这是整集稳定风格锚点。必须原义沿用，不得扩写、二次总结或改写为另一种媒介。`;
+}
+
+function buildVideoStyleGuide(videoStyle: string) {
   return `
 **视频视觉风格约束**
 - 不单独读取视觉手册，不根据项目 artStyle 名称自行扩写媒介、画风或视觉标签。
-- 视觉风格只能来自分镜表/导演规划已经沉淀的短视觉原则，或来自参考图中的人物外观、环境、构图、光线和色彩。
-- 参考图中的人物外观、环境、构图、光线和色彩优先于文字描述。
-- 不得覆盖分镜表中的动作、台词、场景和人物关系事实。`;
+- ${videoStyle ? "‘画面风格和类型’直接使用正式 videoStyle 的原义，不增加场景、天气、人物、动作、机位、画质词或生成参数。" : "当前没有正式视频风格时，不自行发明风格首行，只按参考图和分镜事实生成镜头正文。"}
+- 参考图用于锁定人物外观、环境、构图、光线和色彩等具体事实；不得借此改变正式视频风格的媒介类型。
+- 不得覆盖分镜表中的 action、台词和画内声音事实。`;
 }
 
 export async function compileWorkbenchVideoPrompt(
@@ -476,6 +506,8 @@ export async function compileWorkbenchVideoPrompt(
 
   const track = input.trackId ? await u.db("o_videoTrack").where({ id: input.trackId, projectId: input.projectId }).first() : null;
   const system = await resolveSystemPrompt(vendorId, modelName, input.mode);
+  const scriptId = input.scriptId ?? (track?.scriptId == null ? undefined : Number(track.scriptId));
+  const videoStyle = scriptId == null ? "" : await getCommittedDirectorPlanVideoStyle({ projectId: input.projectId, scriptId });
   const trackStoryboards = await loadTrackStoryboards(input);
   assertStoryboardFactsReady(trackStoryboards);
   const referenceInputs = input.references || [];
@@ -492,13 +524,15 @@ export async function compileWorkbenchVideoPrompt(
   const promptContext = `
 **模型名称**：${modelName}
 **模式**：${input.mode}
+${buildFormalVideoStyleBlock(videoStyle)}
 ${referenceTokenBlock}
 
 **原始引用清单**（仅供核对 source/referenceId，不用于重排 @Image）：${orderedReferenceText}
 ${buildTrackFacts(track)}
-${buildStoryboardFacts(trackStoryboards, track)}
+${buildStoryboardFacts(trackStoryboards, annotatedReferences)}
 ${constraintBlock(input.promptPrefix, input.promptSuffix)}
 ${buildGenerationConstraints()}
+${buildStoryboardVersionConstraints()}
 `;
 
   const groupSummary = buildGroupSummary(trackStoryboards, track);
@@ -533,7 +567,7 @@ ${buildGenerationConstraints()}
   let retryReason: ReferenceTokenContractIssue[] = [];
   let retryOutputSummary = "";
   const baseMessages = [
-    { role: "assistant" as const, content: buildVideoStyleGuide() },
+    { role: "assistant" as const, content: buildVideoStyleGuide(videoStyle) },
     { role: "user" as const, content: promptContext },
   ];
   try {

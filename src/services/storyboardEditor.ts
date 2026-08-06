@@ -1,10 +1,14 @@
 import u from "@/utils";
-import { syncStoryboardImageFlowFieldsWithDb } from "@/services/imageFlow";
+import {
+  applyStoryboardPanelImageFieldsWithDb,
+  syncStoryboardImageFlowFieldsWithDb,
+} from "@/services/imageFlow";
 import { resolveDirectorAsset } from "@/services/directorAsset";
 import {
   buildStoryboardDraftRow,
   parseStoryboardTableRow,
   storyboardRowToDbPatch,
+  storyboardTableRowSchema,
   storyboardTableRowV2Schema,
   stringifyDialogue,
   stringifySoundEffects,
@@ -201,7 +205,17 @@ export async function saveStoryboardEditor(input: StoryboardEditorInput) {
   return u.db.transaction(async (trx: any) => {
     const storyboard = await trx("o_storyboard")
       .where("id", input.id)
-      .first("id", "projectId", "scriptId", "trackId", "index", "tableRowJson", "factRevision");
+      .first(
+        "id",
+        "projectId",
+        "scriptId",
+        "trackId",
+        "index",
+        "tableRowJson",
+        "factRevision",
+        "groupName",
+        "groupIntent",
+      );
     if (!storyboard) {
       throw new StoryboardContractError("分镜数据校验失败", [{ path: "id", message: "分镜不存在" }]);
     }
@@ -245,12 +259,8 @@ export async function saveStoryboardEditor(input: StoryboardEditorInput) {
       cameraMove: input.cameraMove,
       cameraAngle: input.cameraAngle,
       transitionFromPrevious: input.transitionFromPrevious,
-      visibleEmotion: input.visibleEmotion,
       groupKey: input.groupKey,
-      groupName: input.groupName,
-      groupIntent: input.groupIntent,
       beatId: input.beatId,
-      characters: input.characters,
       dialogue: dialogueInput,
       soundEffects: soundInput,
       requiredAssets: input.requiredAssets,
@@ -265,11 +275,17 @@ export async function saveStoryboardEditor(input: StoryboardEditorInput) {
       referenceImages: serializeStoryboardReferences(references),
       tableRowJson: JSON.stringify(factObject),
       factStatus: parsedFact.success ? "ready" : "draft",
-      factVersion: 1,
+      factVersion: parsedFact.success ? parsedFact.data.version : 2,
       factRevision: Number(storyboard.factRevision || 0) + 1,
     };
     if (parsedFact.success) {
-      Object.assign(storyboardPatch, storyboardRowToDbPatch(parsedFact.data, Number(storyboard.factRevision || 0) + 1));
+      Object.assign(
+        storyboardPatch,
+        storyboardRowToDbPatch(parsedFact.data, Number(storyboard.factRevision || 0) + 1, {
+          groupName: input.groupName ?? storyboard.groupName,
+          groupIntent: input.groupIntent ?? storyboard.groupIntent,
+        }),
+      );
     } else {
       storyboardPatch.duration = String(input.duration);
     }
@@ -297,7 +313,7 @@ export async function saveStoryboardEditor(input: StoryboardEditorInput) {
       transitionFromPrevious: factObject.transitionFromPrevious || null,
       dialogue: input.dialogue || null,
       sound: input.sound || null,
-      visibleEmotion: input.visibleEmotion || null,
+      visibleEmotion: null,
       tableRowJson: JSON.stringify(factObject),
       factStatus: parsedFact.success ? "ready" : "draft",
       issues: parsedFact.success ? [] : parsedFact.error.issues,
@@ -315,4 +331,106 @@ export async function validateNewStoryboardRelations(
   await validateAssets(trx, owner.projectId, assetIds);
   await validateReferences(trx, owner, referenceImages || []);
   return assetIds;
+}
+
+export interface StoryboardPanelUpdateInput {
+  projectId: number;
+  scriptId: number;
+  storyboardId: number;
+  prompt: string;
+  shouldGenerateImage: boolean;
+  associateAssetsIds: number[];
+  referenceImages: StoryboardReferenceImage[];
+}
+
+/** Updates only derived panel fields. Formal storyboard facts and factRevision are untouched. */
+export async function updateStoryboardPanelFields(input: StoryboardPanelUpdateInput) {
+  return u.db.transaction(async (trx: any) => {
+    const storyboard = await trx("o_storyboard")
+      .where({ id: input.storyboardId, projectId: input.projectId, scriptId: input.scriptId })
+      .first("id", "projectId", "scriptId", "factStatus", "factRevision", "tableRowJson");
+    if (!storyboard) {
+      throw new StoryboardContractError("Storyboard panel update failed", [
+        { path: "storyboardId", message: "Storyboard does not exist in this project and script" },
+      ]);
+    }
+    const readyFact = parseStoryboardTableRow(storyboard.tableRowJson);
+    if (storyboard.factStatus !== "ready" || !readyFact) {
+      throw new StoryboardContractError("Storyboard panel update failed", [
+        { path: "storyboardId", message: "Storyboard facts must be ready before panel fields can be updated" },
+      ]);
+    }
+    const assetIds = uniqueIds(input.associateAssetsIds || []);
+    const references = input.referenceImages || [];
+    await validateAssets(trx, input.projectId, assetIds);
+    await validateReferences(trx, storyboard, references);
+    await trx("o_storyboard").where("id", input.storyboardId).update({
+      referenceImages: serializeStoryboardReferences(references),
+    });
+    const result = await applyStoryboardPanelImageFieldsWithDb(trx, {
+      projectId: input.projectId,
+      scriptId: input.scriptId,
+      storyboardId: input.storyboardId,
+      prompt: input.prompt,
+      shouldGenerateImage: input.shouldGenerateImage,
+      associateAssetsIds: assetIds,
+    });
+    return {
+      ...result,
+      storyboardId: input.storyboardId,
+      prompt: input.prompt,
+      shouldGenerateImage: input.shouldGenerateImage,
+      referenceImages: references,
+      factRevision: Number(storyboard.factRevision || 0),
+    };
+  });
+}
+
+export interface StoryboardFactsUpdateInput {
+  projectId: number;
+  scriptId: number;
+  storyboardId: number;
+  tableRowJson: unknown;
+}
+
+/** Replaces one version-native formal fact row without touching panel-derived fields. */
+export async function updateStoryboardFacts(input: StoryboardFactsUpdateInput) {
+  return u.db.transaction(async (trx: any) => {
+    const storyboard = await trx("o_storyboard")
+      .where({ id: input.storyboardId, projectId: input.projectId, scriptId: input.scriptId })
+      .first("id", "index", "trackId", "factRevision", "groupName", "groupIntent");
+    if (!storyboard) {
+      throw new StoryboardContractError("Storyboard facts update failed", [
+        { path: "storyboardId", message: "Storyboard does not exist in this project and script" },
+      ]);
+    }
+    const parsed = storyboardTableRowSchema.safeParse(input.tableRowJson);
+    if (!parsed.success) {
+      throw new StoryboardContractError(
+        "Storyboard facts must be a complete version-native row",
+        parsed.error.issues.map((issue) => ({ path: issue.path.join(".") || "tableRowJson", message: issue.message })),
+      );
+    }
+    if (parsed.data.index !== Number(storyboard.index)) {
+      throw new StoryboardContractError("Storyboard facts update failed", [
+        { path: "tableRowJson.index", message: `Expected storyboard index ${Number(storyboard.index)}` },
+      ]);
+    }
+    await validateAssets(trx, input.projectId, parsed.data.requiredAssets.map((asset) => asset.assetId));
+    const nextRevision = Number(storyboard.factRevision || 0) + 1;
+    await trx("o_storyboard").where("id", input.storyboardId).update(
+      storyboardRowToDbPatch(parsed.data, nextRevision, {
+        groupName: storyboard.groupName,
+        groupIntent: storyboard.groupIntent,
+      }),
+    );
+    await updateTrackDuration(trx, storyboard.trackId);
+    return {
+      storyboardId: input.storyboardId,
+      factVersion: parsed.data.version,
+      factRevision: nextRevision,
+      factStatus: "ready" as const,
+      tableRowJson: parsed.data,
+    };
+  });
 }

@@ -27,7 +27,7 @@ description: 视频制作执行层 Agent 技能：分镜图生成。读取分镜
 1. 调用 `get_flowData("storyboard")` 获取正式分镜面板。
 2. 只提取真实存在的分镜 ID。
 3. 调用 `generate_storyboard({ ids: [真实分镜ID列表] })`。
-4. `generate_storyboard` 会等待前端 socket ack，并返回成功/失败摘要。
+4. `generate_storyboard` 返回 `complete | partial`、实际提交 ID 和失败 ID/原因；`partial` 时由模型决定补交、调整或报告，不得声称全部完成。
 5. 生成任务由后端统一走 `image-flow`；Agent 不选择 flowId、nodeId、prompt source。
 
 ### 约束
@@ -36,4 +36,4 @@ description: 视频制作执行层 Agent 技能：分镜图生成。读取分镜
 - 仅使用 `storyboard` 中的真实分镜 ID，禁止编造或复用无效 ID。
 - 不直接调用旧 `storyboard-image` 任务。
 - 不直接编辑图片画布。
-- 不声称“全部成功”，只能按 `generate_storyboard` 返回的 ack 摘要说明已启动、部分启动或失败。
+- 不声称“全部成功”，只能按 `generate_storyboard` 返回的结构化结果说明已启动、部分启动或失败。

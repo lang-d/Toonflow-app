@@ -4,6 +4,7 @@ import {
   buildImageArgs,
   buildMusicArgs,
   discoverDreaminaMediaModels,
+  discoverDreaminaMusicModels,
   discoverMusicCommandsFromHelp,
   extractMusicDurationRange,
   extractSupportedFlags,
@@ -122,6 +123,11 @@ test("Dreamina music args include only supported optional flags", () => {
   assert.equal(args.args.includes("--seed=42"), true);
   assert.equal(args.args.some((arg) => arg.startsWith("--negative_prompt=")), false);
   assert.equal(args.args.some((arg) => arg.startsWith("--output_format=")), false);
+});
+
+test("Dreamina music declares a duration parameter only when its CLI help exposes one", () => {
+  assert.equal(discoverDreaminaMusicModels("text2music", "--prompt string\n--duration_sec int")[0]?.durationParameter, true);
+  assert.equal(discoverDreaminaMusicModels("text2music", "--prompt string\n--lyrics string")[0]?.durationParameter, false);
 });
 
 test("Dreamina music duration range is not capped by video duration limits", () => {

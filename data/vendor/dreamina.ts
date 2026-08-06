@@ -48,6 +48,7 @@ interface MusicModel {
   modelName: string;
   type: "music";
   durationRange?: { min?: number; max?: number };
+  durationParameter?: boolean;
   outputFormats?: string[];
   vocal?: "optional" | boolean;
   lyrics?: "optional" | boolean;

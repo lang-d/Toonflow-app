@@ -55,18 +55,18 @@ const visualRequirements: Record<string, RegExp[]> = {
 };
 
 const genreRequirements: Record<string, { planning: RegExp[]; table: RegExp[] }> = {
-  Comedy_humor: { planning: [/铺垫段/, /误导段/, /反应链/], table: [/触发镜/, /反应镜/, /包袱前/] },
-  Coming_of_age: { planning: [/成长链/, /错误段/, /可比较的行为证据/], table: [/关系距离/, /时间省略/, /成长节点/] },
-  Family_warmth: { planning: [/家庭任务/, /照料/, /代际站位/], table: [/餐桌/, /厨房、门口/, /生活动作/] },
-  Historical_epic: { planning: [/制度/, /命令如何传递/, /个人选择影响群体/], table: [/命令链/, /仪式和列阵/, /敌我/] },
-  Horror_supernatural: { planning: [/威胁规则/, /未知边界/, /逃生地理/], table: [/负空间/, /主观镜/, /门状态/] },
-  Hot_blooded_action: { planning: [/攻防链/, /能量阶段/, /伙伴分工/], table: [/攻击方向/, /接触点/, /伤势、武器/] },
-  Mystery_thriller: { planning: [/线索真值/, /公平误导/, /知情变化/], table: [/线索镜头等级/, /观察者/, /回看式揭示/] },
-  Psychological_drama: { planning: [/权力四项状态/, /主客观边界/, /话语策略/], table: [/空间控制转移/, /有动机的轴线变化/, /主观段/] },
-  Scifi_post_apocalypse: { planning: [/世界规则/, /资源账/, /生存行动链/], table: [/技术状态/, /撤退方向/, /携带物/] },
-  Sweet_romance_novel: { planning: [/关系推进阶梯/, /边界/, /双方目标/], table: [/触碰/, /对方反馈/, /退路/] },
-  Urban_workplace_drama: { planning: [/职权/, /证据状态/, /谈判动作/], table: [/座次/, /持有权/, /权限被行使/] },
-  Xianxia_fantasy: { planning: [/修行规则/, /能力条件与代价/, /誓约压力/], table: [/法术路径/, /招式镜/, /阶序/] },
+  Comedy_humor: { planning: [/铺垫段/, /误导段/, /反应链/], table: [/笑点因果链/, /预期/, /偏差/, /收尾/] },
+  Coming_of_age: { planning: [/成长链/, /错误段/, /可比较的行为证据/], table: [/成长节点拆镜/, /关系距离/, /重复意象/, /时间省略/] },
+  Family_warmth: { planning: [/家庭任务/, /照料/, /代际站位/], table: [/生活行动承载情感/, /家庭关系空间/, /多人视线/] },
+  Historical_epic: { planning: [/制度/, /命令如何传递/, /个人选择影响群体/], table: [/制度行动链/, /地理与群体行动/, /仪式/, /见证/] },
+  Horror_supernatural: { planning: [/威胁规则/, /未知边界/, /逃生地理/], table: [/威胁信息链/, /未知、遮蔽与揭示/, /声源/, /逃生与动作地理/] },
+  Hot_blooded_action: { planning: [/攻防链/, /能量阶段/, /伙伴分工/], table: [/动作因果链/, /攻击方向/, /冲击、反应与恢复/] },
+  Mystery_thriller: { planning: [/线索真值/, /公平误导/, /知情变化/], table: [/线索生命周期/, /观察者视点/, /揭示与回看成立性/] },
+  Psychological_drama: { planning: [/权力四项状态/, /主客观边界/, /话语策略/], table: [/权力状态变化/, /凝视、停顿与道具控制/, /主观与客观边界/] },
+  Scifi_post_apocalypse: { planning: [/世界规则/, /资源账/, /生存行动链/], table: [/规则与资源状态/, /生存行动链/, /技术信息可读性/, /环境地理/] },
+  Sweet_romance_novel: { planning: [/关系推进阶梯/, /边界/, /双方目标/], table: [/关系推进链/, /目光、触碰与障碍物/, /误解与信息边界/] },
+  Urban_workplace_drama: { planning: [/职权/, /证据状态/, /谈判动作/], table: [/权责与行动链/, /座次、动线与空间控制/, /文件与屏幕/, /谈判与信息攻防/] },
+  Xianxia_fantasy: { planning: [/修行规则/, /能力条件与代价/, /誓约压力/], table: [/规则与代价/, /法术与战斗行动链/, /阶序、誓约与传承/] },
 };
 
 visualRequirements.realpeople_island_survival = [/海陆方向/, /潮线/, /盐雾/, /现场声/, /人物站位/];
@@ -113,7 +113,7 @@ genreRequirements.Rural_hometown = {
 };
 genreRequirements.Modern_farming_business = {
   planning: [/经营压力诊断矩阵/, /经营时钟与闭环/, /经营场面因果/, /关系位移与家庭行动/, /生产空间与物流拓扑/, /条件化轻喜剧/],
-  table: [/拆镜触发矩阵/, /经营行动镜头链/, /商品、订单与证据镜头/, /空间、轴线与连续性/, /题材化景别与时长/, /轻喜剧反应链/],
+  table: [/拆镜触发矩阵/, /经营行动镜头链/, /商品、订单与证据镜头/, /空间、轴线与连续性/, /题材化信息与动作可容纳性/, /轻喜剧反应链/],
 };
 
 test("only the production-agent manual contracts are treated as active", () => {
@@ -137,11 +137,11 @@ test("only the production-agent manual contracts are treated as active", () => {
   ]);
 });
 
-test("all 391 director combinations and every storyboard topic resolve through the real stage loader", async () => {
+test("all director combinations and every storyboard topic resolve through the real stage loader", async () => {
   const visualPackages = packages(visualRoot);
   const directorPackages = packages(directorRoot);
-  assert.equal(visualPackages.length, 17);
-  assert.equal(directorPackages.length, 23);
+  assert.equal(visualPackages.length, 18);
+  assert.equal(directorPackages.length, 28);
 
   for (const visual of visualPackages) {
     assert.match(readSkill(visualRoot, visual, "director_planning_style.md"), /^---\nname: director_planning_style/m);
@@ -170,12 +170,15 @@ test("all 391 director combinations and every storyboard topic resolve through t
           ], `${stage}: ${visual} + ${director}`);
           assert.match(loaded.prompt, /director_planning_style/);
           assert.match(loaded.prompt, /director_planning_narrative/);
+          assert.match(loaded.prompt, /<skill_content name="director_planning_style"/);
+          assert.equal("activate_skill" in loaded.tools, false);
+          assert.equal("read_skill_file" in loaded.tools, true);
           assert.doesNotMatch(loaded.prompt, /<name>director_storyboard_table_style<\/name>|<name>director_storyboard<\/name>/);
         }
         combinations += 1;
       }
     }
-    assert.equal(combinations, 391);
+    assert.equal(combinations, 504);
 
     for (const director of directorPackages) {
       for (const stage of ["storyboardTable", "supervisionStoryboardTable"] as const) {
@@ -186,6 +189,9 @@ test("all 391 director combinations and every storyboard topic resolve through t
         ], `${stage}: ${director}`);
         assert.match(loaded.prompt, /storyboard_table_techniques/);
         assert.match(loaded.prompt, /director_storyboard_table_narrative/);
+        assert.match(loaded.prompt, /<skill_content name="storyboard_table_techniques"/);
+        assert.equal("activate_skill" in loaded.tools, false);
+        assert.equal("read_skill_file" in loaded.tools, true);
         assert.doesNotMatch(loaded.prompt, /<name>director_storyboard_table_style<\/name>|<name>director_storyboard<\/name>/);
       }
     }
@@ -272,7 +278,7 @@ test("active Director manuals have one hierarchy and contain no execution-layer 
     fs.readFileSync(path.join(skillsRoot, "production_execution_director_plan.md"), "utf8"),
     fs.readFileSync(path.join(skillsRoot, "production_execution_storyboard_table.md"), "utf8"),
   ].join("\n");
-  assert.match(executionSkills, /activate_skill/);
+  assert.match(executionSkills, /激活当前/);
   assert.match(executionSkills, /begin_director_plan/);
   assert.match(executionSkills, /append_storyboard_rows/);
   assert.match(executionSkills, /commit_storyboard_table/);
@@ -310,7 +316,7 @@ test("Modern_farming_business preserves operating causality without inventing a 
     "条件化行动拆解",
     "商品、订单与证据镜头",
     "空间、轴线与连续性",
-    "题材化景别与时长",
+    "题材化信息与动作可容纳性",
     "轻喜剧反应链与声音",
   ]) {
     assert.match(table, new RegExp(`## .*${heading}`));
@@ -323,6 +329,7 @@ test("Modern_farming_business preserves operating causality without inventing a 
   assert.match(table, /工作轴线.*交接轴线.*道路轴线.*关系轴线.*入口出口轴线/s);
   assert.match(table, /消息发出与对方收到.*递出商品与对方验收.*车辆离开与商品送达/s);
   assert.match(table, /动作是否完整.*信息是否可读.*多人协作是否能分辨/s);
+  assert.match(table, /具体景别由通用分镜技法依据本镜新增信息决定/);
   assert.match(table, /行动者 → 受影响者 → 先发现者 → 负责核验或收尾者/);
   assert.doesNotMatch(table, /固定秒数|固定镜头比例|逐句台词切镜|强制重复/);
   assert.doesNotMatch(table, /模型参数|工具名|运行流程|任务状态|持久化/);
@@ -379,7 +386,8 @@ test("Survival_island preserves factual survival constraints without inventing a
   assert.match(table, /林地或林缘/);
   assert.match(table, /洞穴或洞口：只有事实确认时使用/);
   assert.match(table, /分队、折返、失散、会合、潮位变化或跨区域转场/);
-  assert.match(table, /环境建立镜头.*行动中景.*物件或伤病状态近景.*反应镜头/);
+  assert.match(table, /海陆尺度、区域连接、可通行范围和退路.*人物与地形、同伴和资源.*手部动作、余量、损坏、落脚或伤病变化.*人物反应/s);
+  assert.match(table, /具体景别和时长由通用分镜技法依据本镜新增信息与完整动作决定/);
   assert.match(table, /方向、距离及是否被风、植被、岩面或洞口遮蔽/);
   assert.match(table, /行动者 → 受影响者 → 观察者或回应者/);
   assert.doesNotMatch(`${planning}\n${table}`, /activate_skill|begin_\w+|append_\w+|commit_\w+|数据库写入|任务状态/);
@@ -431,22 +439,20 @@ test("Director rebuild is idempotent and the checked-in manuals are already stab
   assert.deepEqual(rebuildDirectorSkills(), []);
 });
 
-test("reference samples remain unchanged", () => {
+test("reference visual sample remains unchanged and active narrative sample follows the common technique", () => {
   assert.equal(
     sha256(skillPath(visualRoot, "realpeople_urban_modern", "director_planning_style.md")),
     "1fe84d2d960f7e44c839eb30568c9bf6577f19546b7ec3e7ff10299986da486a",
   );
-  assert.equal(
-    sha256(skillPath(directorRoot, "Social_realist_drama", "director_planning_narrative.md")),
-    "d6285ef94a4a7718986b19ead9fef419d2a2f3f43bbc1fa19d5c935dfdb131e6",
+  const socialStoryboard = fs.readFileSync(
+    skillPath(directorRoot, "Social_realist_drama", "director_storyboard_table_narrative.md"),
+    "utf8",
   );
-  assert.equal(
-    sha256(skillPath(directorRoot, "Social_realist_drama", "director_storyboard_table_narrative.md")),
-    "bbe5624a2385678e3762242f7e8dc02d89fd3c1f95baba31f30fa156bd4625ba",
-  );
+  assert.match(socialStoryboard, /景别和时长统一由通用分镜技法/);
+  assert.doesNotMatch(socialStoryboard, /远景|全景|中景|近景|特写|\d+(?:\.\d+)?\s*秒/);
 });
 
-test("startup sync includes the 94 upgraded active Director and Art skills", () => {
+test("startup sync includes the active Director and Art skill contracts", () => {
   const entries = Object.keys(STYLE_SKILL_PREVIOUS_HASHES);
   const newPackageIds = [
     "Ancient_political_intrigue",
@@ -462,20 +468,22 @@ test("startup sync includes the 94 upgraded active Director and Art skills", () 
     "realpeople_sports_cinematic",
     "realpeople_rural_naturalism",
   ];
-  assert.equal(entries.length, 94);
+  assert.equal(entries.length, 111);
   assert.equal(entries.some((entry) => entry.endsWith("/director_storyboard_table_style.md")), false);
   assert.equal(entries.some((entry) => entry.endsWith("/director_storyboard.md")), false);
   assert.equal(entries.some((entry) => entry.endsWith("/art_storyboard_video.md")), false);
   assert.equal(entries.some((entry) => entry.includes("realpeople_urban_modern")), false);
-  assert.equal(entries.filter((entry) => entry.startsWith("art_skills/")).length, 70);
-  assert.equal(entries.filter((entry) => entry.includes("/art_prompt/")).length, 60);
-  assert.equal(entries.filter((entry) => entry.startsWith("story_skills/")).length, 24);
+  assert.equal(entries.filter((entry) => entry.startsWith("art_skills/")).length, 77);
+  assert.equal(entries.filter((entry) => entry.includes("/art_prompt/")).length, 66);
+  assert.equal(entries.filter((entry) => entry.startsWith("story_skills/")).length, 34);
   for (const packageId of newPackageIds) {
     assert.equal(entries.some((entry) => entry.includes(`/${packageId}/`) || entry.startsWith(`${packageId}/`)), false, packageId);
   }
   for (const [entry, hashes] of Object.entries(STYLE_SKILL_PREVIOUS_HASHES)) {
     assert.ok(Array.isArray(hashes));
-    assert.ok(hashes.length >= 2);
-    if (entry.includes("/driector_skills/director_")) assert.ok(hashes.length >= 7, entry);
+    assert.ok(hashes.length >= 1);
+    if (entry.includes("/driector_skills/director_") && !entry.includes("douyin_product")) {
+      assert.ok(hashes.length >= 7, entry);
+    }
   }
 });

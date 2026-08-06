@@ -115,17 +115,45 @@ async function buildTrackReviewContext(track: any) {
       "factStatus",
       "filePath",
     );
-  const storyboards = rows.map((row: any) => buildStoryboardVideoFact(row));
+  const references = parseJsonArray(track.info);
+  const storyboardReferenceIds = new Set(
+    references
+      .filter((item: any) => item?.sources === "storyboard")
+      .map((item: any) => Number(item.id))
+      .filter(Number.isFinite),
+  );
+  const storyboards = rows.map((row: any) => {
+    const fact = buildStoryboardVideoFact(row);
+    const hasStoryboardReference = storyboardReferenceIds.has(fact.storyboardId);
+    const isV3 = fact.factVersion === 3;
+    return {
+      storyboardId: fact.storyboardId,
+      displayIndex: fact.displayIndex,
+      factVersion: fact.factVersion,
+      duration: fact.duration,
+      visualStart: hasStoryboardReference ? "storyboardReference" : "textFallback",
+      ...(isV3
+        ? {
+            shotDescription: fact.shotDescription,
+            shotDescriptionRole: hasStoryboardReference ? "temporalContinuation" : "fullShot",
+            ...(hasStoryboardReference ? {} : { shotSize: fact.shotSize, cameraAngle: fact.cameraAngle || undefined }),
+          }
+        : {
+            ...(hasStoryboardReference ? {} : { picture: fact.picture, shotSize: fact.shotSize }),
+            action: fact.action,
+          }),
+      cameraMove: fact.cameraMove,
+      dialogue: fact.dialogue,
+      sound: fact.sound,
+    };
+  });
   return {
     track: {
       id: track.id,
-      groupKey: track.groupKey,
-      groupName: track.groupName,
-      groupIntent: track.groupIntent,
       duration: track.duration,
       prompt: track.prompt || "",
-      musicPlan: parseJsonArray(track.musicPlanJson),
       reviewState: track.reviewState,
+      references,
     },
     storyboards,
   };
@@ -134,7 +162,7 @@ async function buildTrackReviewContext(track: any) {
 async function reviewPromptWithAi(track: any) {
   const context = await buildTrackReviewContext(track);
   const system = `You are Toonflow's production video-prompt reviewer.
-Review the candidate video prompt against storyboard facts, group facts, model usability, and safety.
+Review the candidate video prompt against the reduced storyboard handoff, visual references, model usability, and safety.
 Do not use regex-style word deletion. Judge the prompt semantically.
 Return valid JSON in this exact shape:
 {"issues":[{"issueType":"prompt_pollution|abstract_emotion|continuity_conflict|bgm_in_prompt|safety_risk|model_mismatch|ai_review","severity":"info|warning|blocking","evidence":"short quote or observation","reason":"why it matters","suggestedRevision":"optional complete rewrite draft"}]}
@@ -150,6 +178,10 @@ Rules:
 - Safety review must explicitly consider minors, coercion, abduction/crime guidance, violence, real-person or sensitive-identity misuse, and expressions likely to be rejected by video providers.
 - A safety_risk or blocking item must include suggestedRevision. Do not only say "blocked"; tell the editor how to preserve story intent while softening risky action details, avoiding procedural crime/violence, and keeping the scene generatable.
 - If storyboard images are present, do not invent conflicting lighting, palette, character position or facing direction.
+- For historical V1/V2 facts, when a storyboard image is the initial visual source, the prompt must not restate another initial composition from picture/shotSize/cameraAngle/positions. It should reference that image and describe only action, dialogue/voice tone, diegetic sound, necessary camera movement and end state.
+- For historical V1/V2 facts without a storyboard image, picture and shotSize may be used as the textual initial-frame fallback.
+- For historical V1/V2 facts, action is the temporal description. Do not require legacy visibleEmotion/characters fields or invent a second performance plan.
+- For V3, shotDescription is the sole chronological description. With a storyboardReference, review whether the candidate uses only its later change/end state and leaves the image as the sole opening visual. With textFallback, the complete shotDescription may establish both opening and change.
 - Do not produce final database patches. If a rewrite idea is useful, put it in suggestedRevision as a draft for later batch AI revision.`;
   const result = await invokeAiObjectWithFallback({
     modelKey: "universalAi",

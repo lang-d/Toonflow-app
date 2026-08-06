@@ -5,7 +5,7 @@ const optionalText = z.string().trim().min(1).optional();
 
 export const sceneContinuityIdRequestSchema = z.string().nullable().optional();
 
-export const storyboardCharacterSchema = z.object({
+const storyboardCharacterV1Schema = z.object({
   assetId: z.number().int().positive().optional(),
   name: requiredText,
   action: requiredText,
@@ -31,7 +31,8 @@ export const storyboardRequiredAssetSchema = z.object({
   order: z.number().int().nonnegative(),
 });
 
-export const storyboardTableRowV2Schema = z.object({
+/** Historical row contract. It remains readable but is never used for new Agent writes. */
+export const storyboardTableRowV1Schema = z.object({
   version: z.literal(1),
   index: z.number().int().nonnegative(),
   sceneNo: optionalText,
@@ -49,12 +50,64 @@ export const storyboardTableRowV2Schema = z.object({
   cameraAngle: optionalText,
   transitionFromPrevious: optionalText,
   action: requiredText,
-  characters: z.array(storyboardCharacterSchema),
+  characters: z.array(storyboardCharacterV1Schema),
   visibleEmotion: requiredText,
   dialogue: z.array(storyboardDialogueSchema),
   soundEffects: z.array(requiredText),
   requiredAssets: z.array(storyboardRequiredAssetSchema),
-});
+}).strict();
+
+/** Historical V2 contract. It remains readable and editable in its native form. */
+export const storyboardTableRowV2Schema = z.object({
+  version: z.literal(2),
+  index: z.number().int().nonnegative(),
+  sceneNo: optionalText,
+  groupKey: requiredText,
+  beatId: requiredText,
+  durationSec: z.number().int().positive(),
+  location: requiredText,
+  timeOfDay: requiredText,
+  sceneContinuityId: optionalText,
+  picture: requiredText,
+  action: requiredText,
+  shotSize: requiredText,
+  cameraMove: optionalText,
+  cameraAngle: optionalText,
+  transitionFromPrevious: optionalText,
+  dialogue: z.array(storyboardDialogueSchema),
+  soundEffects: z.array(requiredText),
+  requiredAssets: z.array(storyboardRequiredAssetSchema),
+}).strict();
+
+/**
+ * Current Agent write contract. The description is intentionally a single
+ * chronological source instead of two competing picture/action narratives.
+ */
+export const storyboardTableRowV3Schema = z.object({
+  version: z.literal(3),
+  index: z.number().int().nonnegative(),
+  sceneNo: optionalText,
+  groupKey: requiredText,
+  beatId: requiredText,
+  durationSec: z.number().int().positive(),
+  location: requiredText,
+  timeOfDay: requiredText,
+  sceneContinuityId: optionalText,
+  shotDescription: requiredText,
+  shotSize: requiredText,
+  cameraMove: optionalText,
+  cameraAngle: optionalText,
+  transitionFromPrevious: optionalText,
+  dialogue: z.array(storyboardDialogueSchema),
+  soundEffects: z.array(requiredText),
+  requiredAssets: z.array(storyboardRequiredAssetSchema),
+}).strict();
+
+export const storyboardTableRowSchema = z.union([
+  storyboardTableRowV3Schema,
+  storyboardTableRowV2Schema,
+  storyboardTableRowV1Schema,
+]);
 
 export const storyboardGroupPlanV2Schema = z.object({
   groupKey: requiredText,
@@ -63,9 +116,13 @@ export const storyboardGroupPlanV2Schema = z.object({
   storyboardIndexes: z.array(z.number().int().nonnegative()).min(1),
 });
 
+export type StoryboardTableRowV1 = z.infer<typeof storyboardTableRowV1Schema>;
 export type StoryboardTableRowV2 = z.infer<typeof storyboardTableRowV2Schema>;
+export type StoryboardTableRowV3 = z.infer<typeof storyboardTableRowV3Schema>;
+export type StoryboardTableRow = StoryboardTableRowV1 | StoryboardTableRowV2 | StoryboardTableRowV3;
 export type StoryboardGroupPlanV2 = z.infer<typeof storyboardGroupPlanV2Schema>;
 export type StoryboardFactStatus = "draft" | "ready" | "legacy";
+export const STORYBOARD_FACT_WRITE_VERSION = 3 as const;
 
 export interface StoryboardTableIssue {
   index: number;
@@ -100,14 +157,38 @@ export function parseStoryboardJsonObject(value: unknown): Record<string, any> |
   }
 }
 
-export function parseStoryboardTableRow(value: unknown): StoryboardTableRowV2 | null {
+export function parseStoryboardTableRow(value: unknown): StoryboardTableRow | null {
   const object = parseStoryboardJsonObject(value);
   if (!object) return null;
-  const result = storyboardTableRowV2Schema.safeParse(object);
+  const result = storyboardTableRowSchema.safeParse(object);
   return result.success ? result.data : null;
 }
 
-export function stringifyDialogue(dialogue: StoryboardTableRowV2["dialogue"]) {
+export function isStoryboardTableRowV1(row: StoryboardTableRow): row is StoryboardTableRowV1 {
+  return row.version === 1;
+}
+
+export function isStoryboardTableRowV3(row: StoryboardTableRow): row is StoryboardTableRowV3 {
+  return row.version === 3;
+}
+
+export function legacyStoryboardCharacters(row: StoryboardTableRow) {
+  return row.version === 1 ? row.characters : [];
+}
+
+export function legacyStoryboardVisibleEmotion(row: StoryboardTableRow) {
+  return row.version === 1 ? row.visibleEmotion : "";
+}
+
+export function legacyStoryboardGroupName(row: StoryboardTableRow) {
+  return row.version === 1 ? row.groupName : "";
+}
+
+export function legacyStoryboardGroupIntent(row: StoryboardTableRow) {
+  return row.version === 1 ? row.groupIntent : "";
+}
+
+export function stringifyDialogue(dialogue: StoryboardTableRow["dialogue"]) {
   if (!dialogue.length) return "无台词";
   return dialogue
     .map((item) => {
@@ -118,13 +199,10 @@ export function stringifyDialogue(dialogue: StoryboardTableRowV2["dialogue"]) {
 }
 
 export function stringifySoundEffects(soundEffects: string[]) {
-  return soundEffects.join("、");
+  return soundEffects.join("；");
 }
 
-/**
- * Builds a canonical object only from explicitly supplied structured fields.
- * It never derives facts from videoDesc, Markdown, XML, prompts, or other prose.
- */
+/** Builds a native V2 draft for historical/manual V2 editing only. */
 export function buildStoryboardDraftRow(
   input: Record<string, any>,
   fallbackIndex = 0,
@@ -145,25 +223,21 @@ export function buildStoryboardDraftRow(
   const soundEffects = Array.isArray(soundValue) ? soundValue : text(soundValue) ? [text(soundValue)] : [];
 
   return {
-    version: 1,
+    version: 2,
     index,
     sceneNo: optional(pick("sceneNo", undefined)),
     groupKey: text(pick("groupKey", "")),
-    groupName: text(pick("groupName", "")),
-    groupIntent: text(pick("groupIntent", "")),
     beatId: text(pick("beatId", "")),
     durationSec: numberOr(pick("durationSec", has("duration") ? input.duration : 0), 0),
     location: text(pick("location", has("scene") ? input.scene : "")),
     timeOfDay: text(pick("timeOfDay", "")),
     sceneContinuityId: optional(pick("sceneContinuityId", undefined)),
     picture: text(pick("picture", "")),
+    action: text(pick("action", "")),
     shotSize: text(pick("shotSize", "")),
-    cameraMove: text(pick("cameraMove", "")),
+    cameraMove: optional(pick("cameraMove", undefined)),
     cameraAngle: optional(pick("cameraAngle", undefined)),
     transitionFromPrevious: optional(pick("transitionFromPrevious", undefined)),
-    action: text(pick("action", "")),
-    characters: Array.isArray(pick("characters", [])) ? pick("characters", []) : [],
-    visibleEmotion: text(pick("visibleEmotion", "")),
     dialogue,
     soundEffects,
     requiredAssets: Array.isArray(pick("requiredAssets", [])) ? pick("requiredAssets", []) : [],
@@ -174,11 +248,16 @@ export function buildStoryboardTableRowV2(input: Record<string, any>, fallbackIn
   return storyboardTableRowV2Schema.parse(buildStoryboardDraftRow(input, fallbackIndex));
 }
 
+export function buildStoryboardTableRowV3(input: Record<string, any>): StoryboardTableRowV3 {
+  return storyboardTableRowV3Schema.parse(input);
+}
+
+/** New generation writes are V3-only. Historical V1/V2 rows stay version-native. */
 export function validateStoryboardTableRows(rows: unknown[]): StoryboardTableIssue[] {
   const issues: StoryboardTableIssue[] = [];
   const seenIndexes = new Set<number>();
   rows.forEach((row, rowIndex) => {
-    const result = storyboardTableRowV2Schema.safeParse(row);
+    const result = storyboardTableRowV3Schema.safeParse(row);
     if (!result.success) {
       for (const issue of result.error.issues) {
         issues.push({
@@ -197,34 +276,38 @@ export function validateStoryboardTableRows(rows: unknown[]): StoryboardTableIss
   return issues;
 }
 
-export function storyboardRowToDbPatch(row: StoryboardTableRowV2, revision = 1) {
+export function storyboardRowToDbPatch(
+  row: StoryboardTableRow,
+  revision = 1,
+  group?: { groupName?: string; groupIntent?: string },
+) {
   return {
     tableRowJson: JSON.stringify(row),
     factStatus: "ready" as StoryboardFactStatus,
     factVersion: row.version,
     factRevision: revision,
-    // Compatibility projections. They are never read as authoritative facts.
+    // Compatibility projections. They are never read as authoritative V2 facts.
     duration: String(row.durationSec),
     scene: row.location,
     location: row.location,
     timeOfDay: row.timeOfDay,
     sceneContinuityId: row.sceneContinuityId || null,
-    picture: row.picture,
-    action: row.action,
+    picture: row.version === 3 ? null : row.picture,
+    action: row.version === 3 ? null : row.action,
     shotSize: row.shotSize,
-    cameraMove: row.cameraMove,
+    cameraMove: row.cameraMove || "",
     dialogue: stringifyDialogue(row.dialogue),
     sound: stringifySoundEffects(row.soundEffects),
-    visibleEmotion: row.visibleEmotion,
+    visibleEmotion: null,
     groupKey: row.groupKey,
-    groupName: row.groupName,
-    groupIntent: row.groupIntent,
+    groupName: group?.groupName || "",
+    groupIntent: group?.groupIntent || "",
     beatId: row.beatId,
     videoDesc: "",
   };
 }
 
-export function assetIdsFromStoryboardRow(row: StoryboardTableRowV2) {
+export function assetIdsFromStoryboardRow(row: StoryboardTableRow) {
   return [...new Set(row.requiredAssets.map((item) => item.assetId))];
 }
 

@@ -28,6 +28,7 @@ before(async () => {
     table.string("groupName");
     table.string("groupIntent");
     table.text("musicPlanJson");
+    table.text("info");
     table.string("reviewState");
     table.text("reviewIssuesJson");
   });
@@ -75,6 +76,7 @@ beforeEach(async () => {
     groupName: "Opening",
     groupIntent: "Establish the room action",
     musicPlanJson: "[]",
+    info: "[]",
     reviewState: "pending",
     reviewIssuesJson: "[]",
   });
@@ -85,11 +87,12 @@ after(async () => {
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-async function withMockedAiText(text: string, fn: () => Promise<void>) {
+async function withMockedAiText(text: string, fn: () => Promise<void>, inspect?: (input: any) => void) {
   const original = u.Ai.Text;
   (u.Ai as any).Text = () => ({
     invoke: async (input: any) => {
       if (input.output) throw new Error("responseFormat is not supported");
+      inspect?.(input);
       return { text };
     },
   });
@@ -99,6 +102,93 @@ async function withMockedAiText(text: string, fn: () => Promise<void>) {
     (u.Ai as any).Text = original;
   }
 }
+
+test("review context treats a storyboard image as the sole V3 opening visual", async () => {
+  await db("o_storyboard").insert({
+    id: 101,
+    projectId: 1,
+    scriptId: 2,
+    trackId: 10,
+    index: 1,
+    factStatus: "ready",
+    tableRowJson: JSON.stringify({
+      version: 3,
+      index: 1,
+      groupKey: "G01",
+      beatId: "B01",
+      durationSec: 5,
+      location: "room",
+      timeOfDay: "day",
+      shotDescription: "The character stands beside the table. A bell rings; the character picks up the box and holds it at chest height.",
+      shotSize: "medium",
+      dialogue: [],
+      soundEffects: [],
+      requiredAssets: [],
+    }),
+  });
+  await db("o_videoTrack")
+    .where({ id: 10 })
+    .update({ info: JSON.stringify([{ sources: "storyboard", id: 101, fileType: "image" }]) });
+
+  let context: any;
+  await withMockedAiText(
+    '{"issues":[]}',
+    async () => {
+      await service.reviewVideoTracks({ projectId: 1, scriptId: 2, trackIds: [10] });
+    },
+    (input) => {
+      context = JSON.parse(input.messages[0].content);
+    },
+  );
+  assert.equal(context.storyboards[0].visualStart, "storyboardReference");
+  assert.equal(context.storyboards[0].shotDescription, "The character stands beside the table. A bell rings; the character picks up the box and holds it at chest height.");
+  assert.equal(context.storyboards[0].shotDescriptionRole, "temporalContinuation");
+  assert.equal("picture" in context.storyboards[0], false);
+  assert.equal("action" in context.storyboards[0], false);
+  assert.equal("shotSize" in context.storyboards[0], false);
+});
+
+test("review context keeps full V3 description only for the textual opening fallback", async () => {
+  await db("o_storyboard").insert({
+    id: 102,
+    projectId: 1,
+    scriptId: 2,
+    trackId: 10,
+    index: 1,
+    factStatus: "ready",
+    tableRowJson: JSON.stringify({
+      version: 3,
+      index: 1,
+      groupKey: "G01",
+      beatId: "B01",
+      durationSec: 5,
+      location: "room",
+      timeOfDay: "day",
+      shotDescription: "The character stands beside the table. A bell rings; the character picks up the box and holds it at chest height.",
+      shotSize: "medium",
+      dialogue: [],
+      soundEffects: [],
+      requiredAssets: [],
+    }),
+  });
+
+  let context: any;
+  await withMockedAiText(
+    '{"issues":[]}',
+    async () => {
+      await service.reviewVideoTracks({ projectId: 1, scriptId: 2, trackIds: [10] });
+    },
+    (input) => {
+      context = JSON.parse(input.messages[0].content);
+    },
+  );
+  assert.equal(context.storyboards[0].visualStart, "textFallback");
+  assert.equal(context.storyboards[0].shotDescription, "The character stands beside the table. A bell rings; the character picks up the box and holds it at chest height.");
+  assert.equal(context.storyboards[0].shotDescriptionRole, "fullShot");
+  assert.equal("picture" in context.storyboards[0], false);
+  assert.equal("action" in context.storyboards[0], false);
+  assert.equal(context.storyboards[0].shotSize, "medium");
+});
 
 test("reviewVideoTracks accepts fallback object with empty issues", async () => {
   await withMockedAiText('{"issues":[]}', async () => {

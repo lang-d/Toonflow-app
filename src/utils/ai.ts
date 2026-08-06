@@ -29,7 +29,17 @@ type AiType =
   | "productionAgent:storyboardPanelAgent"
   | "productionAgent:storyboardTableAgent";
 
-type FnName = "textRequest" | "imageRequest" | "imageSubmit" | "imagePoll" | "videoRequest" | "ttsRequest" | "musicRequest";
+type FnName = "textRequest" | "imageRequest" | "imageSubmit" | "imagePoll" | "videoRequest" | "ttsRequest" | "musicRequest" | "musicRequestCheck";
+
+export type MusicRequestContractIssue = {
+  code: string;
+  field?: string;
+  message: string;
+};
+
+export type MusicRequestCheckResult = {
+  issues: MusicRequestContractIssue[];
+};
 const IMAGE_PROVIDER_TIMEOUT_MS = 10 * 60 * 1000;
 const IMAGE_PROVIDER_SUBMIT_SOFT_WARN_MS = 90 * 1000;
 const IMAGE_PROVIDER_SUBMIT_HARD_TIMEOUT_MS = 10 * 60 * 1000;
@@ -160,6 +170,30 @@ async function getVendorTemplateFn(fnName: FnName, modelName: `${string}:${strin
   else return <T>(input: T) => fn(input, selectedModel);
 }
 
+export async function resolveTextModelRuntimeInfo(value: AiType | `${string}:${string}`) {
+  const resolvedModelName = await resolveModelName(value);
+  const [vendorId, modelId] = resolvedModelName.split(/:(.+)/);
+  const [config, model] = await Promise.all([
+    getModelConfig(value),
+    u.vendor.getModelList(vendorId).then((models: any[]) => models.find((item: any) => item.type === "text" && item.modelName === modelId)),
+  ]);
+  return {
+    resolvedModelName,
+    vendorId,
+    modelId,
+    contextWindowTokens:
+      Number.isFinite(Number(model?.contextWindowTokens)) && Number(model.contextWindowTokens) > 0
+        ? Number(model.contextWindowTokens)
+        : null,
+    maxOutputTokens:
+      Number.isFinite(Number(config?.maxOutputTokens)) && Number(config?.maxOutputTokens) > 0
+        ? Number(config?.maxOutputTokens)
+        : Number.isFinite(Number(model?.maxOutputTokens)) && Number(model.maxOutputTokens) > 0
+          ? Number(model.maxOutputTokens)
+          : null,
+  };
+}
+
 async function getOptionalVendorTemplateFn(fnName: Exclude<FnName, "textRequest">, modelName: `${string}:${string}`): Promise<((input: any) => any) | null> {
   try {
     return await getVendorTemplateFn(fnName, modelName);
@@ -168,6 +202,25 @@ async function getOptionalVendorTemplateFn(fnName: Exclude<FnName, "textRequest"
     if (message.includes(fnName)) return null;
     throw error;
   }
+}
+
+/**
+ * Runs an optional vendor-owned music request contract check. This dispatcher
+ * deliberately does not interpret provider rules or modify the request.
+ */
+export async function musicRequestCheck(modelName: `${string}:${string}`, config: Record<string, unknown>): Promise<MusicRequestCheckResult> {
+  const fn = await getOptionalVendorTemplateFn("musicRequestCheck", modelName);
+  if (!fn) return { issues: [] };
+  const result = await fn(config);
+  if (!result || !Array.isArray(result.issues)) {
+    throw new Error("musicRequestCheck must return { issues: [] }");
+  }
+  for (const issue of result.issues) {
+    if (!issue || typeof issue.code !== "string" || typeof issue.message !== "string") {
+      throw new Error("musicRequestCheck returned an invalid issue");
+    }
+  }
+  return { issues: result.issues };
 }
 
 async function withTaskRecord<T>(

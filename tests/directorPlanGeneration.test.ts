@@ -48,6 +48,7 @@ before(async () => {
     table.string("state");
     table.integer("textAssetId");
     table.integer("version");
+    table.text("videoStyle");
     table.string("contentHash");
     table.text("errorJson");
     table.integer("createdAt");
@@ -117,12 +118,26 @@ test("director plan commits ordered multi-chunk sections and retains drafts", as
     assert.equal(retry.conflict, null);
   }
 
-  const result = await service.commitDirectorPlanGeneration(started.generationId);
+  const result = await service.commitDirectorPlanGeneration(started.generationId, "2D 卡通渲染，清晰轮廓与有限高光。");
   assert.equal(result.status, "committed");
   if (result.status !== "committed") return;
   assert.equal(result.sectionCount, 9);
+  assert.equal(result.videoStyle, "2D 卡通渲染，清晰轮廓与有限高光。");
+  assert.equal(
+    (await db("o_directorPlanGeneration").where({ generationId: started.generationId }).first()).videoStyle,
+    "2D 卡通渲染，清晰轮廓与有限高光。",
+  );
+  assert.equal(
+    await service.getCommittedDirectorPlanVideoStyle({ projectId: 1, scriptId: 10 }),
+    "2D 卡通渲染，清晰轮廓与有限高光。",
+  );
+  const retry = await service.commitDirectorPlanGeneration(started.generationId, "不应覆盖的另一种风格。");
+  assert.equal(retry.status, "committed");
+  if (retry.status === "committed") assert.equal(retry.videoStyle, "2D 卡通渲染，清晰轮廓与有限高光。");
   assert.equal(await db("o_directorPlanGenerationChunk").where({ generationId: started.generationId }).count("*").first().then((v: any) => Number(v["count(*)"] ?? v.count)), 18);
   const saved = await service.readDirectorPlanAsset({ projectId: 1, scriptId: 10, textAssetId: result.textAssetId });
+  assert.equal(saved.generationId, started.generationId);
+  assert.equal(saved.videoStyle, "2D 卡通渲染，清晰轮廓与有限高光。");
   assert.match(saved.content, /inputCheck:/);
   assert.match(saved.content, /derivedAssets:/);
   assert.match(saved.content, /inputCheck:a+\n-tail/);
@@ -136,7 +151,7 @@ test("director plan reads complete committed text over one megabyte", async () =
     sectionKey === "derivedAssets" ? `${sectionKey}: ${"x".repeat(170_000)} ${tailMarker}` : `${sectionKey}: ${"x".repeat(125_000)}`,
   );
 
-  const result = await service.commitDirectorPlanGeneration(started.generationId);
+  const result = await service.commitDirectorPlanGeneration(started.generationId, "3D 卡通渲染，稳定材质与自然光层次。");
   assert.equal(result.status, "committed");
   if (result.status !== "committed") return;
 
@@ -151,7 +166,7 @@ test("director plan commit strips duplicate section heading from chunk content",
     sectionKey === "continuity" ? "### ③ 资产与连续性锁定\n\n角色连续性：保持既有服装。" : `${sectionKey}: normal content`,
   );
 
-  const result = await service.commitDirectorPlanGeneration(started.generationId);
+  const result = await service.commitDirectorPlanGeneration(started.generationId, "真人自然主义，动机光与真实空间质感。");
   assert.equal(result.status, "committed");
   if (result.status !== "committed") return;
 
@@ -170,10 +185,22 @@ test("missing section never creates or reuses a formal scriptPlan", async () => 
     chunkIndex: 0,
     content: "truncated output",
   });
-  const result = await service.commitDirectorPlanGeneration(started.generationId);
+  const result = await service.commitDirectorPlanGeneration(started.generationId, "水墨国风，留白与传统色层级。");
   assert.equal(result.status, "invalid");
   const afterCount = Number((await db("o_textAsset").where({ targetType: "scriptPlan" }).count({ count: "*" }).first()).count);
   assert.equal(afterCount, beforeCount);
+});
+
+test("director plan requires a short videoStyle before formal commit", async () => {
+  const started = await service.beginDirectorPlanGeneration({ projectId: 1, scriptId: 10 });
+  await assert.rejects(
+    () => service.commitDirectorPlanGeneration(started.generationId, "   "),
+    /videoStyle cannot be empty/,
+  );
+  const generation = await db("o_directorPlanGeneration").where({ generationId: started.generationId }).first();
+  assert.equal(generation.state, "writing");
+  assert.equal(generation.videoStyle, null);
+  assert.equal(await service.getCommittedDirectorPlanVideoStyle({ projectId: 1, scriptId: 11 }), "");
 });
 
 test("tampered chunk hash invalidates director plan commit without creating a formal version", async () => {
@@ -184,7 +211,7 @@ test("tampered chunk hash invalidates director plan commit without creating a fo
     .where({ generationId: started.generationId, sectionKey: "inputCheck", chunkIndex: 0 })
     .update({ content: "tampered content" });
 
-  const result = await service.commitDirectorPlanGeneration(started.generationId);
+  const result = await service.commitDirectorPlanGeneration(started.generationId, "3D 黏土定格，实体材质与桌面尺度。");
   assert.equal(result.status, "invalid");
   if (result.status === "invalid") assert.match(result.issues.map((issue) => issue.message).join("\n"), /hash mismatch/);
   const afterCount = Number((await db("o_textAsset").where({ targetType: "scriptPlan" }).count({ count: "*" }).first()).count);
@@ -204,12 +231,13 @@ test("failed atomic commit does not leave a visible formal scriptPlan", async ()
     END
   `);
   try {
-    const result = await service.commitDirectorPlanGeneration(started.generationId);
+    const result = await service.commitDirectorPlanGeneration(started.generationId, "真人纪实风格，保持自然肤感与现场光。");
     assert.equal(result.status, "failed");
     const afterCount = Number((await db("o_textAsset").where({ targetType: "scriptPlan" }).count({ count: "*" }).first()).count);
     assert.equal(afterCount, beforeCount);
     const generation = await db("o_directorPlanGeneration").where({ generationId: started.generationId }).first();
     assert.equal(generation.state, "failed");
+    assert.equal(generation.videoStyle, null);
   } finally {
     await db.raw("DROP TRIGGER IF EXISTS fail_director_plan_commit");
   }

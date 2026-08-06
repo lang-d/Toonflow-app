@@ -8,7 +8,7 @@ Preferred format:
 - one clear musical idea per cue
 
 Recommended sections:
-- Duration
+- Timing or form when it is part of the confirmed music brief
 - Mood arc
 - Instrumentation
 - Structure
@@ -24,6 +24,6 @@ Negative prompt:
 - otherwise append a short "Avoid:" sentence
 
 Generation config:
-- include durationSec when known
+- include durationSec only when the selected provider explicitly accepts a duration parameter
 - include outputFormat only when requested or supported
 - keep provider-specific fields in generationConfig, not in the prose prompt

@@ -29,14 +29,15 @@ test("social realist drama provides executable pressure-drama directing methods"
     "现实压力诊断框架",
     "关系位移",
     "短剧连载节奏",
-    "拆镜触发条件",
-    "证据特写",
+    "拆镜触发",
+    "证据与现实后果",
     "旁观者沉默",
-    "空间后果",
-    "关键沉默通常 2-4 秒",
+    "空间状态",
+    "通用分镜技法",
   ]) {
     assert.match(content, new RegExp(phrase));
   }
+  assert.doesNotMatch(content, /远景|全景|中景|近景|特写|\d+(?:\.\d+)?\s*秒/);
 });
 
 test("social realist drama stays generic and visual-style independent", () => {

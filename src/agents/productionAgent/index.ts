@@ -5,7 +5,7 @@ import u from "@/utils";
 import Memory from "@/utils/agent/memory";
 import useTools from "@/agents/productionAgent/tools";
 import ResTool from "@/socket/resTool";
-import { createTextAsset, summarizeLongText } from "@/services/textAsset";
+import { createTextAsset } from "@/services/textAsset";
 import { getDirectorPlanGenerationState } from "@/services/directorPlanGeneration";
 import { runLazyRetentionCleanup } from "@/services/retention";
 import { getVideoModelPolicy } from "@/services/videoModelPolicy";
@@ -14,12 +14,157 @@ import { readConfiguredSkill } from "@/services/skillResolver";
 import { loadProductionStage, productionSupervisionStage } from "@/services/productionStageSkills";
 import { createLogger } from "@/logger";
 import {
-  consumeFullStream as consumeAgentFullStream,
+  consumeAgentTurn,
+  agentTurnResultFromError,
   createAgentModelStreamScope,
+  type AgentModelCompletion,
+  type AgentTurnResult,
 } from "@/agents/shared/streaming";
-import { recordAgentModelStreamFinished, recordAgentRunEvent, type AgentRunContext } from "@/services/agentRun";
+import {
+  recordAgentModelStreamFinished,
+  recordAgentRunEvent,
+  recordAgentTurnResult,
+  recordAgentTurnStarted,
+  type AgentRunContext,
+} from "@/services/agentRun";
+import {
+  runStoryboardPanelSingleReview,
+  storyboardPanelSingleReviewFailureDetails,
+} from "@/services/storyboardPanelSingleReview";
+import {
+  advanceConsecutiveLengthTurns,
+  boundAgentTurnToolResults,
+  compactProductionAgentContextIfNeeded,
+  continueProductionAgentContext,
+  createProductionAgentTurnInputGuard,
+  isContextWindowOverflowError,
+} from "@/services/agentContextCompaction";
 
 const productionAgentLog = createLogger("production-agent");
+const PRODUCTION_AGENT_MAX_INACTIVE_TURNS = 3;
+const PRODUCTION_AGENT_MAX_CONSECUTIVE_LENGTH_TURNS = 4;
+
+function productionMemory(isolationKey: string) {
+  return new Memory("productionAgent", isolationKey, {
+    autoSummarize: false,
+    allowedRoles: ["user", "assistant:final"],
+    includeSummaries: false,
+    includeAutomaticRag: false,
+  });
+}
+
+function completionLatch() {
+  let resolve!: (value: AgentModelCompletion | null) => void;
+  const promise = new Promise<AgentModelCompletion | null>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function turnActivitySignature(turn: AgentTurnResult) {
+  if (!turn.toolCalls.length && !turn.toolResults.length) return "";
+  return JSON.stringify({
+    calls: turn.toolCalls.map((item) => item.toolName),
+    results: boundAgentTurnToolResults(turn.toolResults).items.map((item) => ({
+      toolName: item.toolName,
+      success: item.success,
+      result: item.result,
+    })),
+  });
+}
+
+function isRecoverableTurn(turn: AgentTurnResult) {
+  return turn.state === "interrupted" || ["length", "tool-calls", "unknown"].includes(turn.finishReason);
+}
+
+function isRetryableTransportError(error: unknown) {
+  const candidate = error as { status?: unknown; statusCode?: unknown; code?: unknown } | null;
+  const status = Number(candidate?.statusCode ?? candidate?.status);
+  const code = String(candidate?.code || "").toUpperCase();
+  return (
+    status === 408 ||
+    status === 409 ||
+    status === 425 ||
+    status === 429 ||
+    (status >= 500 && status <= 599) ||
+    ["ETIMEDOUT", "ECONNRESET", "ECONNABORTED", "EPIPE", "UND_ERR_CONNECT_TIMEOUT"].includes(code)
+  );
+}
+
+function resourceDeliveryStates(turn: AgentTurnResult, presentedToModel: boolean) {
+  return turn.toolResults.flatMap((toolResult) => {
+    if (!toolResult.success || toolResult.toolName !== "resource_access") return [];
+    const result = toolResult.result as Record<string, unknown> | null;
+    if (!result || typeof result.resourceRef !== "string") return [];
+    return [
+      {
+        resourceRef: result.resourceRef,
+        version: result.version ?? null,
+        returnedRange: result.returnedRange ?? null,
+        nextCursor: result.nextCursor ?? null,
+        eof: result.eof ?? null,
+        presentedToModel,
+        pendingConsumption: true,
+      },
+    ];
+  });
+}
+
+function interruptedOverflowFeedback(resTool: ResTool) {
+  const feedback = resTool.newMessage("assistant", "视频策划");
+  feedback
+    .text(
+      "当前 Chat 因供应商连续两次报告上下文容量溢出而安全中断，工作断点已保存。可以直接发送“继续”创建新的 Chat 并从断点恢复，也可以先切换更大上下文模型或缩小任务范围。",
+    )
+    .complete();
+  feedback.complete();
+}
+
+type SubAgentTaskResult = {
+  text: string;
+  finishReason: string;
+  toolResults: AgentTurnResult["toolResults"];
+  interruptionCount: number;
+  outputAssetId?: number;
+};
+
+function subAgentText(result: SubAgentTaskResult) {
+  return result.text || "Sub-agent returned without a user-facing summary.";
+}
+
+async function archiveProductionAgentTranscript(input: {
+  runId?: string;
+  projectId: number;
+  scriptId: number | null;
+  agentKey: string;
+  stage: string;
+  subAgent: string;
+  name: string;
+  content: string;
+}) {
+  if (!input.content.trim()) return undefined;
+  await runLazyRetentionCleanup();
+  const asset = await createTextAsset({
+    projectId: input.projectId,
+    scriptId: input.scriptId,
+    targetType: "agentOutput",
+    targetId: `${input.agentKey}:${input.runId || Date.now()}`,
+    content: input.content,
+    summary: `${input.name} process transcript (${input.content.length} chars)`,
+    state: "complete",
+  });
+  if (input.runId) {
+    await recordAgentRunEvent(input.runId, "agent_output_archived", {
+      stage: input.stage,
+      subAgent: input.subAgent,
+      agentKey: input.agentKey,
+      textAssetId: asset.id,
+      summary: asset.summary,
+      size: asset.size,
+    });
+  }
+  return asset.id;
+}
 
 export interface AgentContext {
   socket: Socket;
@@ -36,6 +181,7 @@ export interface AgentContext {
   };
   runContext?: AgentRunContext;
   continuation?: {
+    kind: "awaiting_user" | "resumable_interruption";
     run: {
       runId: string;
       reason: string | null;
@@ -44,7 +190,8 @@ export interface AgentContext {
       resultJson: string | null;
       startedAt: number | null;
     };
-    decision: unknown;
+    decision?: unknown;
+    checkpoint?: unknown;
   } | null;
 }
 
@@ -71,6 +218,17 @@ function buildMemPrompt(mem: Awaited<ReturnType<Memory["get"]>>): string {
 
 function buildContinuationPrompt(continuation: AgentContext["continuation"]) {
   if (!continuation) return "";
+  if (continuation.kind === "resumable_interruption") {
+    return `
+
+## Resumable prior Chat checkpoint (non-authoritative)
+The prior Chat in this same episode Session ended after a repeated provider context overflow. The user's current message is the active instruction. If it asks to continue, resume from this checkpoint; if it gives a new task, follow the new task and use the checkpoint only as historical context.
+- sourceRunId: ${continuation.run.runId}
+- stage: ${continuation.run.currentStage || "unknown"}
+- subAgent: ${continuation.run.currentSubAgent || "unknown"}
+- checkpoint: ${JSON.stringify(continuation.checkpoint)}
+`;
+  }
   return `
 
 ## Recent awaiting-user run hint (non-authoritative)
@@ -192,9 +350,9 @@ ${clipped}`;
 
 export async function runDecisionAI(ctx: AgentContext) {
   const { isolationKey, text, abortSignal } = ctx;
-  const memory = new Memory("productionAgent", isolationKey);
+  const memory = productionMemory(isolationKey);
+  const priorMemory = await memory.get(text);
   await memory.add("user", text, { createTime: ctx.userMessageTime });
-  const decisionMessageTime = new Date(ctx.msg.datetime).getTime();
 
   const prompt = await readBuiltinSkill("production_agent_decision.md");
 
@@ -202,74 +360,346 @@ export async function runDecisionAI(ctx: AgentContext) {
   if (!projectInfo) throw new Error(`项目不存在，ID: ${ctx.resTool.data.projectId}`);
   const { modelInfo, durationPolicy } = await buildProductionProjectModelContext(projectInfo);
 
-  const mem = buildMemPrompt(await memory.get(text));
+  const mem = buildMemPrompt(priorMemory);
   const continuationPrompt = buildContinuationPrompt(ctx.continuation);
+  const decisionFixedContext = prompt + modelInfo + text;
+  const preparedContext = await compactProductionAgentContextIfNeeded({
+    runId: ctx.runContext?.runId,
+    modelKey: "productionAgent:decisionAgent",
+    think: ctx.thinkConfig.think,
+    thinkLevel: ctx.thinkConfig.thinlLevel,
+    objective: text,
+    context: mem + continuationPrompt,
+    fixedContext: decisionFixedContext,
+  });
+  let decisionContext = preparedContext.context;
+  if (preparedContext.compacted) ctx.runContext?.setContextCheckpoint(preparedContext.context);
+  let turnNumber = 0;
+  let inactiveTurns = 0;
+  let consecutiveLengthTurns = 0;
+  let contextOverflowCount = 0;
+  let lastActivitySignature = "";
+  const archiveDecisionFailure = async (content: string) =>
+    archiveProductionAgentTranscript({
+      runId: ctx.runContext?.runId,
+      projectId: Number(ctx.resTool.data.projectId),
+      scriptId: ctx.resTool.data.scriptId == null ? null : Number(ctx.resTool.data.scriptId),
+      agentKey: "productionAgent:decisionAgent",
+      stage: "decision",
+      subAgent: "decisionAgent",
+      name: "Decision Agent recovery",
+      content,
+    }).catch((error) => {
+      console.warn("[productionAgent] failed to archive Decision Agent recovery transcript", error);
+      return undefined;
+    });
 
-  const modelStreamScope = createAgentModelStreamScope(abortSignal);
-  if (ctx.runContext) {
-    ctx.runContext.requestStop = () => modelStreamScope.abort();
-    ctx.runContext.markStage("decision", "decisionAgent");
+  while (!ctx.runContext?.terminalIntent) {
+    turnNumber += 1;
+    const turnId = u.uuid();
+    const turnMessageId = ctx.msg.id;
+    const turnInputGuard = await createProductionAgentTurnInputGuard({
+      modelKey: "productionAgent:decisionAgent",
+    });
+    const modelStreamScope = createAgentModelStreamScope(abortSignal);
+    const completion = completionLatch();
+    if (ctx.runContext) {
+      ctx.runContext.requestStop = () => modelStreamScope.abort();
+      ctx.runContext.markStage("decision", "decisionAgent");
+      await recordAgentTurnStarted(ctx.runContext.runId, {
+        turnId,
+        turnNumber,
+        messageId: turnMessageId,
+        stage: "decision",
+        subAgent: "decisionAgent",
+        continuedFrom: turnNumber > 1 ? "previous_turn" : null,
+      });
+    }
+
+    let turn: AgentTurnResult;
+    let providerContextOverflow = false;
+    try {
+      const { fullStream } = await u.Ai.Text(
+        "productionAgent:decisionAgent",
+        ctx.thinkConfig.think,
+        ctx.thinkConfig.thinlLevel,
+      ).stream({
+        messages: [
+          { role: "system", content: prompt },
+          { role: "assistant", content: decisionContext + "\n" + modelInfo },
+          { role: "user", content: text },
+        ],
+        stopWhen: turnInputGuard.stopWhen,
+        abortSignal: modelStreamScope.signal,
+        tools: {
+          ...memory.getTools(),
+          ...useTools({
+            resTool: ctx.resTool,
+            msg: ctx.msg,
+            toolsNames: [
+              "get_flowData",
+              "resource_access",
+              "update_agent_progress",
+              "complete_agent_run",
+              "await_user_decision",
+              "list_storyboard_generations",
+              "read_storyboard_generation",
+              "list_production_reviews",
+              "read_production_review",
+              "read_text_asset",
+              "list_director_plan_generations",
+              "read_director_plan_generation",
+            ],
+            runContext: ctx.runContext,
+            continuation: ctx.continuation,
+          }),
+          ...(await createSubAgent(ctx, { projectInfo, modelInfo, durationPolicy })),
+        },
+        onFinish: async (result) => {
+          completion.resolve(result);
+          if (ctx.runContext) {
+            await recordAgentModelStreamFinished(ctx.runContext.runId, result).catch((error) => {
+              console.warn("[productionAgent] failed to record model stream completion:", u.error(error).message);
+            });
+          }
+        },
+      });
+
+      let currentMsg = ctx.msg;
+      turn = await consumeAgentTurn({
+        agentName: "productionAgent:decisionAgent",
+        fullStream,
+        completion: completion.promise,
+        initialMsg: currentMsg,
+        userAbortSignal: abortSignal,
+        abortModelStream: modelStreamScope.abort,
+        projectId: ctx.resTool.data.projectId,
+        scriptId: ctx.resTool.data.scriptId,
+        syncMsg: () => {
+          if (ctx.msg === currentMsg) return currentMsg;
+          currentMsg.complete();
+          currentMsg = ctx.msg;
+          return currentMsg;
+        },
+      });
+    } catch (error) {
+      if (ctx.runContext?.terminalIntent && isAbortError(error)) break;
+      const observed = agentTurnResultFromError(error);
+      if (isContextWindowOverflowError(error)) {
+        contextOverflowCount = ctx.runContext?.recordContextOverflow() ?? contextOverflowCount + 1;
+        providerContextOverflow = true;
+        turn = observed || {
+          text: "",
+          state: "interrupted",
+          finishReason: "context-overflow",
+          usage: { inputTokens: null, outputTokens: null, totalTokens: null },
+          toolCalls: [],
+          toolResults: [],
+        };
+        turn.state = "interrupted";
+        turn.finishReason = "context-overflow";
+      } else if (observed && (observed.state === "interrupted" || isRetryableTransportError(error))) {
+        turn = {
+          ...observed,
+          state: "interrupted",
+          finishReason: observed.state === "interrupted" ? observed.finishReason : "transport-error",
+        };
+      } else {
+        throw error;
+      }
+    } finally {
+      if (ctx.runContext?.requestStop) ctx.runContext.requestStop = undefined;
+      modelStreamScope.dispose();
+    }
+
+    const contextBoundary = turnInputGuard.getBoundary();
+    if (contextBoundary?.triggerFinishReason) turn.finishReason = contextBoundary.triggerFinishReason;
+    if (contextBoundary || isRecoverableTurn(turn)) turn.state = "interrupted";
+    if (ctx.runContext) {
+      await recordAgentTurnResult(ctx.runContext.runId, {
+        turnId,
+        turnNumber,
+        messageId: turnMessageId,
+        stage: "decision",
+        subAgent: "decisionAgent",
+        state: turn.state,
+        finishReason: turn.finishReason,
+        usage: turn.usage,
+        textLength: turn.text.length,
+        toolCalls: turn.toolCalls,
+        toolResults: turn.toolResults,
+      });
+      if (contextBoundary) {
+        await recordAgentRunEvent(ctx.runContext.runId, "agent_turn_context_boundary", {
+          turnId,
+          turnNumber,
+          messageId: turnMessageId,
+          stage: "decision",
+          subAgent: "decisionAgent",
+          resourceDeliveries: resourceDeliveryStates(turn, false),
+          ...contextBoundary,
+        });
+      } else if (providerContextOverflow) {
+        await recordAgentRunEvent(ctx.runContext.runId, "agent_turn_context_boundary", {
+          turnId,
+          turnNumber,
+          messageId: turnMessageId,
+          stage: "decision",
+          subAgent: "decisionAgent",
+          reason: "provider_context_overflow",
+          overflowCount: contextOverflowCount,
+          capacitySource: turnInputGuard.budget.source,
+          resourceDeliveries: resourceDeliveryStates(turn, true),
+        });
+      }
+    }
+
+    if (ctx.runContext?.terminalIntent) break;
+    if (!ctx.runContext) return;
+
+    if (providerContextOverflow && contextOverflowCount >= 2) {
+      const checkpoint = String(ctx.runContext.latestContextCheckpoint || "").trim();
+      if (!checkpoint) {
+        ctx.runContext.setFailed({
+          stage: "decision",
+          subAgent: "decisionAgent",
+          reason: "Production Agent could not preserve a resumable context-overflow checkpoint.",
+          errorJson: { code: "AGENT_RESUMABLE_CHECKPOINT_MISSING", turnNumber },
+        });
+        break;
+      }
+      const reason = "Production Agent was interrupted after the provider reported context overflow twice in this Chat.";
+      const resumable = {
+        checkpoint,
+        stage: "decision",
+        subAgent: "decisionAgent",
+        sourceRunId: ctx.runContext.runId,
+        resourceDeliveries: resourceDeliveryStates(turn, true),
+        overflow: { count: contextOverflowCount, turnNumber, finishReason: turn.finishReason },
+        model: {
+          key: "productionAgent:decisionAgent",
+          capacitySource: turnInputGuard.budget.source,
+          contextWindowTokens: turnInputGuard.budget.contextWindowTokens,
+          safeInputTokens: turnInputGuard.budget.safeInputTokens,
+        },
+      };
+      await recordAgentRunEvent(ctx.runContext.runId, "agent_resumable_checkpoint", resumable);
+      ctx.runContext.setInterrupted({
+        stage: "decision",
+        subAgent: "decisionAgent",
+        reason,
+        resultJson: { kind: "agent_resumable_context_overflow", sourceRunId: ctx.runContext.runId },
+        errorJson: { code: "AGENT_CONTEXT_OVERFLOW_REPEATED", turnNumber, contextOverflowCount },
+      });
+      interruptedOverflowFeedback(ctx.resTool);
+      break;
+    }
+
+    consecutiveLengthTurns = advanceConsecutiveLengthTurns(consecutiveLengthTurns, turn.finishReason);
+    if (consecutiveLengthTurns >= PRODUCTION_AGENT_MAX_CONSECUTIVE_LENGTH_TURNS) {
+      const reason = `Production Agent stopped after ${consecutiveLengthTurns} consecutive output-limited Turns.`;
+      const textAssetId = await archiveDecisionFailure(turn.text);
+      await recordAgentRunEvent(ctx.runContext.runId, "agent_continuation_exhausted", {
+        stage: "decision",
+        subAgent: "decisionAgent",
+        turnNumber,
+        finishReason: turn.finishReason,
+        consecutiveLengthTurns,
+        textAssetId: textAssetId ?? null,
+      });
+      ctx.runContext.setFailed({
+        stage: "decision",
+        subAgent: "decisionAgent",
+        reason,
+        errorJson: { code: "AGENT_CONSECUTIVE_LENGTH_LIMIT", turnNumber, consecutiveLengthTurns },
+      });
+      break;
+    }
+
+    const activitySignature = turnActivitySignature(turn);
+    const hasNewActivity = Boolean(activitySignature && activitySignature !== lastActivitySignature);
+    inactiveTurns = hasNewActivity ? 0 : inactiveTurns + 1;
+    if (activitySignature) lastActivitySignature = activitySignature;
+    if (inactiveTurns >= PRODUCTION_AGENT_MAX_INACTIVE_TURNS) {
+      const reason = "Production Agent ended three consecutive Turns without tools, progress, or a terminal declaration.";
+      const textAssetId = await archiveDecisionFailure(turn.text);
+      await recordAgentRunEvent(ctx.runContext.runId, "agent_continuation_exhausted", {
+        stage: "decision",
+        subAgent: "decisionAgent",
+        turnNumber,
+        finishReason: turn.finishReason,
+        inactiveTurns,
+        textAssetId: textAssetId ?? null,
+      });
+      ctx.runContext.setFailed({
+        stage: "decision",
+        subAgent: "decisionAgent",
+        reason,
+        errorJson: { code: "AGENT_NO_PROGRESS", turnNumber },
+      });
+      break;
+    }
+
+    try {
+      const continued = await continueProductionAgentContext({
+        runId: ctx.runContext.runId,
+        modelKey: "productionAgent:decisionAgent",
+        think: ctx.thinkConfig.think,
+        thinkLevel: ctx.thinkConfig.thinlLevel,
+        objective: text,
+        context: decisionContext,
+        fixedContext: decisionFixedContext,
+        turn,
+        reason: providerContextOverflow
+          ? "provider_context_overflow"
+          : contextBoundary
+          ? "context_budget_boundary"
+          : isRecoverableTurn(turn)
+            ? "recoverable_interruption"
+            : "missing_terminal_state",
+        stage: "decision",
+        subAgent: "decisionAgent",
+        turnNumber,
+        force: providerContextOverflow || Boolean(contextBoundary),
+      });
+      decisionContext = continued.context;
+      if (continued.compacted) ctx.runContext.setContextCheckpoint(continued.context);
+    } catch (error) {
+      const diagnostic = u.error(error).message;
+      const textAssetId = await archiveDecisionFailure(turn.text);
+      await recordAgentRunEvent(ctx.runContext.runId, "agent_context_compaction_failed", {
+        stage: "decision",
+        subAgent: "decisionAgent",
+        turnNumber,
+        finishReason: turn.finishReason,
+        textAssetId: textAssetId ?? null,
+        diagnostic,
+      });
+      ctx.runContext.setFailed({
+        stage: "decision",
+        subAgent: "decisionAgent",
+        reason: "Production Agent could not preserve a bounded continuation checkpoint.",
+        errorJson: { code: "AGENT_CONTEXT_COMPACTION_FAILED", turnNumber, diagnostic },
+      });
+      break;
+    }
+    await recordAgentRunEvent(ctx.runContext.runId, "agent_turn_continued", {
+      fromTurnId: turnId,
+      nextTurnNumber: turnNumber + 1,
+      reason: providerContextOverflow
+        ? "provider_context_overflow"
+        : contextBoundary
+        ? "context_budget_boundary"
+        : isRecoverableTurn(turn)
+          ? "recoverable_interruption"
+          : "missing_terminal_state",
+    });
+    ctx.msg = ctx.resTool.newMessage("assistant", "视频策划");
   }
-  try {
-    const { fullStream } = await u.Ai.Text("productionAgent:decisionAgent", ctx.thinkConfig.think, ctx.thinkConfig.thinlLevel).stream({
-      messages: [
-        { role: "system", content: prompt },
-        { role: "assistant", content: mem + "\n" + modelInfo + continuationPrompt },
-        { role: "user", content: text },
-      ],
-      abortSignal: modelStreamScope.signal,
-      tools: {
-        ...memory.getTools(),
-        ...useTools({
-          resTool: ctx.resTool,
-          msg: ctx.msg,
-          toolsNames: [
-            "get_flowData",
-            "update_agent_progress",
-            "complete_agent_run",
-            "await_user_decision",
-            "list_storyboard_generations",
-            "read_storyboard_generation",
-            "list_production_reviews",
-            "read_production_review",
-            "read_text_asset",
-            "list_director_plan_generations",
-            "read_director_plan_generation",
-          ],
-          runContext: ctx.runContext,
-          continuation: ctx.continuation,
-        }),
-        ...(await createSubAgent(ctx, { projectInfo, modelInfo, durationPolicy })),
-      },
-      onFinish: async (completion) => {
-        if (ctx.runContext) {
-          await recordAgentModelStreamFinished(ctx.runContext.runId, completion).catch((error) => {
-            console.warn("[productionAgent] failed to record model stream completion:", u.error(error).message);
-          });
-        }
-        await memory.add("assistant:decision", removeAllXmlTags(completion.text), { createTime: decisionMessageTime });
-      },
-    });
 
-    let currentMsg = ctx.msg;
-    await consumeAgentFullStream({
-      agentName: "productionAgent:decisionAgent",
-      fullStream,
-      initialMsg: currentMsg,
-      userAbortSignal: abortSignal,
-      abortModelStream: modelStreamScope.abort,
-      projectId: ctx.resTool.data.projectId,
-      scriptId: ctx.resTool.data.scriptId,
-      syncMsg: () => {
-        if (ctx.msg === currentMsg) return currentMsg;
-        currentMsg.complete();
-        currentMsg = ctx.msg;
-        return currentMsg;
-      },
-    });
-  } finally {
-    if (ctx.runContext?.requestStop) ctx.runContext.requestStop = undefined;
-    modelStreamScope.dispose();
+  const finalMemory = ctx.runContext?.terminalIntent?.reason?.trim();
+  if (finalMemory) {
+    await memory.add("assistant:final", finalMemory, { createTime: Date.now() });
   }
 }
 
@@ -279,7 +709,7 @@ async function createSubAgent(
 ) {
   const { resTool, abortSignal } = parentCtx;
   const { projectInfo, modelInfo } = context;
-  const memory = new Memory("productionAgent", parentCtx.isolationKey);
+  const memory = productionMemory(parentCtx.isolationKey);
   const continuationPrompt = buildContinuationPrompt(parentCtx.continuation);
   async function runAgent({
     key,
@@ -310,93 +740,358 @@ async function createSubAgent(
     messages?: { role: "user" | "assistant" | "system"; content: string }[];
     archiveOutput?: boolean;
   }) {
-    parentCtx.msg.complete();
-    const subMsg = resTool.newMessage("assistant", name);
-    const storyboardProgress = progressTitle ? subMsg.thinking(progressTitle) : undefined;
-
-    const modelStreamScope = createAgentModelStreamScope(abortSignal);
     parentCtx.runContext?.markStage(stage, subAgent);
-    const previousStop = parentCtx.runContext?.requestStop;
-    if (parentCtx.runContext) parentCtx.runContext.requestStop = () => modelStreamScope.abort();
-    let fullResponse: string;
-    try {
-      const { fullStream } = await u.Ai.Text(modelKey ?? key, parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
-        system,
-        messages: messages ?? [{ role: "user", content: prompt }],
-        abortSignal: modelStreamScope.signal,
-        tools: {
-          ...extraTools,
-          ...useTools({
-            resTool,
-            msg: subMsg,
-            toolsNames: toolNames,
-            runContext: parentCtx.runContext,
-            continuation: parentCtx.continuation,
-            storyboardProgress,
-          }),
-        },
-      });
+    const resolvedModelKey = modelKey ?? key;
+    const baseMessages = messages ?? [{ role: "user" as const, content: prompt }];
+    const fixedContext = `${system}\n${baseMessages.map((message) => `${message.role}: ${message.content}`).join("\n")}`;
+    let continuationContext = "";
+    let turnNumber = 0;
+    let inactiveTurns = 0;
+    let consecutiveLengthTurns = 0;
+    let contextOverflowCount = 0;
+    let lastActivitySignature = "";
+    let interruptionCount = 0;
+    let continuationFailure = false;
+    let lastTurn: AgentTurnResult | null = null;
+    const transcript: string[] = [];
+    const allToolResults: AgentTurnResult["toolResults"] = [];
 
-      fullResponse = await consumeAgentFullStream({
-        agentName: key,
-        fullStream,
-        initialMsg: subMsg,
-        userAbortSignal: abortSignal,
-        abortModelStream: modelStreamScope.abort,
-        projectId: resTool.data.projectId,
-        scriptId: resTool.data.scriptId,
-      });
-    } catch (error) {
-      if (parentCtx.runContext?.terminalIntent && isAbortError(error)) {
-        fullResponse = parentCtx.runContext.terminalIntent.reason;
-      } else {
-        throw error;
+    while (!parentCtx.runContext?.terminalIntent) {
+      turnNumber += 1;
+      parentCtx.msg.complete();
+      const subMsg = resTool.newMessage("assistant", name);
+      const storyboardProgress = progressTitle ? subMsg.thinking(progressTitle) : undefined;
+      const modelStreamScope = createAgentModelStreamScope(abortSignal);
+      const completion = completionLatch();
+      const previousStop = parentCtx.runContext?.requestStop;
+      const turnId = u.uuid();
+      if (parentCtx.runContext) {
+        parentCtx.runContext.requestStop = () => modelStreamScope.abort();
+        await recordAgentTurnStarted(parentCtx.runContext.runId, {
+          turnId,
+          turnNumber,
+          messageId: subMsg.id,
+          stage,
+          subAgent,
+          continuedFrom: turnNumber > 1 ? "previous_sub_agent_turn" : null,
+        });
       }
-    } finally {
-      storyboardProgress?.complete();
-      if (parentCtx.runContext) parentCtx.runContext.requestStop = previousStop;
-      modelStreamScope.dispose();
-    }
 
-    if (fullResponse.trim()) {
-      let memoryContent = removeAllXmlTags(fullResponse);
-      const shouldArchiveFullOutput = archiveOutput === true || memoryContent.length > 4000;
-      if (shouldArchiveFullOutput) {
-        try {
-          await runLazyRetentionCleanup();
-          const asset = await createTextAsset({
-            projectId: Number(resTool.data.projectId),
-            scriptId: resTool.data.scriptId == null ? null : Number(resTool.data.scriptId),
-            targetType: "agentOutput",
-            targetId: `${key}:${parentCtx.runContext?.runId || Date.now()}`,
-            content: fullResponse,
-            summary: `${name} process transcript (${fullResponse.length} chars)`,
-            state: "complete",
-          });
-          if (parentCtx.runContext) {
-            await recordAgentRunEvent(parentCtx.runContext.runId, "agent_output_archived", {
-              stage,
-              subAgent,
-              agentKey: key,
-              textAssetId: asset.id,
-              summary: asset.summary,
-              size: asset.size,
-            });
+      const turnMessages = baseMessages.map((message, index, list) =>
+        index === list.length - 1 && message.role === "user"
+          ? { ...message, content: continuationContext ? `${message.content}\n\n${continuationContext}` : message.content }
+          : message,
+      );
+      const turnInputGuard = await createProductionAgentTurnInputGuard({
+        modelKey: resolvedModelKey,
+      });
+      let providerContextOverflow = false;
+
+      try {
+        const { fullStream } = await u.Ai.Text(
+          resolvedModelKey,
+          parentCtx.thinkConfig.think,
+          parentCtx.thinkConfig.thinlLevel,
+        ).stream({
+          system,
+          messages: turnMessages,
+          stopWhen: turnInputGuard.stopWhen,
+          abortSignal: modelStreamScope.signal,
+          tools: {
+            ...extraTools,
+            ...useTools({
+              resTool,
+              msg: subMsg,
+              toolsNames: toolNames,
+              runContext: parentCtx.runContext,
+              continuation: parentCtx.continuation,
+              storyboardProgress,
+            }),
+          },
+          onFinish: async (result) => {
+            completion.resolve(result);
+            if (parentCtx.runContext) {
+              await recordAgentModelStreamFinished(parentCtx.runContext.runId, result).catch((error) => {
+                console.warn("[productionAgent] failed to record sub-agent model completion:", u.error(error).message);
+              });
+            }
+          },
+        });
+
+        lastTurn = await consumeAgentTurn({
+          agentName: key,
+          fullStream,
+          completion: completion.promise,
+          initialMsg: subMsg,
+          userAbortSignal: abortSignal,
+          abortModelStream: modelStreamScope.abort,
+          projectId: resTool.data.projectId,
+          scriptId: resTool.data.scriptId,
+        });
+      } catch (error) {
+        if (parentCtx.runContext?.terminalIntent && isAbortError(error)) {
+          lastTurn = {
+            text: parentCtx.runContext.terminalIntent.reason,
+            state: "aborted",
+            finishReason: "terminal",
+            usage: { inputTokens: null, outputTokens: null, totalTokens: null },
+            toolCalls: [],
+            toolResults: [],
+          };
+        } else {
+          const observed = agentTurnResultFromError(error);
+          if (isContextWindowOverflowError(error)) {
+            contextOverflowCount = parentCtx.runContext?.recordContextOverflow() ?? contextOverflowCount + 1;
+            providerContextOverflow = true;
+            lastTurn = observed || {
+              text: "",
+              state: "interrupted",
+              finishReason: "context-overflow",
+              usage: { inputTokens: null, outputTokens: null, totalTokens: null },
+              toolCalls: [],
+              toolResults: [],
+            };
+            lastTurn.state = "interrupted";
+            lastTurn.finishReason = "context-overflow";
+          } else if (observed && (observed.state === "interrupted" || isRetryableTransportError(error))) {
+            lastTurn = {
+              ...observed,
+              state: "interrupted",
+              finishReason: observed.state === "interrupted" ? observed.finishReason : "transport-error",
+            };
+          } else {
+            throw error;
           }
-          if (memoryContent.length > 4000) memoryContent = summarizeLongText(memoryContent, asset.id);
-        } catch (err) {
-          console.warn("[productionAgent] failed to archive long output", err);
+        }
+      } finally {
+        storyboardProgress?.complete();
+        if (parentCtx.runContext) parentCtx.runContext.requestStop = previousStop;
+        modelStreamScope.dispose();
+      }
+
+      if (!lastTurn) throw new Error(`${key} ended without a Turn result`);
+      const contextBoundary = turnInputGuard.getBoundary();
+      if (contextBoundary?.triggerFinishReason) lastTurn.finishReason = contextBoundary.triggerFinishReason;
+      if (contextBoundary || isRecoverableTurn(lastTurn)) lastTurn.state = "interrupted";
+      if (lastTurn.text.trim()) transcript.push(lastTurn.text);
+      allToolResults.push(...lastTurn.toolResults);
+      if (parentCtx.runContext) {
+        await recordAgentTurnResult(parentCtx.runContext.runId, {
+          turnId,
+          turnNumber,
+          messageId: subMsg.id,
+          stage,
+          subAgent,
+          state: lastTurn.state,
+          finishReason: lastTurn.finishReason,
+          usage: lastTurn.usage,
+          textLength: lastTurn.text.length,
+          toolCalls: lastTurn.toolCalls,
+          toolResults: lastTurn.toolResults,
+        });
+        if (contextBoundary) {
+          await recordAgentRunEvent(parentCtx.runContext.runId, "agent_turn_context_boundary", {
+            turnId,
+            turnNumber,
+            stage,
+            subAgent,
+            resourceDeliveries: resourceDeliveryStates(lastTurn, false),
+            ...contextBoundary,
+          });
+        } else if (providerContextOverflow) {
+          await recordAgentRunEvent(parentCtx.runContext.runId, "agent_turn_context_boundary", {
+            turnId,
+            turnNumber,
+            messageId: subMsg.id,
+            stage,
+            subAgent,
+            reason: "provider_context_overflow",
+            overflowCount: contextOverflowCount,
+            capacitySource: turnInputGuard.budget.source,
+            resourceDeliveries: resourceDeliveryStates(lastTurn, true),
+          });
         }
       }
-      await memory.add(memoryKey, memoryContent, {
-        name,
-        createTime: new Date(subMsg.datetime).getTime(),
-      });
+
+      if (parentCtx.runContext?.terminalIntent || (!contextBoundary && !isRecoverableTurn(lastTurn))) break;
+
+      if (providerContextOverflow && contextOverflowCount >= 2) {
+        continuationFailure = true;
+        const checkpoint = String(parentCtx.runContext?.latestContextCheckpoint || "").trim();
+        if (!checkpoint) {
+          parentCtx.runContext?.setFailed({
+            stage,
+            subAgent,
+            reason: "Production Agent could not preserve a resumable context-overflow checkpoint.",
+            errorJson: { code: "AGENT_RESUMABLE_CHECKPOINT_MISSING", turnNumber },
+          });
+          break;
+        }
+        const reason = `${key} was interrupted after the provider reported context overflow twice in this Chat.`;
+        if (parentCtx.runContext) {
+          const resumable = {
+            checkpoint,
+            stage,
+            subAgent,
+            sourceRunId: parentCtx.runContext.runId,
+            resourceDeliveries: resourceDeliveryStates(lastTurn, true),
+            overflow: { count: contextOverflowCount, turnNumber, finishReason: lastTurn.finishReason },
+            model: {
+              key: resolvedModelKey,
+              capacitySource: turnInputGuard.budget.source,
+              contextWindowTokens: turnInputGuard.budget.contextWindowTokens,
+              safeInputTokens: turnInputGuard.budget.safeInputTokens,
+            },
+          };
+          await recordAgentRunEvent(parentCtx.runContext.runId, "agent_resumable_checkpoint", resumable);
+          parentCtx.runContext.setInterrupted({
+            stage,
+            subAgent,
+            reason,
+            resultJson: { kind: "agent_resumable_context_overflow", sourceRunId: parentCtx.runContext.runId },
+            errorJson: { code: "AGENT_CONTEXT_OVERFLOW_REPEATED", turnNumber, contextOverflowCount },
+          });
+          parentCtx.runContext.stopForTerminal();
+        }
+        interruptedOverflowFeedback(resTool);
+        break;
+      }
+
+      interruptionCount += 1;
+      consecutiveLengthTurns = advanceConsecutiveLengthTurns(consecutiveLengthTurns, lastTurn.finishReason);
+      if (consecutiveLengthTurns >= PRODUCTION_AGENT_MAX_CONSECUTIVE_LENGTH_TURNS) {
+        continuationFailure = true;
+        const reason = `${key} stopped after ${consecutiveLengthTurns} consecutive output-limited Turns.`;
+        if (parentCtx.runContext) {
+          await recordAgentRunEvent(parentCtx.runContext.runId, "agent_continuation_exhausted", {
+            stage,
+            subAgent,
+            turnNumber,
+            finishReason: lastTurn.finishReason,
+            consecutiveLengthTurns,
+          });
+          parentCtx.runContext.setFailed({
+            stage,
+            subAgent,
+            reason,
+            errorJson: { code: "AGENT_CONSECUTIVE_LENGTH_LIMIT", turnNumber, consecutiveLengthTurns },
+          });
+          parentCtx.runContext.stopForTerminal();
+        }
+        break;
+      }
+      const activitySignature = turnActivitySignature(lastTurn);
+      const hasNewActivity = Boolean(activitySignature && activitySignature !== lastActivitySignature);
+      inactiveTurns = hasNewActivity ? 0 : inactiveTurns + 1;
+      if (activitySignature) lastActivitySignature = activitySignature;
+      if (inactiveTurns >= PRODUCTION_AGENT_MAX_INACTIVE_TURNS) {
+        continuationFailure = true;
+        const reason = `${key} made no tool or progress activity across three continuation Turns`;
+        if (parentCtx.runContext) {
+          await recordAgentRunEvent(parentCtx.runContext.runId, "agent_continuation_exhausted", {
+            stage,
+            subAgent,
+            turnNumber,
+            finishReason: lastTurn.finishReason,
+            inactiveTurns,
+          });
+          parentCtx.runContext.setFailed({
+            stage,
+            subAgent,
+            reason,
+            errorJson: { code: "AGENT_NO_PROGRESS", turnNumber, inactiveTurns },
+          });
+          parentCtx.runContext.stopForTerminal();
+        }
+        break;
+      }
+      try {
+        const continued = await continueProductionAgentContext({
+          runId: parentCtx.runContext?.runId,
+          modelKey: resolvedModelKey,
+          think: parentCtx.thinkConfig.think,
+          thinkLevel: parentCtx.thinkConfig.thinlLevel,
+          objective: prompt,
+          context: continuationContext,
+          fixedContext,
+          turn: lastTurn,
+          reason: providerContextOverflow
+            ? "provider_context_overflow"
+            : contextBoundary
+              ? "context_budget_boundary"
+              : "recoverable_sub_agent_interruption",
+          stage,
+          subAgent,
+          turnNumber,
+          force: providerContextOverflow || Boolean(contextBoundary),
+        });
+        continuationContext = continued.context;
+        if (continued.compacted) parentCtx.runContext?.setContextCheckpoint(continued.context);
+      } catch (error) {
+        continuationFailure = true;
+        const diagnostic = u.error(error).message;
+        if (parentCtx.runContext) {
+          await recordAgentRunEvent(parentCtx.runContext.runId, "agent_context_compaction_failed", {
+            stage,
+            subAgent,
+            turnNumber,
+            finishReason: lastTurn.finishReason,
+            diagnostic,
+          });
+          parentCtx.runContext.setFailed({
+            stage,
+            subAgent,
+            reason: "Production Agent could not preserve a bounded continuation checkpoint.",
+            errorJson: { code: "AGENT_CONTEXT_COMPACTION_FAILED", turnNumber, diagnostic },
+          });
+          parentCtx.runContext.stopForTerminal();
+        }
+        break;
+      }
+      if (parentCtx.runContext) {
+        await recordAgentRunEvent(parentCtx.runContext.runId, "agent_turn_continued", {
+          fromTurnId: turnId,
+          nextTurnNumber: turnNumber + 1,
+          stage,
+          subAgent,
+          reason: providerContextOverflow
+            ? "provider_context_overflow"
+            : contextBoundary
+              ? "context_budget_boundary"
+              : "recoverable_sub_agent_interruption",
+        });
+      }
+      parentCtx.msg = resTool.newMessage("assistant", "视频策划");
+    }
+
+    const fullTranscript = transcript.join("\n\n");
+    let outputAssetId: number | undefined;
+    if (fullTranscript.trim() && (archiveOutput === true || continuationFailure || fullTranscript.length > 4000)) {
+      try {
+        outputAssetId = await archiveProductionAgentTranscript({
+          runId: parentCtx.runContext?.runId,
+          projectId: Number(resTool.data.projectId),
+          scriptId: resTool.data.scriptId == null ? null : Number(resTool.data.scriptId),
+          agentKey: key,
+          stage,
+          subAgent,
+          name,
+          content: fullTranscript,
+        });
+      } catch (err) {
+        console.warn("[productionAgent] failed to archive long output", err);
+      }
     }
 
     parentCtx.msg = resTool.newMessage("assistant", "视频策划");
     if (parentCtx.runContext?.terminalIntent) parentCtx.runContext.stopForTerminal();
-    return fullResponse;
+    return {
+      text: lastTurn?.text || "",
+      finishReason: lastTurn?.finishReason || "unknown",
+      toolResults: allToolResults,
+      interruptionCount,
+      ...(outputAssetId ? { outputAssetId } : {}),
+    } satisfies SubAgentTaskResult;
   }
 
   const promptInput = z
@@ -433,9 +1128,7 @@ ${input.executionSummary}
 
 以上两项只用于识别本轮返修范围和执行意图；当前正式 generation/revision 中实际存在的字段才是审核对象。若这是返修复核，读取上一轮完整审核报告，逐项区分已修复、仍存在、返修回归和历史漏检。
 
-严格按当前分镜表监督 Skill 的四遍协议执行：事实与范围、全局检查、专业逐镜检查、漏检复查与归并。必须检查全部正式分镜，不得抽样，不得因已经发现严重问题而提前停止。
-
-四遍全部完成并归并后，必须只用一次 record_storyboard_table_review 保存本轮完整问题清单；即使没有问题也提交 items: []。逐镜问题只传正式分镜的 storyboardIndex；不得把 generation 行内部 ID 或 index+1 猜作 storyboardId，服务端会按 index 解析。全局问题仍使用 scope=global。这是内部持久化步骤，最终回复绝对不要提及工具名、JSON、数据库或下一次工具调用。不得修改任何分镜。最终回复只给简洁结论、异常/风险和需要用户决定的问题，不逐镜罗列通过项。
+审核完成并归并后，必须只用一次 record_storyboard_table_review 保存本轮完整问题清单；即使没有问题也提交 items: []。逐镜问题只传正式分镜的 storyboardIndex；不得把 generation 行内部 ID 或 index+1 猜作 storyboardId，服务端会按 index 解析。全局问题仍使用 scope=global。这是内部持久化步骤，最终回复绝对不要提及工具名、JSON、数据库或下一次工具调用。不得修改任何分镜。最终回复只给简洁结论、异常/风险和需要用户决定的问题，不逐镜罗列通过项。
 
 保存审核报告后，必须调用 await_user_decision，用自然语言向用户说明本次仅完成检查、尚未改动正式分镜，并等待用户决定是否调整、保留或指定其他版本/范围。`;
     const response = await runAgent({
@@ -479,7 +1172,7 @@ ${input.executionSummary}
         directorManual: projectInfo.directorManual || "",
       });
       const toolNames = [...stage.definition.tools, "del_deriveAsset"];
-      return runAgent({
+      const response = await runAgent({
         key: "productionAgent:deriveAssetsAgent",
         prompt,
         system: stage.workflow,
@@ -494,6 +1187,7 @@ ${input.executionSummary}
         tools: stage.tools,
         toolNames,
       });
+      return response;
     },
   });
 
@@ -566,7 +1260,7 @@ ${input.executionSummary}
           generationId: current.generationId,
           textAssetId: current.textAssetId,
           version: current.version,
-          summary: response.trim().slice(0, 1000),
+          summary: subAgentText(response).trim().slice(0, 1000),
         });
       }
       return JSON.stringify({
@@ -637,15 +1331,15 @@ ${input.executionSummary}
         directorManual: projectInfo.directorManual || "",
       });
 
-      const addPrompt = `
+      const panelPromptV3 = `
 
-分镜叙事事实已经由 tableRowJson 保存。你不能新增分镜，也不能修改任何分镜事实。
-你必须读取 get_flowData("storyboard") 返回的已有分镜，并调用 update_storyboard_panel_v2：
-- 使用 storyboardId（优先）或 index 定位已有分镜。
-- 只写分镜图 prompt、shouldGenerateImage 和 associateAssetsIds。
-- prompt 仅用于生成分镜图，不是视频叙事事实源。
-- 不生成 videoDesc。
-- 不输出 XML、Markdown 或完整分镜 JSON，不要求前端解析或保存。
+Storyboard panel derivation must use only version-native formal facts. Read targets first, then read sources with the returned snapshotId.
+- For V3, select the earliest explicit, visible state from shotDescription that can naturally start the later action. A state necessarily implied by the first action may be used, but do not invent precise position, direction, layout, appearance, or later results.
+- Bind only the requiredAssets that are actually visible in that selected opening frame. A person or object entering later must not be included.
+- For historical V1/V2, use picture as the static opening source without synthesizing a V3 description.
+- If a ready V3 source cannot yield a trustworthy opening frame, call update_storyboard_panel with shouldGenerateImage=false and report an upstream storyboard-table issue. Do not repair formal facts here.
+- Write only prompt, shouldGenerateImage and associateAssetsIds with update_storyboard_panel. Never rewrite tableRowJson or factRevision.
+- Do not call get_flowData("storyboard") and do not output complete storyboard JSON.
 `;
 
       const response = await runAgent({
@@ -653,7 +1347,7 @@ ${input.executionSummary}
         prompt,
         system:
           stage.workflow +
-          addPrompt +
+          panelPromptV3 +
           "\n\n完成后必须停止，等待用户明确确认后才允许进入分镜图生成阶段；不得自行启动分镜图生成。",
         name: "执行导演",
         memoryKey: "assistant:execution",
@@ -665,64 +1359,74 @@ ${input.executionSummary}
             role: "user",
             content:
               prompt +
-              addPrompt +
+              panelPromptV3 +
               "\n\n完成后必须停止，等待用户明确确认后才允许进入分镜图生成阶段；不得自行启动分镜图生成。",
           },
         ],
         tools: stage.tools,
         toolNames: stage.definition.tools,
       });
-      const reviewStage = await loadProductionStage({
-        stage: "supervisionStoryboardPanel",
-        artStyle: projectInfo.artStyle || "",
-        directorManual: projectInfo.directorManual || "",
-      });
-      const reviewPrompt = `请审核【分镜面板】写入结果。当前审核对象只包括每条当前正式分镜的 prompt、associateAssetsIds、shouldGenerateImage；tableRowJson 等字段只作为上游事实依据。
+      return response;
+    },
+  });
 
-本轮执行指令：
-${prompt}
-
-本轮执行摘要：
-${summarizeAgentReason(response)}
-
-以上上下文只用于识别本轮修改范围。必须先读取上一轮完整报告，再使用分镜面板专用只读工具分别读取当前目标和上游来源；禁止调用 get_flowData("storyboard")。目标字段中找不到对应原句或直接证据时不得报为面板问题。
-
-若这是返修复核，上一轮问题只区分已修复和仍存在；上一轮没有报告的新问题统一标记为“新发现（基线不可判定）”。分镜面板没有历史目标版本，禁止根据执行摘要或旧报告猜测返修回归、历史漏检。
-
-严格按当前监督 Skill 完成事实与范围、全局检查、专业逐镜检查、漏检复查与归并四遍；不得抽样或提前结束。最终只列异常、风险、问题归属和建议，通过项不要逐镜罗列。只读审核，不得执行返修。`;
-      const reviewPromptWithAwait =
-        reviewPrompt +
-        "\n\n完成报告后必须调用 await_user_decision，用自然语言等待用户决定是否返修、保留或进入分镜图生成。";
-      let reviewResponse: string;
+  let storyboardPanelReviewFailure: string | null = null;
+  const run_storyboard_panel_review = tool({
+    description:
+      "Run one complete, read-only, structured storyboard-panel review against the current frozen facts. This capability never repairs panel data and never changes the Agent Run lifecycle.",
+    inputSchema: jsonSchema<Record<string, never>>(z.object({}).toJSONSchema()),
+    execute: async () => {
+      if (storyboardPanelReviewFailure) throw new Error(storyboardPanelReviewFailure);
+      let review: Awaited<ReturnType<typeof runStoryboardPanelSingleReview>>;
       try {
-        reviewResponse = await runAgent({
-          key: "productionAgent:supervisionAgent",
-          prompt: reviewPromptWithAwait,
-          system: reviewStage.workflow,
-          name: "监制",
-          memoryKey: "assistant:supervision",
+        review = await runStoryboardPanelSingleReview({
+          projectId: Number(resTool.data.projectId),
+          scriptId: Number(resTool.data.scriptId),
+          modelKey: "productionAgent:supervisionAgent",
+          think: parentCtx.thinkConfig.think,
+          thinkLevel: parentCtx.thinkConfig.thinlLevel,
+        });
+      } catch (error) {
+        const diagnostic = storyboardPanelSingleReviewFailureDetails(error);
+        storyboardPanelReviewFailure = `STORYBOARD_PANEL_REVIEW_FAILED: ${diagnostic.message}`;
+        if (parentCtx.runContext) {
+          await recordAgentRunEvent(parentCtx.runContext.runId, "storyboard_panel_single_review_failed", {
+            stage: "supervisionStoryboardPanel",
+            subAgent: "supervisionStoryboardPanelAgent",
+            diagnostic,
+          });
+        }
+        throw new Error(storyboardPanelReviewFailure);
+      }
+      await runLazyRetentionCleanup();
+      const content = JSON.stringify(review.result, null, 2);
+      const asset = await createTextAsset({
+        projectId: Number(resTool.data.projectId),
+        scriptId: Number(resTool.data.scriptId),
+        targetType: "agentOutput",
+        targetId: `storyboardPanelReview:${parentCtx.runContext?.runId || Date.now()}`,
+        content,
+        summary: `Storyboard panel structured review (${review.result.items.length} issues)`,
+        state: "complete",
+      });
+      if (parentCtx.runContext) {
+        await recordAgentRunEvent(parentCtx.runContext.runId, "storyboard_panel_single_review_recorded", {
           stage: "supervisionStoryboardPanel",
           subAgent: "supervisionStoryboardPanelAgent",
-          messages: [
-            { role: "assistant", content: reviewStage.prompt + `\n${modelInfo}` },
-            { role: "user", content: reviewPromptWithAwait },
-          ],
-          tools: reviewStage.tools,
-          toolNames: reviewStage.definition.tools,
-          archiveOutput: true,
+          textAssetId: asset.id,
+          snapshotId: review.bundle.snapshotId,
+          total: review.bundle.total,
+          issueCount: review.result.items.length,
+          modelFinishReason: review.model.finishReason,
+          usage: review.model.usage,
         });
-      } catch (error: any) {
-        reviewResponse = `分镜面板已写入，但自动审核失败：${error?.message || String(error)}`;
       }
-      if (parentCtx.runContext && !parentCtx.runContext.terminalIntent) {
-        parentCtx.runContext.setAwaitingUser({
-          stage: "supervisionStoryboardPanel",
-          subAgent: "supervisionStoryboardPanelAgent",
-          reason: summarizeAgentReason(reviewResponse || response),
-        });
-        parentCtx.runContext.stopForTerminal();
-      }
-      return `${response}\n\n${reviewResponse}\n\n分镜面板写入与只读审核已完成。需要用户明确确认后，才能返修或启动分镜图生成。`;
+      return {
+        snapshotId: review.bundle.snapshotId,
+        total: review.bundle.total,
+        reviewAssetId: asset.id,
+        result: review.result,
+      };
     },
   });
 
@@ -739,16 +1443,16 @@ ${summarizeAgentReason(response)}
         directorManual: projectInfo.directorManual || "",
       });
 
-      const addPrompt = `
+      const storyboardV3Prompt = `
 
-你必须只通过结构化工具写入分镜表，不得输出整张 Markdown、XML、JSON 或要求前端解析文本。
-执行顺序：
-1. 读取一次完整上下文，在内部完成剧情、情绪、机位与时长预演，调用 prepare_storyboard_table。
-2. 只有返回 ready，才使用它原样返回的 expectedRowCount 和 groups 调用 begin_storyboard_table。
-3. 严格按 index 从 0 开始，每批 5-10 条调用 append_storyboard_rows。
-4. 每批以后端返回的 nextIndex 继续；中断重试时提交完全相同的批次。
-5. 全部写入后调用 commit_storyboard_table。
-每条分镜必须完整符合 StoryboardTableRow 结构；禁止从 videoDesc、Markdown、XML、图片 prompt 或聊天文本恢复事实。
+Write the formal storyboard table only through the structured tools. New rows must be StoryboardTableRow version 3 and must use one chronological shotDescription; picture, action, characters, visibleEmotion, groupName and groupIntent are forbidden in V3 rows.
+Execution order:
+1. Read the complete upstream facts once. Decide shot boundaries and video groups, then call prepare_storyboard_table with only status, summary, shots[{index, estimatedDurationSec}] and groups.
+2. If prepare returns ready, call begin_storyboard_table without repeating row count or groups.
+3. Append V3 rows from index 0 in batches of 5-10, following the backend nextIndex.
+4. Commit once for the current generation after all rows are accepted, then call inspect_storyboard_table_change before concluding the stage. Interpret the returned facts against the user's objective yourself. If the committed result does not match that objective, read the needed formal versions, call prepare_storyboard_table again, and write a new generation before inspecting again.
+shotDescription must follow natural time order: earliest visible state -> trigger -> continuous visible change -> ending state. It may state a precondition necessarily implied by the first action or explicitly handed off by the adjacent formal shot, but must not invent exact blocking, layout, appearance, later entrants or completed results.
+Choose shot boundaries by the actual change of visual subject, information recipient, causal action or time/space condition. Do not split one continuous action for decorative shot-size changes, and do not combine independent actions merely to fill the model duration limit. Dialogue, necessary pauses and visible action must fit durationSec without unsupported acceleration.
 `;
 
       const storyboardTableRules =
@@ -760,7 +1464,7 @@ ${summarizeAgentReason(response)}
       const response = await runAgent({
         key: "productionAgent:storyboardTableAgent",
         prompt,
-        system: stage.workflow + addPrompt + storyboardTableRules + commitFailureRules,
+        system: stage.workflow + storyboardV3Prompt + storyboardTableRules + commitFailureRules,
         name: "执行导演",
         memoryKey: "assistant:execution",
         stage: "storyboardTable",
@@ -770,13 +1474,36 @@ ${summarizeAgentReason(response)}
           { role: "assistant", content: stage.prompt + `\n${modelInfo}` + continuationPrompt },
           {
             role: "user",
-            content: prompt + addPrompt + storyboardTableRules + commitFailureRules + continuationPrompt,
+            content: prompt + storyboardV3Prompt + storyboardTableRules + commitFailureRules + continuationPrompt,
           },
         ],
         tools: stage.tools,
         toolNames: stage.definition.tools,
       });
       if (parentCtx.runContext?.terminalIntent) return response;
+
+      const prepareAttempt = parentCtx.runContext
+        ? await u
+            .db("o_agentRunEvent")
+            .where({ runId: parentCtx.runContext.runId, eventType: "storyboard_prepare_started" })
+            .where("createdAt", ">=", startedAt)
+            .first("id")
+        : null;
+      if (!prepareAttempt) {
+        const code = "STORYBOARD_EXECUTION_NO_WRITE_ATTEMPT";
+        const reason = "Storyboard execution ended before prepare_storyboard_table was called; no database, network, append, or commit failure occurred.";
+        if (parentCtx.runContext) {
+          await recordAgentRunEvent(parentCtx.runContext.runId, "storyboard_execution_no_write_attempt", { code });
+          parentCtx.runContext.setFailed({
+            stage: "storyboardTable",
+            subAgent: "storyboardTableAgent",
+            reason,
+            errorJson: { code, phase: "prepare", message: reason },
+          });
+          parentCtx.runContext.stopForTerminal();
+        }
+        return `${subAgentText(response)}\n\n${code}: ${reason}`;
+      }
 
       const committedGeneration = await u
         .db("o_storyboardGeneration")
@@ -789,18 +1516,18 @@ ${summarizeAgentReason(response)}
         .orderBy("updatedAt", "desc")
         .first("generationId", "revision", "updatedAt");
       if (!committedGeneration) {
-        return `${response}\n\n分镜表尚未成功提交，未启动审核。请确认是否继续调整或重新生成。`;
+        return `${subAgentText(response)}\n\n分镜表尚未成功提交，未启动审核。请确认是否继续调整或重新生成。`;
       }
 
       let reviewResponse: string;
       try {
         const review = await runStoryboardTableReview({
           executionPrompt: prompt,
-          executionSummary: summarizeAgentReason(response),
+          executionSummary: summarizeAgentReason(subAgentText(response)),
           generationId: String(committedGeneration.generationId),
           revision: Number(committedGeneration.revision || 0),
         });
-        reviewResponse = review.response;
+        reviewResponse = subAgentText(review.response);
       } catch (error: any) {
         const reason = `Storyboard table was committed, but its independent review failed: ${u.error(error).message}`;
         if (parentCtx.runContext) {
@@ -824,10 +1551,9 @@ ${summarizeAgentReason(response)}
           },
         });
         parentCtx.runContext?.stopForTerminal();
-        return `${response}\n\n分镜表已提交，但独立审核未成功启动或未落库。分镜事实已保留；请重试审核，不需要重写分镜表。`;
-        reviewResponse = `分镜表已提交，但自动审核失败：${error?.message || String(error)}`;
+        return `${subAgentText(response)}\n\n分镜表已提交，但独立审核未成功启动或未落库。分镜事实已保留；请重试审核，不需要重写分镜表。`;
       }
-      return `${response}\n\n${reviewResponse}`;
+      return `${subAgentText(response)}\n\n${reviewResponse}`;
     },
   });
 
@@ -866,6 +1592,7 @@ ${summarizeAgentReason(response)}
     run_sub_agent_director_plan,
     run_sub_agent_storyboard_gen,
     run_sub_agent_storyboard_panel,
+    run_storyboard_panel_review,
     run_sub_agent_storyboard_table,
     run_sub_agent_supervision,
   };

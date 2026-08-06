@@ -34,6 +34,27 @@ const manuals = [
   "art_prop",
   "art_prop_derivative",
 ] as const;
+const promptTemplatePackages = [
+  "3D_rural_anime_render",
+  "realpeople_island_survival",
+  ...newPackages,
+] as const;
+const promptLeakMarkers = [
+  "assetFoundation",
+  "visualDesignRationale",
+  "稳定事实：",
+  "设计理由：",
+  "专业细节：",
+  "视图与构图：",
+  "光线材质：",
+  "背景：",
+  "背景与环境：",
+  "禁止项：",
+  "识别度策略",
+  "动画可行性",
+  "连续性策略",
+  "覆盖目的",
+];
 
 const styleRequirements: Record<(typeof upgradedPackages)[number], RegExp[]> = {
   realpeople_island_survival: [/真人荒岛求生/, /真实/, /不得新增|不新增/],
@@ -46,7 +67,7 @@ const styleRequirements: Record<(typeof upgradedPackages)[number], RegExp[]> = {
   "3D_clay_stopmotion": [/黏土颗粒/, /指纹/, /逐格制作感/],
   "3D_guofeng_cyber": [/传统结构为主体/, /实体PBR材质与发光材质分区/, /霓虹满屏/],
   "realpeople_ancient_chinese": [/真人中国古风实拍摄影/, /自然织物褶皱/, /自然天光/],
-  "realpeople_modern_city": [/真人现代都市实拍摄影/, /真实面孔与皮肤纹理/, /动机光/],
+  "realpeople_modern_city": [/真人现代都市实拍摄影/, /动机光/],
 };
 
 const referenceHashes: Record<(typeof manuals)[number], string> = {
@@ -66,16 +87,48 @@ function readManual(packageName: string, manual: string) {
   return fs.readFileSync(manualPath(packageName, manual), "utf8").replace(/\r\n/g, "\n");
 }
 
+function textTemplate(content: string, label: string) {
+  const template = content.match(/```text\n([\s\S]+?)\n```/)?.[1];
+  assert.ok(template, `${label}: missing text template`);
+  return template;
+}
+
+function assertNaturalImagePrompt(template: string, manual: (typeof manuals)[number], label: string) {
+  for (const marker of promptLeakMarkers) {
+    assert.equal(template.includes(marker), false, `${label}: leaked ${marker}`);
+  }
+
+  if (manual === "art_character") {
+    assert.match(template, /角色.*设定图|character design sheet/i, label);
+    assert.match(template, /正面.*侧面.*背面|正侧背/, label);
+  } else if (manual === "art_character_derivative") {
+    assert.match(template, /same person|同一角色/, label);
+    assert.match(template, /仅呈现|只呈现/, label);
+  } else if (manual === "art_scene") {
+    assert.match(template, /场景.*设定图|environment design sheet/i, label);
+    assert.match(template, /入口|出入口|边界|路线/, label);
+  } else if (manual === "art_scene_derivative") {
+    assert.match(template, /same location|同一场景/, label);
+    assert.match(template, /仅呈现|只改变/, label);
+  } else if (manual === "art_prop") {
+    assert.match(template, /道具.*设定图|prop design sheet/i, label);
+    assert.match(template, /正面.*侧面|侧面.*背面/, label);
+  } else {
+    assert.match(template, /same object|同一道具/, label);
+    assert.match(template, /仅呈现|只呈现/, label);
+  }
+}
+
 function sha256(file: string) {
   return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
-test("all 102 active Art manuals resolve through the real Art loader", () => {
+test("all active Art manuals resolve through the real Art loader", () => {
   const packages = fs.readdirSync(artRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
-  assert.equal(packages.length, 17);
+  assert.equal(packages.length, 18);
 
   for (const packageName of packages) {
     for (const manual of manuals) {
@@ -88,20 +141,53 @@ test("all 102 active Art manuals resolve through the real Art loader", () => {
   }
 });
 
-test("the 24 new visual Art manuals keep facts, rationale and ordered asset-specific templates", () => {
+test("all 108 Art templates keep explicit no-person restrictions out of the final prompt", () => {
+  const packages = fs.readdirSync(artRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  const noPersonRestriction = /无人物|无\s*人影|无\s*人体轮廓|严禁出现[^\n。]*人物|禁止[^\n。]*人物|no people|no human figures/i;
+  const humanDepiction = /真实面孔|皮肤纹理|自然身体比例|生活化服装褶皱|人物肖像|手持展示|握持状态/i;
+
+  assert.equal(packages.length * manuals.length, 108);
+  for (const packageName of packages) {
+    for (const manual of manuals) {
+      const label = `${packageName}/${manual}`;
+      const content = readManual(packageName, manual);
+      const template = textTemplate(content, label);
+      if (noPersonRestriction.test(content)) {
+        assert.doesNotMatch(template, humanDepiction, `${label}: template contradicts its no-person restriction`);
+      }
+    }
+  }
+});
+
+test("all 36 recently added Art templates compile visible results without internal columns", () => {
+  for (const packageName of promptTemplatePackages) {
+    for (const manual of manuals) {
+      const label = `${packageName}/${manual}`;
+      const content = readManual(packageName, manual);
+      assert.match(content, /visualDesignRationale.*只在编译时转译为可见的造型、结构、布局、材质或状态结果/, label);
+      const template = textTemplate(content, label);
+      assertNaturalImagePrompt(template, manual, label);
+    }
+  }
+});
+
+test("the 24 new visual Art manuals keep facts and rationale out of final image prompts", () => {
   const styleVocabulary: Record<(typeof newPackages)[number], RegExp[]> = {
-    realpeople_republican_period: [/真人民国年代写实/, /年代/, /禁止项/],
+    realpeople_republican_period: [/真人民国年代写实/, /年代/, /禁止|严禁/],
     realpeople_professional_documentary: [/真人专业纪实写实/, /确认/, /权限|职业/],
     realpeople_sports_cinematic: [/真人体育竞技写实/, /确认/, /运动|场地|项目/],
     realpeople_rural_naturalism: [/真人乡土自然写实/, /确认/, /地域|生活/],
   };
   const manualIdentity: Record<(typeof manuals)[number], RegExp[]> = {
-    art_character: [/基础设定图/, /稳定事实/],
-    art_character_derivative: [/same person as reference image/, /本次唯一变化/],
-    art_scene: [/environment design sheet/, /稳定事实/],
-    art_scene_derivative: [/same location/, /本次唯一变化/],
-    art_prop: [/prop design sheet/, /稳定事实/],
-    art_prop_derivative: [/same object/, /本次唯一变化/],
+    art_character: [/基础设定图/],
+    art_character_derivative: [/same person as reference image/, /本次唯一变化|本次仅呈现/],
+    art_scene: [/environment design sheet/],
+    art_scene_derivative: [/same location/, /本次唯一变化|本次仅呈现/],
+    art_prop: [/prop design sheet/],
+    art_prop_derivative: [/same object/, /本次唯一变化|本次仅呈现/],
   };
 
   for (const packageName of newPackages) {
@@ -120,15 +206,7 @@ test("the 24 new visual Art manuals keep facts, rationale and ordered asset-spec
       for (const requirement of styleVocabulary[packageName]) assert.match(content, requirement, `${packageName}/${manual}`);
       for (const requirement of manualIdentity[manual]) assert.match(content, requirement, `${packageName}/${manual}`);
 
-      const template = content.match(/```text\n([\s\S]+?)\n```/)?.[1];
-      assert.ok(template, `${packageName}/${manual}`);
-      const ordered = ["稳定事实：", "设计理由：", "专业细节：", "视图与构图：", "光线材质：", "背景：", "禁止项："];
-      let previous = -1;
-      for (const marker of ordered) {
-        const current = template.indexOf(marker);
-        assert.ok(current > previous, `${packageName}/${manual}: ${marker}`);
-        previous = current;
-      }
+      assertNaturalImagePrompt(textTemplate(content, `${packageName}/${manual}`), manual, `${packageName}/${manual}`);
     }
   }
 });
@@ -249,15 +327,7 @@ test("3D_rural_anime_render compiles stable rural assets and one confirmed deriv
     assert.doesNotMatch(content, /Seedance|@reference|\bCFG\b|--ar\b|https?:\/\//i, manual);
     for (const method of methodGroups[manual]) assert.match(content, method, manual);
 
-    const template = content.match(/```text\n([\s\S]+?)\n```/)?.[1];
-    assert.ok(template, manual);
-    const ordered = ["稳定事实：", "设计理由：", "专业细节：", "视图与构图：", "光线材质：", "背景：", "禁止项："];
-    let previous = -1;
-    for (const marker of ordered) {
-      const current = template.indexOf(marker);
-      assert.ok(current > previous, `${manual}: ${marker}`);
-      previous = current;
-    }
+    assertNaturalImagePrompt(textTemplate(content, manual), manual, manual);
   }
 
   const character = readManual(packageName, "art_character");
@@ -325,6 +395,16 @@ test("the 66 upgraded Art manuals compile facts, rationale and output mode in th
   }
 });
 
+test("realpeople_modern_city keeps human realism in character templates, not empty scenes or props", () => {
+  for (const manual of ["art_character", "art_character_derivative"] as const) {
+    assert.match(readManual("realpeople_modern_city", manual), /真实面孔与皮肤纹理/, manual);
+  }
+  for (const manual of ["art_scene", "art_scene_derivative", "art_prop", "art_prop_derivative"] as const) {
+    const template = textTemplate(readManual("realpeople_modern_city", manual), manual);
+    assert.doesNotMatch(template, /真实面孔|皮肤纹理|自然身体比例|生活化服装褶皱/, manual);
+  }
+});
+
 test("realpeople_island_survival keeps base and derivative assets inside confirmed facts", () => {
   const character = readManual("realpeople_island_survival", "art_character");
   const characterDerivative = readManual("realpeople_island_survival", "art_character_derivative");
@@ -363,7 +443,7 @@ test("realpeople_island_survival keeps base and derivative assets inside confirm
   assert.match(propDerivative, /不得因变化新增零件、用途或容积/);
 });
 
-test("realpeople_island_survival templates compile in asset-specific order", () => {
+test("realpeople_island_survival templates compile as natural asset-specific prompts", () => {
   const expectedDetail: Record<(typeof manuals)[number], RegExp> = {
     art_character: /真实骨相与肤质、自然身体比例、锁定发际线和发型结构/,
     art_character_derivative: /湿度、盐渍、泥沙、磨损、伤病、发型或服装状态/,
@@ -375,15 +455,8 @@ test("realpeople_island_survival templates compile in asset-specific order", () 
 
   for (const manual of manuals) {
     const content = readManual("realpeople_island_survival", manual);
-    const template = content.match(/```text\n([\s\S]+?)\n```/)?.[1];
-    assert.ok(template, manual);
-    const ordered = ["稳定事实：", "设计理由：", "专业细节：", "视图与构图：", "光线材质：", "背景", "禁止项："];
-    let previous = -1;
-    for (const marker of ordered) {
-      const current = template.indexOf(marker);
-      assert.ok(current > previous, `${manual}: ${marker}`);
-      previous = current;
-    }
+    const template = textTemplate(content, manual);
+    assertNaturalImagePrompt(template, manual, manual);
     assert.match(template, expectedDetail[manual], manual);
   }
 });

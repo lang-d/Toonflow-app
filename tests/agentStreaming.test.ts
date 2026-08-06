@@ -4,6 +4,8 @@ import {
   AGENT_STREAM_IDLE_TIMEOUT_MS,
   AgentStreamIdleTimeoutError,
   AgentStreamLimitError,
+  agentTurnResultFromError,
+  consumeAgentTurn,
   consumeFullStream,
   createAgentModelStreamScope,
 } from "../src/agents/shared/streaming";
@@ -140,13 +142,40 @@ test("agent stream completes normal reasoning and text chunks", async () => {
   assert.equal(msg.thinkingStream?.status, "complete");
 });
 
+test("structured agent turn preserves finish reason, usage, and objective tool results", async () => {
+  const msg = new FakeMessage();
+  const result = await consumeAgentTurn({
+    agentName: "testAgent",
+    fullStream: streamChunks([
+      { type: "tool-call", toolCallId: "call-1", toolName: "readFacts" },
+      { type: "tool-result", toolCallId: "call-1", toolName: "readFacts", output: { ok: true } },
+      { type: "text-delta", text: "done" },
+    ]),
+    completion: Promise.resolve({
+      finishReason: "length",
+      usage: { inputTokens: 120, outputTokens: 40, totalTokens: 160 },
+    }),
+    initialMsg: msg,
+    idleTimeoutMs: 1000,
+  });
+
+  assert.equal(result.text, "done");
+  assert.equal(result.finishReason, "length");
+  assert.deepEqual(result.usage, { inputTokens: 120, outputTokens: 40, totalTokens: 160 });
+  assert.deepEqual(result.toolCalls, [{ toolCallId: "call-1", toolName: "readFacts" }]);
+  assert.deepEqual(result.toolResults, [
+    { toolCallId: "call-1", toolName: "readFacts", success: true, result: { ok: true } },
+  ]);
+});
+
 test("agent stream idle timeout visibly errors and only aborts the model stream", async () => {
   const msg = new FakeMessage();
   const userController = new AbortController();
   let modelAborted = false;
 
+  let captured: unknown;
   await assert.rejects(
-    consumeFullStream({
+    consumeAgentTurn({
       agentName: "testAgent",
       fullStream: hangingAfterFirstChunk(),
       initialMsg: msg,
@@ -155,10 +184,17 @@ test("agent stream idle timeout visibly errors and only aborts the model stream"
       abortModelStream: () => {
         modelAborted = true;
       },
+    }).catch((error) => {
+      captured = error;
+      throw error;
     }),
     AgentStreamIdleTimeoutError,
   );
 
+  const interrupted = agentTurnResultFromError(captured);
+  assert.equal(interrupted?.state, "interrupted");
+  assert.equal(interrupted?.finishReason, "idle-timeout");
+  assert.equal(interrupted?.text, "partial");
   assert.equal(modelAborted, true);
   assert.equal(userController.signal.aborted, false);
   assert.equal(msg.status, "error");

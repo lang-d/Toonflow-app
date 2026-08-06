@@ -6,56 +6,38 @@ import u from "@/utils";
 import { ensureThumbnail, type ThumbnailSize } from "@/utils/image";
 import getPath from "@/utils/getPath";
 import { cacheDataPath, storageMode } from "@/services/storagePaths";
+import { buildAssetImageGenerationInput } from "@/services/assetImageGenerationInput";
 
 type AssetType = "role" | "scene" | "tool";
 
 const assetTypeConfig: Record<
   AssetType,
-  { label: string; dir: string; promptTitle: string; promptEnd: string; visualManual: string; derivativeManual: string }
+  { label: string; dir: string; visualManual: string; derivativeManual: string }
 > = {
   role: {
     label: "角色",
     dir: "role",
-    promptTitle: "角色标准四视图",
-    promptEnd: "人物角色四视图",
     visualManual: "art_character",
     derivativeManual: "art_character_derivative",
   },
   scene: {
     label: "场景",
     dir: "scene",
-    promptTitle: "标准场景图",
-    promptEnd: "标准场景图",
     visualManual: "art_scene",
     derivativeManual: "art_scene_derivative",
   },
   tool: {
     label: "道具",
     dir: "props",
-    promptTitle: "标准道具图",
-    promptEnd: "标准道具图",
     visualManual: "art_prop",
     derivativeManual: "art_prop_derivative",
   },
 };
 
-function buildAssetPrompt(config: (typeof assetTypeConfig)[AssetType], artStyle: string, name: string, prompt: string) {
-  return `请根据以下参数生成${config.promptTitle}：
-
-基础参数：
-- 画风风格: ${artStyle || "未指定"}
-
-${config.label}设定：
-- 名称: ${name}
-- 提示词: ${prompt}
-
-请严格按照系统规范生成${config.promptEnd}。`;
-}
-
 export async function executeAssetImageTask(payload: any, task?: any) {
   const config = assetTypeConfig[payload.type as AssetType];
   if (!config) throw new Error(`不支持的资产类型: ${payload.type}`);
-  const project = await u.db("o_project").where("id", payload.projectId).select("artStyle").first();
+  const project = await u.db("o_project").where("id", payload.projectId).select("id").first();
   if (!project) throw new Error("项目不存在");
   const image = await u.db("o_image").where("id", payload.imageId).first();
   if (!image) throw new Error("资产图片记录不存在");
@@ -66,12 +48,10 @@ export async function executeAssetImageTask(payload: any, task?: any) {
     : [];
   const outputPath = `/${payload.projectId}/${config.dir}/${u.uuid()}.jpg`;
   try {
-    const imageResult = await u.Ai.Image(payload.model).runRecoverable({
-      prompt: buildAssetPrompt(config, project.artStyle || "", payload.name, payload.prompt),
-      referenceList: references,
-      size: payload.resolution,
-      aspectRatio: "16:9",
-    }, task);
+    const imageResult = await u.Ai.Image(payload.model).runRecoverable(
+      buildAssetImageGenerationInput(payload.prompt, references, payload.resolution),
+      task,
+    );
     if (imageResult.pending) return { __taskPending: true };
     const aiImage = imageResult.image!;
     await aiImage.save(outputPath);
