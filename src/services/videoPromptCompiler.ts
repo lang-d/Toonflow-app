@@ -26,6 +26,7 @@ export interface CompileVideoPromptInput {
   mode: string;
   promptPrefix?: string;
   promptSuffix?: string;
+  videoPromptType?: string | null;
 }
 
 export interface CompileVideoPromptResult {
@@ -43,6 +44,12 @@ export interface CompileVideoPromptResult {
     groupKey?: string;
     groupName?: string;
     groupIntent?: string;
+  };
+  promptProfile: {
+    model: string;
+    modelId: string | null;
+    videoPromptType: string | null;
+    systemPromptSource: string;
   };
 }
 
@@ -65,9 +72,11 @@ interface AnnotatedPromptReference {
   meta: PromptReferenceMeta;
 }
 
+type ReferenceDialect = "atImage" | "h3";
+
 interface ReferenceTokenContractIssue {
-  issueType: "unexpected_image_token" | "missing_image_token";
-  severity: "blocking";
+  issueType: "unexpected_image_token" | "missing_image_token" | "unexpected_reference_label" | "missing_reference_label";
+  severity: "blocking" | "warning";
   message: string;
   token: string;
 }
@@ -85,37 +94,289 @@ function truncate(value: unknown, max = 500) {
   return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
-async function resolveSystemPrompt(vendorId: string, modelName: string, mode: string) {
+interface VideoPromptProfileDefinition {
+  path: string;
+  referenceDialect: ReferenceDialect;
+  contentProfiles: Map<string, VideoPromptContentProfile>;
+}
+
+interface VideoPromptProfileMap {
+  entries: Map<string, VideoPromptProfileDefinition>;
+  source: string;
+}
+
+export interface VideoPromptContentProfile {
+  id: string;
+  label: string;
+  path: string;
+}
+
+export interface VideoPromptTypeCapability {
+  options: Array<{ value: string; label: string }>;
+  defaultValue?: string;
+}
+
+export interface VideoPromptTypeResolution {
+  model: string;
+  modelId: string | null;
+  videoPromptType: string | null;
+}
+
+const VIDEO_PROFILE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+const VIDEO_PROFILE_PATH_PATTERN = /^video\/(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*\.md$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function parseVideoPromptProfileMap(content: string, source = "profileMap.json"): VideoPromptProfileMap {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error(`Video prompt profile map is not valid JSON: ${source}`);
+  }
+  if (!Array.isArray(parsed)) throw new Error(`Video prompt profile map must be an array: ${source}`);
+
+  const entries = new Map<string, VideoPromptProfileDefinition>();
+  for (const value of parsed) {
+    if (!isRecord(value) || typeof value.modelId !== "string" || typeof value.path !== "string") {
+      throw new Error(`Video prompt profile map has an invalid entry: ${source}`);
+    }
+    const modelId = value.modelId.trim();
+    const profilePath = value.path.trim().replace(/\\/g, "/");
+    const referenceDialect = value.referenceDialect == null ? "atImage" : value.referenceDialect;
+    if (!VIDEO_PROFILE_ID_PATTERN.test(modelId)) {
+      throw new Error(`Video prompt profile map has an invalid model ID '${modelId}': ${source}`);
+    }
+    if (!VIDEO_PROFILE_PATH_PATTERN.test(profilePath)) {
+      throw new Error(`Video prompt profile map has an unsafe profile path '${profilePath}': ${source}`);
+    }
+    if (referenceDialect !== "atImage" && referenceDialect !== "h3") {
+      throw new Error(`Video prompt profile map has an invalid reference dialect '${String(referenceDialect)}': ${source}`);
+    }
+    const contentProfiles = new Map<string, VideoPromptContentProfile>();
+    if (value.contentProfiles != null && !Array.isArray(value.contentProfiles)) {
+      throw new Error(`Video prompt profile map has invalid content profiles for '${modelId}': ${source}`);
+    }
+    for (const profile of value.contentProfiles || []) {
+      if (!isRecord(profile) || typeof profile.id !== "string" || typeof profile.label !== "string" || typeof profile.path !== "string") {
+        throw new Error(`Video prompt profile map has an invalid content profile for '${modelId}': ${source}`);
+      }
+      const id = profile.id.trim();
+      const label = profile.label.trim();
+      const contentPath = profile.path.trim().replace(/\\/g, "/");
+      if (!VIDEO_PROFILE_ID_PATTERN.test(id) || !label || !VIDEO_PROFILE_PATH_PATTERN.test(contentPath)) {
+        throw new Error(`Video prompt profile map has an invalid content profile '${id}': ${source}`);
+      }
+      if (contentProfiles.has(id)) throw new Error(`Video prompt profile map has duplicate content profile '${id}': ${source}`);
+      contentProfiles.set(id, { id, label, path: contentPath });
+    }
+    if (entries.has(modelId)) throw new Error(`Video prompt profile map has duplicate model ID '${modelId}': ${source}`);
+    entries.set(modelId, { path: profilePath, referenceDialect, contentProfiles });
+  }
+  return { entries, source };
+}
+
+export function resolveVideoPromptProfilePath(profileMap: VideoPromptProfileMap, modelId: unknown) {
+  if (typeof modelId !== "string") return null;
+  const normalized = modelId.trim();
+  if (!VIDEO_PROFILE_ID_PATTERN.test(normalized)) return null;
+  return profileMap.entries.get(normalized)?.path || null;
+}
+
+function resolveVideoPromptProfileDefinition(profileMap: VideoPromptProfileMap, modelId: unknown) {
+  if (typeof modelId !== "string") return null;
+  const normalized = modelId.trim();
+  if (!VIDEO_PROFILE_ID_PATTERN.test(normalized)) return null;
+  return profileMap.entries.get(normalized) || null;
+}
+
+export function resolveVideoPromptContentProfiles(profileMap: VideoPromptProfileMap, modelId: unknown): VideoPromptContentProfile[] {
+  const definition = resolveVideoPromptProfileDefinition(profileMap, modelId);
+  return definition ? [...definition.contentProfiles.values()] : [];
+}
+
+export function resolveVideoPromptContentProfile(
+  profileMap: VideoPromptProfileMap,
+  modelId: unknown,
+  contentProfileId: unknown,
+): VideoPromptContentProfile | null {
+  if (typeof contentProfileId !== "string") return null;
+  const id = contentProfileId.trim();
+  if (!VIDEO_PROFILE_ID_PATTERN.test(id)) return null;
+  return resolveVideoPromptProfileDefinition(profileMap, modelId)?.contentProfiles.get(id) || null;
+}
+
+export function isKnownVideoPromptContentProfile(profileMap: VideoPromptProfileMap, contentProfileId: unknown) {
+  if (typeof contentProfileId !== "string") return false;
+  const id = contentProfileId.trim();
+  if (!VIDEO_PROFILE_ID_PATTERN.test(id)) return false;
+  return [...profileMap.entries.values()].some((definition) => definition.contentProfiles.has(id));
+}
+
+async function readVideoPromptProfileMap(): Promise<VideoPromptProfileMap> {
+  const builtin = await readBuiltinDataFile("modelPrompt", "video", "profileMap.json");
+  if (builtin) return parseVideoPromptProfileMap(builtin.content, builtin.file);
+  const file = path.join(u.getPath(["modelPrompt"]), "video", "profileMap.json");
+  return parseVideoPromptProfileMap(await fs.readFile(file, "utf8"), file);
+}
+
+async function readVideoPromptProfile(profilePath: string) {
+  const parts = profilePath.split("/");
+  const builtin = await readBuiltinDataFile("modelPrompt", ...parts);
+  if (builtin) return { content: builtin.content, source: builtin.file };
+  const root = path.resolve(u.getPath(["modelPrompt"]));
+  const file = path.resolve(root, ...parts);
+  if (file !== root && !file.startsWith(`${root}${path.sep}`)) return null;
+  try {
+    return { content: await fs.readFile(file, "utf8"), source: file };
+  } catch {
+    return null;
+  }
+}
+
+function parseVideoModelKey(model: unknown) {
+  const [vendorId = "", modelName = ""] = String(model || "").split(/:(.+)/);
+  return { vendorId: vendorId.trim(), modelName: modelName.trim() };
+}
+
+async function resolveVideoPromptModel(model: unknown, strict = false) {
+  const { vendorId, modelName } = parseVideoModelKey(model);
+  const fail = (message: string) => {
+    if (strict) throw new Error(message);
+    return null;
+  };
+  if (!vendorId || !modelName) return fail("视频模型必须为 vendorId:modelName");
+  try {
+    const runtime = u.vendor.getRuntime(vendorId) as { resolveVideoPromptModelId?: (model: unknown) => unknown };
+    const videoModel = (await u.vendor.getModelList(vendorId)).find((item: any) => item?.type === "video" && item.modelName === modelName);
+    if (!videoModel) return fail("未找到视频模型");
+    if (typeof runtime.resolveVideoPromptModelId !== "function") {
+      return { vendorId, modelName, videoModel, modelId: null, profileDefinition: null };
+    }
+    const resolvedModelId = runtime.resolveVideoPromptModelId(videoModel);
+    const modelId = typeof resolvedModelId === "string" && VIDEO_PROFILE_ID_PATTERN.test(resolvedModelId.trim())
+      ? resolvedModelId.trim()
+      : null;
+    const profileDefinition = modelId ? resolveVideoPromptProfileDefinition(await readVideoPromptProfileMap(), modelId) : null;
+    return { vendorId, modelName, videoModel, modelId, profileDefinition };
+  } catch (error) {
+    if (strict) throw error;
+    promptLog.warn("Video prompt model resolver failed", { model: String(model || ""), error: u.error(error).message });
+    return null;
+  }
+}
+
+export async function getVideoPromptTypeCapabilityForModel(model: string): Promise<VideoPromptTypeCapability | null> {
+  const resolved = await resolveVideoPromptModel(model);
+  const profiles = resolved?.profileDefinition ? [...resolved.profileDefinition.contentProfiles.values()] : [];
+  if (!profiles.length) return null;
+  return { options: profiles.map(({ id, label }) => ({ value: id, label })) };
+}
+
+export async function assertVideoPromptTypeForModel(model: string, requestedVideoPromptType?: string | null): Promise<VideoPromptTypeResolution> {
+  const resolved = await resolveVideoPromptModel(model, true);
+  if (!resolved) throw new Error("未找到视频模型");
+  const value = typeof requestedVideoPromptType === "string" ? requestedVideoPromptType.trim() : "";
+  if (!value) return { model, modelId: resolved.modelId, videoPromptType: null };
+  if (!VIDEO_PROFILE_ID_PATTERN.test(value)) throw new Error("视频类型参数非法");
+  const contentProfile = resolved.profileDefinition?.contentProfiles.get(value);
+  if (!contentProfile) throw new Error("当前视频模型不支持该视频类型");
+  return { model, modelId: resolved.modelId, videoPromptType: contentProfile.id };
+}
+
+async function resolveVendorVideoPromptProfile(vendorId: string, modelName: string, requestedContentProfileId?: string | null) {
+  try {
+    const resolved = await resolveVideoPromptModel(`${vendorId}:${modelName}`);
+    if (!resolved) return null;
+    const { modelId, profileDefinition } = resolved;
+    if (!profileDefinition) {
+      if (modelId != null) promptLog.warn("Video prompt model ID has no mapped profile", { vendorId, modelName, modelId });
+      return null;
+    }
+    const profile = await readVideoPromptProfile(profileDefinition.path);
+    if (!profile) {
+      promptLog.warn("Mapped video prompt profile is unavailable", { vendorId, modelName, modelId, profilePath: profileDefinition.path });
+      return null;
+    }
+    const normalizedContentProfileId = typeof requestedContentProfileId === "string" ? requestedContentProfileId.trim() : "";
+    const contentProfile = normalizedContentProfileId && VIDEO_PROFILE_ID_PATTERN.test(normalizedContentProfileId)
+      ? profileDefinition.contentProfiles.get(normalizedContentProfileId) || null
+      : null;
+    if (!contentProfile && requestedContentProfileId) {
+      promptLog.warn("Project video prompt type is unavailable for the resolved model", {
+        vendorId,
+        modelName,
+        modelId,
+        videoPromptType: requestedContentProfileId,
+      });
+    }
+    const contentRule = contentProfile ? await readVideoPromptProfile(contentProfile.path) : null;
+    if (contentProfile && !contentRule) {
+      promptLog.warn("Mapped video prompt content profile is unavailable", {
+        vendorId,
+        modelName,
+        modelId,
+        videoPromptType: contentProfile.id,
+        profilePath: contentProfile.path,
+      });
+    }
+    return {
+      ...profile,
+      content: contentRule ? `${profile.content}\n\n${contentRule.content}` : profile.content,
+      referenceDialect: profileDefinition.referenceDialect,
+      source: `vendor:${vendorId}:${String(modelId)} -> ${profile.source}${contentRule ? ` + ${contentRule.source}` : ""}`,
+      modelId: String(modelId),
+      videoPromptType: contentRule ? contentProfile?.id || null : null,
+    };
+  } catch (error) {
+    promptLog.warn("Video prompt model ID resolver failed", { vendorId, modelName, error: u.error(error).message });
+    return null;
+  }
+}
+
+export async function getVideoPromptContentProfilesForModel(model: string): Promise<VideoPromptContentProfile[]> {
+  const resolved = await resolveVideoPromptModel(model);
+  return resolved?.profileDefinition ? [...resolved.profileDefinition.contentProfiles.values()] : [];
+}
+
+async function resolveSystemPrompt(vendorId: string, modelName: string, mode: string, videoPromptType?: string | null) {
+  if (videoPromptType) {
+    const vendorProfile = await resolveVendorVideoPromptProfile(vendorId, modelName, videoPromptType);
+    if (!vendorProfile || vendorProfile.videoPromptType !== videoPromptType) {
+      throw new Error("当前视频模型不支持该视频类型");
+    }
+    return vendorProfile;
+  }
   const configured = await u.db("o_modelPrompt").where("vendorId", vendorId).where("model", modelName).first();
   if (configured?.path) {
     try {
       const file = path.join(u.getPath(["modelPrompt"]), configured.path);
-      return { content: await fs.readFile(file, "utf8"), source: `o_modelPrompt:${configured.path}` };
+      return { content: await fs.readFile(file, "utf8"), referenceDialect: "atImage" as const, source: `o_modelPrompt:${configured.path}`, modelId: null, videoPromptType: null };
     } catch {}
   }
 
-  const modelLower = modelName.toLowerCase();
+  const vendorProfile = await resolveVendorVideoPromptProfile(vendorId, modelName, videoPromptType);
+  if (vendorProfile) return vendorProfile;
+
   let fileName: string | null = null;
-  if (modelLower.includes("wan") && modelLower.includes("2.6")) {
-    fileName = "wan2.6Single-imageFirstFrameMode.md";
-  } else if (/seedance.*2[.\-]0/i.test(modelName)) {
-    fileName = "seedance2Multi-parameterMode.md";
-  } else if (["startEndRequired", "endFrameOptional", "startFrameOptional"].includes(mode)) {
+  if (["startEndRequired", "endFrameOptional", "startFrameOptional"].includes(mode)) {
     fileName = "universalFirstAndLastFrameMode.md";
   } else if (typeof mode === "string" && mode.startsWith('["') && mode.endsWith('"]')) {
     fileName = "universalMulti-parameterMode.md";
   }
   if (fileName) {
     const builtin = await readBuiltinDataFile("modelPrompt", "video", fileName);
-    if (builtin) return { content: builtin.content, source: builtin.file };
+    if (builtin) return { content: builtin.content, referenceDialect: "atImage" as const, source: builtin.file, modelId: null, videoPromptType: null };
     try {
       const file = path.join(u.getPath(["modelPrompt"]), "video", fileName);
-      return { content: await fs.readFile(file, "utf8"), source: file };
+      return { content: await fs.readFile(file, "utf8"), referenceDialect: "atImage" as const, source: file, modelId: null, videoPromptType: null };
     } catch {}
   }
 
   const fallback = await u.db("o_prompt").where("type", "videoPromptGeneration").first();
-  return { content: fallback?.useData || fallback?.data || "", source: "o_prompt:videoPromptGeneration" };
+  return { content: fallback?.useData || fallback?.data || "", referenceDialect: "atImage" as const, source: "o_prompt:videoPromptGeneration", modelId: null, videoPromptType: null };
 }
 
 function constraintBlock(prefix?: string, suffix?: string) {
@@ -234,11 +495,55 @@ function imageTokenPattern(token: string) {
   return new RegExp(`${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\d)`);
 }
 
-export function inspectReferenceTokenContract(text: string, items: AnnotatedPromptReference[]) {
+export function inspectReferenceTokenContract(
+  text: string,
+  items: AnnotatedPromptReference[],
+  referenceDialect: ReferenceDialect = "atImage",
+) {
   const value = String(text || "");
   const visualTokens = items
     .filter(({ item, meta }) => item.fileType === "image" && meta.visualImageIndex)
     .map(({ meta }) => `@Image${meta.visualImageIndex}`);
+  if (referenceDialect === "h3") {
+    const expected = items.flatMap(({ item, meta }) => {
+      if (item.fileType === "image" && meta.visualImageIndex) return [`<Picture ${meta.visualImageIndex}>`];
+      if (item.fileType === "video" && meta.videoReferenceIndex) return [`<Video ${meta.videoReferenceIndex}>`];
+      if (item.fileType === "audio" && meta.audioReferenceIndex) return [`<Audio ${meta.audioReferenceIndex}>`];
+      return [];
+    });
+    const expectedSet = new Set(expected);
+    const mentioned = [...value.matchAll(/<(Picture|Video|Audio)\s+(\d+)>/gi)].map((match) => `<${match[1][0].toUpperCase()}${match[1].slice(1).toLowerCase()} ${match[2]}>`);
+    const issues: ReferenceTokenContractIssue[] = [];
+    for (const token of [...new Set([...value.matchAll(/@Image\d+/g)].map((match) => match[0]))]) {
+      issues.push({
+        issueType: "unexpected_reference_label",
+        severity: "warning",
+        token,
+        message: `H3 提示词不应输出内部图片标记 ${token}，请使用对应的 <Picture N>`,
+      });
+    }
+    for (const token of [...new Set(mentioned)]) {
+      if (!expectedSet.has(token)) {
+        issues.push({
+          issueType: "unexpected_reference_label",
+          severity: "warning",
+          token,
+          message: `H3 提示词引用了未提供的官方参考标签 ${token}`,
+        });
+      }
+    }
+    for (const token of expected) {
+      if (!value.includes(token)) {
+        issues.push({
+          issueType: "missing_reference_label",
+          severity: "warning",
+          token,
+          message: `H3 提示词缺少已提供参考素材的官方标签 ${token}`,
+        });
+      }
+    }
+    return { expectedVisualTokens: visualTokens, expectedReferenceLabels: expected, issues };
+  }
   const allowed = new Set(visualTokens);
   const mentioned = [...value.matchAll(/@Image(\d+)/g)].map((match) => `@Image${match[1]}`);
   const issues: ReferenceTokenContractIssue[] = [];
@@ -265,7 +570,7 @@ export function inspectReferenceTokenContract(text: string, items: AnnotatedProm
     }
   }
 
-  return { expectedVisualTokens: visualTokens, issues };
+  return { expectedVisualTokens: visualTokens, expectedReferenceLabels: visualTokens, issues };
 }
 
 function buildReferenceTokenRetryPrompt(
@@ -500,12 +805,14 @@ export async function compileWorkbenchVideoPrompt(
   input: CompileVideoPromptInput,
   options: CompileVideoPromptOptions = {},
 ): Promise<CompileVideoPromptResult> {
-  const [vendorId, modelName = ""] = input.model.split(/:(.+)/);
+  const { vendorId, modelName } = parseVideoModelKey(input.model);
   const project = await u.db("o_project").where("id", input.projectId).first();
   if (!project) throw new Error("项目不存在");
 
   const track = input.trackId ? await u.db("o_videoTrack").where({ id: input.trackId, projectId: input.projectId }).first() : null;
-  const system = await resolveSystemPrompt(vendorId, modelName, input.mode);
+  const selectedVideoPromptType = typeof input.videoPromptType === "string" ? input.videoPromptType.trim() || null : null;
+  await assertVideoPromptTypeForModel(input.model, selectedVideoPromptType);
+  const system = await resolveSystemPrompt(vendorId, modelName, input.mode, selectedVideoPromptType);
   const scriptId = input.scriptId ?? (track?.scriptId == null ? undefined : Number(track.scriptId));
   const videoStyle = scriptId == null ? "" : await getCommittedDirectorPlanVideoStyle({ projectId: input.projectId, scriptId });
   const trackStoryboards = await loadTrackStoryboards(input);
@@ -546,6 +853,10 @@ ${buildStoryboardVersionConstraints()}
     model: input.model,
     mode: input.mode,
     systemPromptSource: system.source,
+    modelId: system.modelId || null,
+    referenceDialect: system.referenceDialect,
+    selectedVideoPromptType,
+    effectiveVideoPromptType: system.videoPromptType || null,
     references: referenceInputs,
     resolvedReferences: annotatedReferences.map(({ item, meta }) => ({
       order: meta.inputOrder,
@@ -576,8 +887,8 @@ ${buildStoryboardVersionConstraints()}
       messages: baseMessages,
     });
     text = String(result.text || "");
-    const firstContractInspection = inspectReferenceTokenContract(text, annotatedReferences);
-    if (firstContractInspection.issues.length) {
+    const firstContractInspection = inspectReferenceTokenContract(text, annotatedReferences, system.referenceDialect);
+    if (system.referenceDialect === "atImage" && firstContractInspection.issues.length) {
       retryReason = firstContractInspection.issues;
       retryOutputSummary = text.slice(0, 4000);
       const retryResult = await u.Ai.Text("universalAi").invoke({
@@ -612,7 +923,7 @@ ${buildStoryboardVersionConstraints()}
     throw error;
   }
   const inspection = inspectVideoPromptEngineering(text);
-  const referenceInspection = inspectReferenceTokenContract(text, annotatedReferences);
+  const referenceInspection = inspectReferenceTokenContract(text, annotatedReferences, system.referenceDialect);
   const engineeringIssues = [...inspection.issues, ...referenceInspection.issues];
   const diagnosticFile = writeDiagnosticFile(
     `video-prompt-track-${input.trackId || "unknown"}`,
@@ -625,6 +936,8 @@ ${buildStoryboardVersionConstraints()}
         aiOutputLength: text.length,
         referenceContract: {
           expectedVisualTokens: referenceInspection.expectedVisualTokens,
+          expectedReferenceLabels: referenceInspection.expectedReferenceLabels,
+          dialect: system.referenceDialect,
           retried: retryReason.length > 0,
           retryReason,
           firstAiOutputSummary: retryOutputSummary || undefined,
@@ -662,5 +975,11 @@ ${buildStoryboardVersionConstraints()}
     diagnosticFile,
     factSourceSummary,
     groupSummary,
+    promptProfile: {
+      model: input.model,
+      modelId: system.modelId || null,
+      videoPromptType: system.videoPromptType || null,
+      systemPromptSource: system.source,
+    },
   };
 }

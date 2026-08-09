@@ -66,8 +66,6 @@ async function shutdown() {
   try {
     runtimeLog.info("Worker shutdown started", { event: "shutdown.start" });
     await stopWorker?.();
-    const queue = require("@/utils/videoGenerationQueue") as typeof import("@/utils/videoGenerationQueue");
-    await queue.stopVideoGenerationQueue();
     const portable = require("@/services/projectPortable") as typeof import("@/services/projectPortable");
     const summary = await portable.generateStaleProjectSnapshotsOnExit(undefined, { timeoutMs: 60_000 });
     if (summary.scanned) {
@@ -95,11 +93,9 @@ void (async () => {
   const { dbReady } = dbModule;
   readDbDiagnostics = dbModule.getDbDiagnostics;
   await dbReady;
-  const queue = require("@/utils/videoGenerationQueue") as typeof import("@/utils/videoGenerationQueue");
   readExternalProcesses = (require("@/utils/dreaminaCli") as typeof import("@/utils/dreaminaCli")).getActiveCliProcesses;
   const worker = require("@/services/unifiedTaskWorker") as typeof import("@/services/unifiedTaskWorker");
   readActiveTasks = worker.getActiveUnifiedTaskSnapshots;
-  queue.startVideoGenerationQueue();
   const unified = await worker.startUnifiedTaskWorker({
     onWake: () => {
       apiPort?.postMessage({ type: "task:event-available" });

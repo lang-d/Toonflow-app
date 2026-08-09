@@ -51,6 +51,7 @@ interface ImageConfig {
   referenceList?: Extract<ReferenceItem, { type: "image" }>[];
   size: "1K" | "2K" | "4K" | string;
   aspectRatio: `${number}:${number}`;
+  generateCount?: number;
 }
 
 interface VideoConfig {
@@ -654,6 +655,29 @@ function findNewestFile(dir: string, type: DreaminaMediaType) {
   return files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
 }
 
+/**
+ * Image tasks persist a single Toonflow result. When Dreamina downloads more
+ * than one candidate into a fresh task directory, keep the first generated
+ * file rather than whichever file happened to finish downloading last.
+ */
+export function findFirstDreaminaImageFile(dir: string) {
+  const allowed = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+  const files: string[] = [];
+  const walk = (current: string) => {
+    if (!fs.existsSync(current)) return;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (allowed.has(path.extname(entry.name).toLowerCase())) files.push(full);
+    }
+  };
+  walk(dir);
+  return files.sort((a, b) => {
+    const timeDifference = fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs;
+    return timeDifference || path.basename(a).localeCompare(path.basename(b), undefined, { numeric: true });
+  })[0];
+}
+
 function extractUrl(output: string, type: DreaminaMediaType) {
   const urls = output.match(/https?:\/\/[^\s"'<>]+/g) || [];
   const preferred =
@@ -1123,6 +1147,32 @@ export function parseDreaminaImagePollOutput(output: string, submitId: string) {
   };
 }
 
+/** One Toonflow image task consumes the first downloadable image for its submit_id. */
+export function resolveDreaminaImagePollResult(
+  parsed: ReturnType<typeof parseDreaminaImagePollOutput>,
+  input: { data?: string; rawOutput: string; failureFallback: string },
+) {
+  if (input.data) {
+    return {
+      completed: true as const,
+      data: input.data,
+      progress: 100,
+    };
+  }
+  if (parsed.status === "failed") {
+    return {
+      completed: true as const,
+      error: parsed.errorReason || input.failureFallback,
+    };
+  }
+  return {
+    completed: false as const,
+    nextPollMs: 30000,
+    progress: 50,
+    rawOutput: input.rawOutput,
+  };
+}
+
 export function parseDreaminaRemoteEvidence(output: string, submitId: string): DreaminaRemoteEvidence {
   const structured = parseDreaminaTaskOutput(output, submitId).evidence;
   if (structured.confirmed) return structured;
@@ -1152,8 +1202,9 @@ export function isDreaminaCapacityLimit(output: string) {
 
 export function parseDreaminaQueueInfo(output: string): DreaminaQueueInfo {
   const queueInfoText = output.match(/"queue_info"\s*:\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/i)?.[1] || "";
+  const readRaw = (name: string) => queueInfoText.match(new RegExp(`"${name}"\\s*:\\s*(?:"([^"]+)"|(-?\\d+))`, "i"));
   const readNumber = (name: string) => {
-    const value = queueInfoText.match(new RegExp(`"${name}"\\s*:\\s*(-?\\d+)`, "i"))?.[1];
+    const value = readRaw(name)?.[2];
     return value === undefined ? undefined : Number(value);
   };
   return {
@@ -1645,11 +1696,16 @@ async function runGeneration(command: string, args: string[], type: "image" | "v
 export function buildImageArgs(config: ImageConfig, model: ToonflowModel) {
   const { command, modelVersion } = parseModelName(model.modelName);
   const refs = writeReferenceFiles(config.referenceList || [], "image");
+  const generateCount = config.generateCount === undefined ? 1 : Number(config.generateCount);
+  if (!Number.isInteger(generateCount) || generateCount < 1 || generateCount > 10) {
+    throw new Error("Dreamina image generateCount must be an integer from 1 to 10.");
+  }
   const args = [
     ...flag("prompt", config.prompt),
     ...flag("ratio", config.aspectRatio),
     ...flag("resolution_type", qualityToResolution(config.size)),
     ...flag("model_version", modelVersion),
+    ...flag("generate_num", generateCount),
   ];
 
   if (command === "image2image") {
@@ -1691,39 +1747,13 @@ async function imagePoll(submitId: string) {
   const queryOutput = outputText(query.result);
   const rawOutput = `${queryOutput}\n----- query_result cli logs (diagnostic only) -----\n${query.logs}`.trim();
   const parsed = parseDreaminaImagePollOutput(queryOutput, submitId);
-  const file = findNewestFile(downloadDir, "image");
-  if (file) {
-    return {
-      completed: true,
-      data: fileToDataUrl(file),
-      progress: 100,
-    };
-  }
-  if (parsed.imageUrl) {
-    return {
-      completed: true,
-      data: parsed.imageUrl,
-      progress: 100,
-    };
-  }
-  if (parsed.status === "failed" || (query.code !== 0 && parsed.status !== "generating")) {
-    return {
-      completed: true,
-      error: parsed.errorReason || cliFailureMessage(query.result, "Dreamina image generation failed."),
-    };
-  }
-  if (parsed.status === "success") {
-    return {
-      completed: true,
-      error: "Dreamina image task succeeded, but no downloadable image was found.",
-    };
-  }
-  return {
-    completed: false,
-    nextPollMs: 30000,
-    progress: 50,
+  const file = findFirstDreaminaImageFile(downloadDir);
+  const data = file ? fileToDataUrl(file) : parsed.imageUrl;
+  return resolveDreaminaImagePollResult(parsed, {
+    data,
     rawOutput,
-  };
+    failureFallback: cliFailureMessage(query.result, "Dreamina image generation failed."),
+  });
 }
 
 async function imageRequest(config: ImageConfig, model: ToonflowModel) {

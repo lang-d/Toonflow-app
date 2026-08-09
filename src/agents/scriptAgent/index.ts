@@ -71,6 +71,9 @@ export async function runDecisionAI(ctx: AgentContext) {
       userAbortSignal: ctx.abortSignal,
       abortModelStream: modelStreamScope.abort,
       projectId: Number(ctx.resTool.data.projectId),
+      onToolResultObserved: ({ success }) => {
+        if (success && ctx.runContext?.terminalIntent) ctx.runContext.stopForTerminal();
+      },
       syncMsg: () => {
         if (ctx.msg === currentMsg) return currentMsg;
         currentMsg.complete();
@@ -114,6 +117,9 @@ function createSubAgents(parentCtx: AgentContext) {
         userAbortSignal: parentCtx.abortSignal,
         abortModelStream: modelStreamScope.abort,
         projectId: Number(parentCtx.resTool.data.projectId),
+        onToolResultObserved: ({ success }) => {
+          if (success && parentCtx.runContext?.terminalIntent) parentCtx.runContext.stopForTerminal();
+        },
       });
     } finally {
       modelStreamScope.dispose();

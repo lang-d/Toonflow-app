@@ -12,6 +12,7 @@ import {
   getVideoModelPolicy,
 } from "@/services/videoModelPolicy";
 import { assertTrackStoryboardsReady } from "@/services/storyboardFacts";
+import { assertVideoPromptTypeForModel } from "@/services/videoPromptCompiler";
 
 const router = express.Router();
 type VideoReferenceSource = "storyboard" | "assets" | "merged" | "directorAsset" | "local";
@@ -28,6 +29,16 @@ function parseMode(mode: unknown) {
     } catch {}
   }
   return mode;
+}
+
+function buildGenerationPromptProfile(track: any, profile: Awaited<ReturnType<typeof assertVideoPromptTypeForModel>>) {
+  try {
+    const previous = JSON.parse(track?.promptProfileJson || "{}");
+    if (previous?.model === profile.model && previous?.videoPromptType === profile.videoPromptType) {
+      return { ...profile, systemPromptSource: typeof previous.systemPromptSource === "string" ? previous.systemPromptSource : null };
+    }
+  } catch {}
+  return { ...profile, systemPromptSource: null };
 }
 
 export default router.post(
@@ -47,10 +58,17 @@ export default router.post(
     mode: z.string(),
     resolution: z.string(),
     audio: z.boolean().optional(),
+    videoPromptType: z.string().trim().max(80).optional().nullable(),
   }),
   async (req, res) => {
-    const { scriptId, projectId, trackData, model, resolution, audio, mode } = req.body;
+    const { scriptId, projectId, trackData, model, resolution, audio, mode, videoPromptType } = req.body;
     const modeData = parseMode(mode);
+    let validatedPromptProfile: Awaited<ReturnType<typeof assertVideoPromptTypeForModel>>;
+    try {
+      validatedPromptProfile = await assertVideoPromptTypeForModel(model, videoPromptType);
+    } catch (cause) {
+      return res.status(400).send(error(u.error(cause).message));
+    }
     const durationPolicy = await getVideoModelPolicy(model, { resolution });
 
     for (const track of trackData) {
@@ -64,6 +82,7 @@ export default router.post(
     const ratio = await u.db("o_project").select("videoRatio").where("id", projectId).first();
     const trackIds = trackData.map((track: any) => Number(track.trackId));
     const tracks = await u.db("o_videoTrack").where({ projectId, scriptId }).whereIn("id", trackIds);
+    const trackById = new Map(tracks.map((track: any) => [Number(track.id), track]));
     const validTrackIds = new Set(tracks.map((track: any) => Number(track.id)));
     const invalidTrackId = trackIds.find((trackId: number) => !validTrackIds.has(trackId));
     if (invalidTrackId != null) {
@@ -83,6 +102,7 @@ export default router.post(
     const tasks = await Promise.all(
       (trackData as { uploadData: { id: number | string; sources: VideoReferenceSource }[]; trackId: number; prompt: string; duration: number }[]).map(async (track) => {
         const { uploadData, trackId, prompt, duration } = track;
+        const promptProfile = buildGenerationPromptProfile(trackById.get(Number(trackId)), validatedPromptProfile);
         const references = await resolveWorkbenchReferences(uploadData, { projectId, scriptId, trackId });
         validateReferenceLimits(references, modeData);
 
@@ -94,6 +114,7 @@ export default router.post(
           scriptId,
           projectId,
           videoTrackId: trackId,
+          videoPromptProfileJson: JSON.stringify(promptProfile),
         });
 
         return {
@@ -103,12 +124,13 @@ export default router.post(
           duration,
           trackId,
           queuedReferences: uploadData.map((item, order) => ({ ...item, order })),
+          promptProfile,
         };
       }),
     );
 
     const queuedTasks = [];
-    for (const { videoId, videoPath, prompt, duration, queuedReferences, trackId } of tasks) {
+    for (const { videoId, videoPath, prompt, duration, queuedReferences, trackId, promptProfile } of tasks) {
       const relatedObjects = { projectId, videoId, scriptId, type: "视频", trackId };
       const queued = await enqueueVideoGeneration({
         videoId,
@@ -124,6 +146,7 @@ export default router.post(
           aspectRatio: (ratio?.videoRatio as "16:9" | "9:16") || "16:9",
           resolution,
           audio,
+          promptProfile,
         },
         relatedObjects,
       });

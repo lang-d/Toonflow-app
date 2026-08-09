@@ -13,6 +13,7 @@ import {
   getVideoModelPolicy,
 } from "@/services/videoModelPolicy";
 import { assertTrackStoryboardsReady } from "@/services/storyboardFacts";
+import { assertVideoPromptTypeForModel } from "@/services/videoPromptCompiler";
 
 const router = express.Router();
 type VideoReferenceSource = "storyboard" | "assets" | "merged" | "directorAsset" | "local";
@@ -31,6 +32,16 @@ function parseMode(mode: unknown) {
   return mode;
 }
 
+function buildGenerationPromptProfile(track: any, profile: Awaited<ReturnType<typeof assertVideoPromptTypeForModel>>) {
+  try {
+    const previous = JSON.parse(track?.promptProfileJson || "{}");
+    if (previous?.model === profile.model && previous?.videoPromptType === profile.videoPromptType) {
+      return { ...profile, systemPromptSource: typeof previous.systemPromptSource === "string" ? previous.systemPromptSource : null };
+    }
+  } catch {}
+  return { ...profile, systemPromptSource: null };
+}
+
 export default router.post(
   "/",
   validateFields({
@@ -44,14 +55,18 @@ export default router.post(
     duration: z.number(),
     audio: z.boolean().optional(),
     trackId: z.number(),
+    videoPromptType: z.string().trim().max(80).optional().nullable(),
   }),
   async (req, res) => {
-    const { scriptId, projectId, prompt, uploadData, model, duration, resolution, audio, mode, trackId } = req.body;
+    const { scriptId, projectId, prompt, uploadData, model, duration, resolution, audio, mode, trackId, videoPromptType } = req.body;
     const trackReview = await u.db("o_videoTrack").where({ id: trackId, projectId }).first();
     if (!trackReview || Number(trackReview.scriptId) !== Number(scriptId)) {
       return res.status(400).send(error("Video track does not exist or does not belong to the current script"));
     }
+    let promptProfile: Awaited<ReturnType<typeof assertVideoPromptTypeForModel>>;
     try {
+      promptProfile = await assertVideoPromptTypeForModel(model, videoPromptType);
+      promptProfile = buildGenerationPromptProfile(trackReview, promptProfile);
       await assertTrackStoryboardsReady({ projectId, scriptId, trackIds: [trackId] });
     } catch (cause) {
       return res.status(400).send(error(u.error(cause).message));
@@ -81,9 +96,10 @@ export default router.post(
       filePath: videoPath,
       time: Date.now(),
       state: "生成中",
-      scriptId,
-      projectId,
-      videoTrackId: trackId,
+        scriptId,
+        projectId,
+        videoTrackId: trackId,
+        videoPromptProfileJson: JSON.stringify(promptProfile),
     });
     const relatedObjects = {
       projectId,
@@ -109,6 +125,7 @@ export default router.post(
         aspectRatio: (ratio?.videoRatio as "16:9" | "9:16") || "16:9",
         resolution,
         audio,
+        promptProfile,
       },
       relatedObjects,
     });

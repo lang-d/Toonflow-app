@@ -152,7 +152,7 @@ export default (nsp: Namespace) => {
 
       const controller = new AbortController();
       const runContext = createAgentRunContext(createdRun.run.runId);
-      runContext.requestStop = () => controller.abort();
+      runContext.bindRootStop(() => controller.abort());
       const heartbeatTimer = setInterval(() => {
         void updateAgentRunHeartbeat(createdRun.run.runId).catch((error) => console.warn("[scriptAgent] heartbeat failed:", u.error(error).message));
       }, AGENT_RUN_HEARTBEAT_INTERVAL_MS);
@@ -174,7 +174,10 @@ export default (nsp: Namespace) => {
           thinkConfig,
           runContext,
         });
-        if (runContext.terminalIntent) {
+        if (runContext.abortReason === "user_stop") {
+          finalStatus = "cancelled";
+          finalReason = "Script Agent run was cancelled by the user.";
+        } else if (runContext.terminalIntent) {
           finalStatus = runContext.terminalIntent.status;
           finalReason = runContext.terminalIntent.reason;
           finalError = runContext.terminalIntent.errorJson;
@@ -184,11 +187,14 @@ export default (nsp: Namespace) => {
           });
         }
       } catch (error: any) {
-        if (runContext.terminalIntent) {
+        if (runContext.abortReason === "user_stop") {
+          finalStatus = "cancelled";
+          finalReason = "Script Agent run was cancelled by the user.";
+        } else if (runContext.terminalIntent) {
           finalStatus = runContext.terminalIntent.status;
           finalReason = runContext.terminalIntent.reason;
           finalError = runContext.terminalIntent.errorJson;
-        } else if (runContext.abortReason === "user_stop" || controller.signal.aborted) {
+        } else if (controller.signal.aborted) {
           finalStatus = "cancelled";
           finalReason = "Script Agent run was cancelled by the user.";
         } else {

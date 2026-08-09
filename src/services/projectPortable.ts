@@ -494,6 +494,9 @@ export async function importPortableProject(sourceDirectory: string, database: a
     value == null ? value : maps.get(table)?.get(Number(value)) ?? value;
   const taskIds = new Map<string, string>();
   for (const row of snapshot.tables.o_tasks || []) if (row.taskId) taskIds.set(row.taskId, randomUUID());
+  const sourceTaskByLegacyId = new Map<number, any>(
+    (snapshot.tables.o_tasks || []).map((row) => [Number(row.id), row]),
+  );
   const remapJsonValue = (value: any, key = "", parent: any = null): any => {
     if (Array.isArray(value)) return value.map((item) => remapJsonValue(item, "", value));
     if (value && typeof value === "object") {
@@ -699,7 +702,10 @@ export async function importPortableProject(sourceDirectory: string, database: a
         row[jsonField] = rewritePath(row[jsonField], oldProjectId, newProjectId);
       }
     }
-    const status = String(row.status || row.phase || "");
+    const lifecycleSource = table === "o_videoGenerationTask" && source.taskCenterId != null
+      ? sourceTaskByLegacyId.get(Number(source.taskCenterId)) || source
+      : source;
+    const status = String(lifecycleSource.status || lifecycleSource.phase || "");
     if ((table === "o_tasks" || table === "o_videoGenerationTask" || table === "o_editImageTask") && ACTIVE_STATUSES.has(status)) {
       row.status = "failed";
       row.phase = "import-interrupted";
@@ -770,7 +776,10 @@ export async function importPortableProject(sourceDirectory: string, database: a
       snapshotState: "stale",
     });
     const interruptedVideoIds = (snapshot.tables.o_videoGenerationTask || [])
-      .filter((row) => ACTIVE_STATUSES.has(String(row.status || row.phase || "")))
+      .filter((row) => {
+        const sourceTask = sourceTaskByLegacyId.get(Number(row.taskCenterId));
+        return ACTIVE_STATUSES.has(String(sourceTask?.status || sourceTask?.phase || row.status || row.phase || ""));
+      })
       .map((row) => mapId("o_video", row.videoId))
       .filter(Boolean);
     if (interruptedVideoIds.length) {

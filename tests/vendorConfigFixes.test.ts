@@ -126,7 +126,7 @@ test("bundled XLCSH Seedance 2 is created disabled and upgrades runtime code wit
     assert.equal(upgraded.inputValues, inputValues);
     assert.equal(Number(upgraded.enable), 1);
     assert.deepEqual(JSON.parse(upgraded.models).map((model: any) => model.modelName), ["seedance-2.0", "seedance-2.0-unlimited", "seedance-2.0-mini"]);
-    assert.match(await fs.readFile(vendorFile, "utf8"), /version: "2\.0"/);
+    assert.match(await fs.readFile(vendorFile, "utf8"), /version: "2\.0\.1"/);
   } finally {
     await db.destroy();
     await fs.rm(root, { recursive: true, force: true });
@@ -170,6 +170,48 @@ test("bundled MiniMax 2.2 upgrades video models without replacing credentials or
     );
     assert.equal(inputValues, config.inputValues);
     assert.equal(Number(config.enable), 1);
+  } finally {
+    await db.destroy();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("bundled Zealman 2.2 upgrades its runtime without replacing saved workflow execution settings", async () => {
+  const root = fsSync.mkdtempSync(path.join(os.tmpdir(), "toonflow-zealman-vendor-fix-"));
+  process.env.TOONFLOW_APP_DATA_DIR = path.join(root, "app");
+  process.env.TOONFLOW_WORKSPACE_DIR = path.join(root, "workspace");
+  process.env.TOONFLOW_STORAGE_MODE = "workspace";
+  process.env.TOONFLOW_SYSTEM_DATA_DIR = path.resolve("data");
+
+  const [{ default: knexFactory }, { syncDefaultVendorConfigs }, { default: getPath }] = await Promise.all([
+    import("knex"),
+    import("../src/lib/dbFixes/vendorConfigFixes"),
+    import("../src/utils/getPath"),
+  ]);
+  const db = knexFactory({ client: "sqlite3", connection: { filename: path.join(root, "vendor.sqlite") }, useNullAsDefault: true });
+  try {
+    await db.schema.createTable("o_vendorConfig", (table) => {
+      table.string("id").primary();
+      table.text("inputValues");
+      table.text("models");
+      table.integer("enable");
+    });
+    const inputValues = JSON.stringify({
+      instanceUrls: "https://zealman.example:8443",
+      zealmanWorkflowExecutionSettings: JSON.stringify({ u06: { "620:unet_name": "minimax/minimax_h3_ref2va_bf16.safetensors" } }),
+    });
+    await db("o_vendorConfig").insert({ id: "zealman", inputValues, models: "[]", enable: 1 });
+    const vendorFile = path.join(getPath("vendor"), "zealman.ts");
+    await fs.mkdir(path.dirname(vendorFile), { recursive: true });
+    await fs.writeFile(vendorFile, 'const vendor = { version: "2.1" };\n', "utf8");
+
+    await syncDefaultVendorConfigs(db);
+
+    const config = await db("o_vendorConfig").where("id", "zealman").first();
+    assert.match(await fs.readFile(vendorFile, "utf8"), /version: "2\.2"/);
+    assert.equal(config.inputValues, inputValues);
+    assert.equal(Number(config.enable), 1);
+    assert.deepEqual(JSON.parse(config.models).map((item: any) => item.modelName), ["minimax-h3-u06", "minimax-h3-u06-light2v"]);
   } finally {
     await db.destroy();
     await fs.rm(root, { recursive: true, force: true });

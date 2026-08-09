@@ -60,6 +60,17 @@ interface VideoItem {
   state: "未生成" | "生成中" | "已完成" | "生成失败";
 }
 
+/**
+ * Completed candidates are persisted as "生成成功" by the video executors,
+ * while an older path used "已完成". Normalize both at the response boundary.
+ */
+export function toWorkbenchVideoState(value: unknown): VideoItem["state"] {
+  if (value === "生成成功" || value === "已完成") return "已完成";
+  if (value === "生成中") return "生成中";
+  if (value === "生成失败") return "生成失败";
+  return "未生成";
+}
+
 interface TrackMedia {
   src: string;
   id?: number | string;
@@ -402,7 +413,7 @@ export default router.post(
             .map(async (v) => ({
               id: v.id!,
               src: v.filePath ? await u.oss.getFileUrl(v.filePath) : "",
-              state: v.state === "已完成" ? "已完成" : v.state === "生成中" ? "生成中" : v.state === "生成失败" ? "生成失败" : "未生成",
+              state: toWorkbenchVideoState(v.state),
               errorReason: v?.errorReason ?? "",
             })),
         ),

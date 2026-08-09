@@ -123,6 +123,7 @@ declare const exports: {
   uploadReference: (base64: string, fileType: "image" | "audio" | "video") => Promise<ReferenceList>;
   imageRequest: (c: ImageConfig, m: ImageModel) => Promise<string>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>;
+  resolveVideoPromptModelId?: (model: VideoModel) => string | undefined;
   ttsRequest: (c: TTSConfig, m: TTSModel) => Promise<string>;
   checkForUpdates?: () => Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }>;
   updateVendor?: () => Promise<string>;
@@ -134,7 +135,7 @@ declare const exports: {
 
 const vendor: VendorConfig = {
   id: "minimax",
-  version: "2.2",
+  version: "2.3",
   author: "Toonflow",
   name: "MiniMax(海螺AI)",
   description: "MiniMax官方接口适配，支持M系列推理文本模型、文生图/图生图，以及 MiniMax-H3 多模态视频和 Hailuo 2.3 视频生成能力 \n [前往平台](https://minimaxi.com/)",
@@ -530,10 +531,13 @@ const ttsRequest = async (config: TTSConfig, model: TTSModel): Promise<string> =
   return "";
 };
 
+const resolveVideoPromptModelId = (model: VideoModel): string | undefined =>
+  model.modelName === H3_MODEL_NAME ? "minimax-h3" : undefined;
+
 const checkForUpdates = async (): Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }> => {
   return {
     hasUpdate: false,
-    latestVersion: "2.2",
+    latestVersion: "2.3",
     notice:
       "## 新版本更新公告\n1. 新增 MiniMax-H3 V2 多模态视频生成\n2. 保留 Hailuo 2.3 与 Hailuo 2.3 Fast，淘汰 Hailuo-02\n3. H3 支持首尾帧和图、视频、音频参考输入",
   };
@@ -552,6 +556,7 @@ exports.textRequest = textRequest;
 exports.uploadReference = uploadReference;
 exports.imageRequest = imageRequest;
 exports.videoRequest = videoRequest;
+exports.resolveVideoPromptModelId = resolveVideoPromptModelId;
 exports.ttsRequest = ttsRequest;
 exports.checkForUpdates = checkForUpdates;
 exports.updateVendor = updateVendor;

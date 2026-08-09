@@ -29,6 +29,7 @@ let mergeMusicPromptGenerationConfig: typeof import("../src/services/musicLibrar
 let musicReviewIssueSchema: typeof import("../src/services/musicReviewer").musicReviewIssueSchema;
 let splitMusicPromptTimingConfig: typeof import("../src/services/musicReviewer").splitMusicPromptTimingConfig;
 let parseMusicModelKey: typeof import("../src/services/musicModelCapability").parseMusicModelKey;
+let musicCueSchema: typeof import("../src/services/musicDirector").musicCueSchema;
 
 before(async () => {
   const [vendorModel, musicDirector, taskCoordinator, aiJsonObject, musicScope, musicTools, musicTaskHandlers, musicCapabilities, musicAsset, musicPromptProfile, musicLibrary, musicReviewer] = await Promise.all([
@@ -47,6 +48,7 @@ before(async () => {
   ]);
   vendorModelSchema = vendorModel.vendorModelSchema;
   readMusicSkill = musicDirector.readMusicSkill;
+  musicCueSchema = musicDirector.musicCueSchema;
   formatUnifiedTaskEnvelope = taskCoordinator.formatUnifiedTaskEnvelope;
   isAiObjectContractError = aiJsonObject.isAiObjectContractError;
   musicProjectIsolationKey = musicScope.musicProjectIsolationKey;
@@ -140,6 +142,22 @@ test("music production agent uses project and episode isolation keys", () => {
   assert.throws(() => resolveMusicIsolationKey({ projectId: 11, mode: "episode" }), /scriptId is required/);
 });
 
+test("episode cue contract requires exact reuse ids and keeps new and silence distinct", () => {
+  const common = {
+    cueKey: "cue-01",
+    cueType: "bgm",
+    startRef: {},
+    endRef: {},
+    durationConfidence: "medium",
+    musicSpec: {},
+  };
+  assert.equal(musicCueSchema.safeParse({ ...common, usageMode: "reuse" }).success, false);
+  assert.equal(musicCueSchema.safeParse({ ...common, usageMode: "reuse", editionId: 23 }).success, true);
+  assert.equal(musicCueSchema.safeParse({ ...common, usageMode: "new" }).success, true);
+  assert.equal(musicCueSchema.safeParse({ ...common, usageMode: "silence" }).success, true);
+  assert.equal(musicCueSchema.safeParse({ ...common, usageMode: "silence", editionId: 23 }).success, false);
+});
+
 test("music production agent is registered as an isolated socket and runtime kind", () => {
   const socketIndex = fs.readFileSync(path.join(process.cwd(), "src", "socket", "index.ts"), "utf8");
   const runtimeBridge = fs.readFileSync(path.join(process.cwd(), "src", "runtime", "agentSocketBridge.ts"), "utf8");
@@ -165,7 +183,7 @@ test("music production agent exposes only music tools", () => {
   assert.ok(musicProductionToolNames.includes("list_available_music_models"));
   assert.ok(musicProductionToolNames.includes("compile_generic_music_prompt"));
   assert.ok(musicProductionToolNames.includes("compile_model_music_prompt"));
-  assert.ok(musicProductionToolNames.includes("update_agent_progress"));
+  assert.equal((musicProductionToolNames as readonly string[]).includes("update_agent_progress"), false);
   assert.equal((musicProductionToolNames as readonly string[]).includes("get_music_stage_state"), false);
 });
 
@@ -314,6 +332,9 @@ test("music skills separate project works, episode usage segments and exact prom
   assert.match(plan, /Do not split by shot|number of shots/);
   assert.match(agent, /Jianying/);
   assert.match(agent, /Theme, opening, ending, and insert songs are opt-in/);
+  assert.match(agent, /present one exact action bundle/);
+  assert.match(agent, /A short reply such as `B` or `2` is not confirmation/);
+  assert.match(agent, /Confirmation authorizes only the stated action bundle/);
   assert.match(prompt, /immutable prompt version/);
   assert.ok(fs.existsSync(path.join(skillsRoot, "music_song_creation_technique.md")));
   assert.ok(fs.existsSync(path.join(skillsRoot, "music_lyrics_technique.md")));
@@ -441,8 +462,12 @@ test("music production agent has its own model deployment key", () => {
 
   assert.match(aiSource, /"musicProductionAgent"/);
   assert.match(aiSource, /"musicProductionAgent:decisionAgent"/);
+  assert.match(aiSource, /"musicProductionAgent:executionAgent"/);
+  assert.match(aiSource, /"musicProductionAgent:supervisionAgent"/);
   assert.match(initSource, /key: "musicProductionAgent"/);
   assert.match(fixSource, /key: "musicProductionAgent:decisionAgent"/);
+  assert.match(fixSource, /key: "musicProductionAgent:executionAgent"/);
+  assert.match(fixSource, /key: "musicProductionAgent:supervisionAgent"/);
   assert.match(fixSource, /copyAgentDeployModelIfEmpty\("musicProductionAgent", "productionAgent"\)/);
   assert.match(fixSource, /copyAgentDeployModelIfEmpty\("musicProductionAgent:decisionAgent", "productionAgent:decisionAgent"\)/);
 });

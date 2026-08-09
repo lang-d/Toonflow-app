@@ -21,6 +21,8 @@ type AiType =
   | "scriptAgent:scriptAgent"
   | "productionAgent:decisionAgent"
   | "musicProductionAgent:decisionAgent"
+  | "musicProductionAgent:executionAgent"
+  | "musicProductionAgent:supervisionAgent"
   | "productionAgent:supervisionAgent"
   | "productionAgent:deriveAssetsAgent"
   | "productionAgent:generateAssetsAgent"
@@ -63,6 +65,8 @@ const AiTypeValues: AiType[] = [
   "scriptAgent:scriptAgent",
   "productionAgent:decisionAgent",
   "musicProductionAgent:decisionAgent",
+  "musicProductionAgent:executionAgent",
+  "musicProductionAgent:supervisionAgent",
   "productionAgent:supervisionAgent",
   "productionAgent:deriveAssetsAgent",
   "productionAgent:generateAssetsAgent",
@@ -330,6 +334,8 @@ interface ImageConfig {
   referenceList?: Extract<ReferenceList, { type: "image" }>[];
   size: "1K" | "2K" | "4K";
   aspectRatio: `${number}:${number}`;
+  /** Provider-requested output count. Image flows currently leave this at the default of one. */
+  generateCount?: number;
 }
 
 interface RecoverableImageTask {

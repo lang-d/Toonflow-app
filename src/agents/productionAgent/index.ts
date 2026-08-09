@@ -20,6 +20,7 @@ import {
   type AgentModelCompletion,
   type AgentTurnResult,
 } from "@/agents/shared/streaming";
+import { runAgentRuntime } from "@/agents/shared/runtime";
 import {
   recordAgentModelStreamFinished,
   recordAgentRunEvent,
@@ -353,6 +354,88 @@ export async function runDecisionAI(ctx: AgentContext) {
   const memory = productionMemory(isolationKey);
   const priorMemory = await memory.get(text);
   await memory.add("user", text, { createTime: ctx.userMessageTime });
+  const prompt = await readBuiltinSkill("production_agent_decision.md");
+  const projectInfo = await u.db("o_project").where("id", ctx.resTool.data.projectId).first();
+  if (!projectInfo) throw new Error(`Project does not exist: ${ctx.resTool.data.projectId}`);
+  const { modelInfo, durationPolicy } = await buildProductionProjectModelContext(projectInfo);
+  const archiveDecisionFailure = async (content: string) =>
+    archiveProductionAgentTranscript({
+      runId: ctx.runContext?.runId,
+      projectId: Number(ctx.resTool.data.projectId),
+      scriptId: ctx.resTool.data.scriptId == null ? null : Number(ctx.resTool.data.scriptId),
+      agentKey: "productionAgent:decisionAgent",
+      stage: "decision",
+      subAgent: "decisionAgent",
+      name: "Decision Agent recovery",
+      content,
+    }).catch((error) => {
+      console.warn("[productionAgent] failed to archive Decision Agent recovery transcript", error);
+      return undefined;
+    });
+
+  await runAgentRuntime({
+    agentName: "productionAgent:decisionAgent",
+    agentLabel: "Production Agent",
+    modelKey: "productionAgent:decisionAgent",
+    stableInstructions: prompt,
+    objective: text,
+    initialContext: buildMemPrompt(priorMemory) + buildContinuationPrompt(ctx.continuation),
+    fixedContext: modelInfo,
+    stage: "decision",
+    subAgent: "decisionAgent",
+    projectId: Number(ctx.resTool.data.projectId),
+    scriptId: ctx.resTool.data.scriptId == null ? null : Number(ctx.resTool.data.scriptId),
+    think: ctx.thinkConfig.think,
+    thinkLevel: ctx.thinkConfig.thinlLevel,
+    abortSignal,
+    runContext: ctx.runContext,
+    message: {
+      get: () => ctx.msg,
+      set: (message) => {
+        ctx.msg = message;
+      },
+      create: () => ctx.resTool.newMessage("assistant", "视频策划"),
+    },
+    buildTools: async () => ({
+      ...memory.getTools(),
+      ...useTools({
+        resTool: ctx.resTool,
+        msg: ctx.msg,
+        toolsNames: [
+          "get_flowData",
+          "resource_access",
+          "update_agent_progress",
+          "complete_agent_run",
+          "await_user_decision",
+          "list_storyboard_generations",
+          "read_storyboard_generation",
+          "list_production_reviews",
+          "read_production_review",
+          "read_text_asset",
+          "list_director_plan_generations",
+          "read_director_plan_generation",
+        ],
+        runContext: ctx.runContext,
+        continuation: ctx.continuation,
+      }),
+      ...(await createSubAgent(ctx, { projectInfo, modelInfo, durationPolicy })),
+    }),
+    archiveFailure: archiveDecisionFailure,
+    onRepeatedContextOverflow: () => interruptedOverflowFeedback(ctx.resTool),
+    maxInactiveTurns: PRODUCTION_AGENT_MAX_INACTIVE_TURNS,
+    maxConsecutiveLengthTurns: PRODUCTION_AGENT_MAX_CONSECUTIVE_LENGTH_TURNS,
+  });
+
+  const finalMemory = ctx.runContext?.terminalIntent?.reason?.trim();
+  if (finalMemory) await memory.add("assistant:final", finalMemory, { createTime: Date.now() });
+}
+
+/** @deprecated Kept temporarily as a compatibility reference while callers migrate to the shared runtime. */
+export async function runDecisionAILegacy(ctx: AgentContext) {
+  const { isolationKey, text, abortSignal } = ctx;
+  const memory = productionMemory(isolationKey);
+  const priorMemory = await memory.get(text);
+  await memory.add("user", text, { createTime: ctx.userMessageTime });
 
   const prompt = await readBuiltinSkill("production_agent_decision.md");
 
@@ -475,6 +558,9 @@ export async function runDecisionAI(ctx: AgentContext) {
         abortModelStream: modelStreamScope.abort,
         projectId: ctx.resTool.data.projectId,
         scriptId: ctx.resTool.data.scriptId,
+        onToolResultObserved: ({ success }) => {
+          if (success && ctx.runContext?.terminalIntent) ctx.runContext.stopForTerminal();
+        },
         syncMsg: () => {
           if (ctx.msg === currentMsg) return currentMsg;
           currentMsg.complete();
@@ -711,7 +797,7 @@ async function createSubAgent(
   const { projectInfo, modelInfo } = context;
   const memory = productionMemory(parentCtx.isolationKey);
   const continuationPrompt = buildContinuationPrompt(parentCtx.continuation);
-  async function runAgent({
+  async function runAgentLegacy({
     key,
     prompt,
     system,
@@ -827,6 +913,9 @@ async function createSubAgent(
           abortModelStream: modelStreamScope.abort,
           projectId: resTool.data.projectId,
           scriptId: resTool.data.scriptId,
+          onToolResultObserved: ({ success }) => {
+            if (success && parentCtx.runContext?.terminalIntent) parentCtx.runContext.stopForTerminal();
+          },
         });
       } catch (error) {
         if (parentCtx.runContext?.terminalIntent && isAbortError(error)) {
@@ -1093,6 +1182,129 @@ async function createSubAgent(
       ...(outputAssetId ? { outputAssetId } : {}),
     } satisfies SubAgentTaskResult;
   }
+
+  async function runAgent({
+    key,
+    prompt,
+    system,
+    name,
+    memoryKey: _memoryKey,
+    stage,
+    subAgent,
+    progressTitle,
+    tools: extraTools,
+    toolNames,
+    messages,
+    modelKey,
+    archiveOutput,
+  }: {
+    key: `${string}:${string}`;
+    modelKey?: Parameters<typeof u.Ai.Text>[0];
+    prompt: string;
+    system: string;
+    name: string;
+    memoryKey: string;
+    stage: string;
+    subAgent: string;
+    progressTitle?: string;
+    tools?: Record<string, any>;
+    toolNames: string[];
+    messages?: { role: "user" | "assistant" | "system"; content: string }[];
+    archiveOutput?: boolean;
+  }) {
+    parentCtx.runContext?.markStage(stage, subAgent);
+    const resolvedModelKey = modelKey ?? key;
+    const baseMessages = messages ?? [{ role: "user" as const, content: prompt }];
+    const startupContext = baseMessages
+      .filter((message, index) => !(index === baseMessages.length - 1 && message.role === "user"))
+      .map((message) => `${message.role}: ${message.content}`)
+      .join("\n\n");
+    let activeThinking: ReturnType<ReturnType<ResTool["newMessage"]>["thinking"]> | undefined;
+
+    const createSubAgentMessage = () => {
+      const message = resTool.newMessage("assistant", name);
+      activeThinking = progressTitle ? message.thinking(progressTitle) : undefined;
+      return message;
+    };
+
+    parentCtx.msg.complete();
+    parentCtx.msg = createSubAgentMessage();
+    const result = await runAgentRuntime({
+      agentName: key,
+      agentLabel: name,
+      modelKey: resolvedModelKey,
+      stableInstructions: system,
+      objective: prompt,
+      initialContext: startupContext,
+      stage,
+      subAgent,
+      projectId: Number(resTool.data.projectId),
+      scriptId: resTool.data.scriptId == null ? null : Number(resTool.data.scriptId),
+      think: parentCtx.thinkConfig.think,
+      thinkLevel: parentCtx.thinkConfig.thinlLevel,
+      abortSignal,
+      runContext: parentCtx.runContext,
+      message: {
+        get: () => parentCtx.msg,
+        set: (message) => {
+          parentCtx.msg = message;
+        },
+        create: createSubAgentMessage,
+      },
+      buildTools: () => ({
+        ...extraTools,
+        ...useTools({
+          resTool,
+          msg: parentCtx.msg,
+          toolsNames: toolNames,
+          runContext: parentCtx.runContext,
+          continuation: parentCtx.continuation,
+          storyboardProgress: activeThinking,
+        }),
+      }),
+      onTurnFinished: () => {
+        activeThinking?.complete();
+        activeThinking = undefined;
+      },
+      onRepeatedContextOverflow: () => interruptedOverflowFeedback(resTool),
+      requireTerminalIntent: false,
+      maxInactiveTurns: PRODUCTION_AGENT_MAX_INACTIVE_TURNS,
+      maxConsecutiveLengthTurns: PRODUCTION_AGENT_MAX_CONSECUTIVE_LENGTH_TURNS,
+    });
+    activeThinking?.complete();
+
+    const fullTranscript = result.transcript.join("\n\n");
+    const continuationFailure = ["failed", "interrupted"].includes(parentCtx.runContext?.terminalIntent?.status || "");
+    let outputAssetId: number | undefined;
+    if (fullTranscript.trim() && (archiveOutput === true || continuationFailure || fullTranscript.length > 4000)) {
+      try {
+        outputAssetId = await archiveProductionAgentTranscript({
+          runId: parentCtx.runContext?.runId,
+          projectId: Number(resTool.data.projectId),
+          scriptId: resTool.data.scriptId == null ? null : Number(resTool.data.scriptId),
+          agentKey: key,
+          stage,
+          subAgent,
+          name,
+          content: fullTranscript,
+        });
+      } catch (error) {
+        console.warn("[productionAgent] failed to archive long output", error);
+      }
+    }
+
+    parentCtx.msg = resTool.newMessage("assistant", "瑙嗛绛栧垝");
+    if (parentCtx.runContext?.terminalIntent) parentCtx.runContext.stopForTerminal();
+    return {
+      text: result.lastTurn?.text || "",
+      finishReason: result.lastTurn?.finishReason || "unknown",
+      toolResults: result.toolResults,
+      interruptionCount: result.interruptionCount,
+      ...(outputAssetId ? { outputAssetId } : {}),
+    } satisfies SubAgentTaskResult;
+  }
+
+  void runAgentLegacy;
 
   const promptInput = z
     .object({

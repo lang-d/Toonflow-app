@@ -73,6 +73,34 @@ function blockedStream(onNext: () => void): AsyncIterable<never> {
   };
 }
 
+function terminalToolThenBlockedStream(onReturn: () => void): AsyncIterable<any> {
+  return {
+    [Symbol.asyncIterator]() {
+      let index = 0;
+      return {
+        next() {
+          if (index++ === 0) {
+            return Promise.resolve({
+              done: false,
+              value: {
+                type: "tool-result",
+                toolCallId: "await-user-decision-1",
+                toolName: "await_user_decision",
+                output: { recorded: true },
+              },
+            });
+          }
+          return new Promise<IteratorResult<any>>(() => undefined);
+        },
+        return() {
+          onReturn();
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      };
+    },
+  };
+}
+
 before(async () => {
   db = (await import("../src/utils/db")).db;
   agentRun = await import("../src/services/agentRun");
@@ -181,4 +209,59 @@ test("registered production abort stops the live model stream and persists a can
   }
 
   assert.equal(runRegistry.stopProductionAgentRunControl(scope.isolationKey, created.run.runId), null);
+});
+
+test("a successful terminal tool result stops a blocked parent stream and persists awaiting_user", async () => {
+  const scope = {
+    agentKey: "productionAgent",
+    projectId: 811,
+    scriptId: 812,
+    isolationKey: "811:productionAgent:812",
+  };
+  const created = await agentRun.createAgentRun({ ...scope, messageId: "terminal-tool-lifecycle" });
+  assert.equal(created.created, true);
+  if (!created.created) return;
+
+  const controller = new AbortController();
+  const runContext = agentRun.createAgentRunContext(created.run.runId);
+  const message = new FakeMessage();
+  let observed = false;
+  let iteratorReturned = false;
+  runContext.bindRootStop(() => controller.abort());
+  runContext.setAwaitingUser({ reason: "Need user confirmation." });
+
+  await assert.rejects(
+    streaming.consumeAgentTurn({
+      agentName: "productionAgent",
+      fullStream: terminalToolThenBlockedStream(() => {
+        iteratorReturned = true;
+      }),
+      initialMsg: message,
+      userAbortSignal: controller.signal,
+      idleTimeoutMs: 30_000,
+      onToolResultObserved: ({ success, toolName }: any) => {
+        observed = success && toolName === "await_user_decision";
+        if (observed && runContext.terminalIntent) runContext.stopForTerminal();
+      },
+    }),
+    { name: "AbortError", message: "Agent stream aborted" },
+  );
+
+  assert.equal(observed, true);
+  assert.equal(iteratorReturned, true);
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(runContext.abortReason, "terminal_stop");
+  assert.equal(runContext.terminalIntent?.status, "awaiting_user");
+
+  const finished = await agentRun.finishAgentRun(created.run.runId, {
+    status: runContext.terminalIntent!.status,
+    reason: runContext.terminalIntent!.reason,
+    resultJson: runContext.terminalIntent!.resultJson,
+  });
+  assert.equal(finished?.status, "awaiting_user");
+
+  const detail = await agentRun.getAgentRunDetail(created.run.runId);
+  assert.equal(detail.run?.status, "awaiting_user");
+  assert.equal(detail.timeline[0]?.eventType, "finished");
+  assert.equal(detail.timeline[0]?.status, "awaiting_user");
 });

@@ -38,6 +38,8 @@ export default async (
         table.string("imageQuality");
         table.string("musicModel");
         table.string("videoModel");
+        table.string("videoPromptType");
+        table.text("videoPromptTypeSelections");
         table.text("name");
         table.text("intro");
         table.text("type");
@@ -246,6 +248,28 @@ export default async (
             model: "",
             modelName: "",
             vendorId: null,
+            key: "musicProductionAgent:executionAgent",
+            name: "Music Production Agent: Execution",
+            desc: "Music planning, lyrics, and prompt execution",
+            temperature: 1,
+            maxOutputTokens: 0,
+            disabled: false,
+          },
+          {
+            model: "",
+            modelName: "",
+            vendorId: null,
+            key: "musicProductionAgent:supervisionAgent",
+            name: "Music Production Agent: Supervision",
+            desc: "Music plan and prompt supervision",
+            temperature: 1,
+            maxOutputTokens: 0,
+            disabled: false,
+          },
+          {
+            model: "",
+            modelName: "",
+            vendorId: null,
             key: "productionAgent:supervisionAgent",
             name: "生产Agent:监督层",
             desc: "监督层",
@@ -441,6 +465,7 @@ export default async (
         table.string("targetType");
         table.string("targetId");
         table.string("nodeId");
+        table.integer("businessId");
         table.string("status").notNullable();
         table.string("phase");
         table.float("progress");
@@ -779,6 +804,7 @@ export default async (
         table.integer("scriptId");
         table.integer("projectId");
         table.integer("videoTrackId");
+        table.text("videoPromptProfileJson");
         table.primary(["id"]);
         table.unique(["id"]);
       },
@@ -800,6 +826,7 @@ export default async (
         table.string("historyRecordId");
         table.string("providerAccountId");
         table.string("providerModelKey");
+        table.string("providerCapacityKey");
         table.integer("providerSubmittedAt");
         table.string("phase");
         table.string("status");
@@ -824,6 +851,7 @@ export default async (
         table.integer("finishTime");
         table.primary(["id"]);
         table.unique(["id"]);
+        table.index(["providerCapacityKey", "taskCenterId"], "idx_video_queue_capacity_key");
       },
     },
     {
@@ -948,6 +976,7 @@ export default async (
         table.integer("assetsId");
         table.integer("childAssetId");
         table.text("prompt");
+        table.text("promptProfileJson");
         table.text("compiledPromptJson").notNullable().defaultTo("{}");
         table.text("model");
         table.string("state").notNullable().defaultTo("complete");

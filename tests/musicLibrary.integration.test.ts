@@ -16,21 +16,24 @@ process.env.NODE_ENV = "test";
 
 let db: any;
 let library: typeof import("../src/services/musicLibrary");
+let musicDirector: typeof import("../src/services/musicDirector");
 let trimMusicLibraryVersion: typeof import("../src/services/musicAudioTrim").trimMusicLibraryVersion;
 let probeAudioDurationMs: typeof import("../src/services/musicAudioTrim").probeAudioDurationMs;
 let projectMediaDirectory: typeof import("../src/services/storagePaths").projectMediaDirectory;
 let resolveMediaFilePath: typeof import("../src/services/storagePaths").resolveMediaFilePath;
 
 before(async () => {
-  const [dbModule, libraryModule, trimModule, paths] = await Promise.all([
+  const [dbModule, libraryModule, musicDirectorModule, trimModule, paths] = await Promise.all([
     import("../src/utils/db"),
     import("../src/services/musicLibrary"),
+    import("../src/services/musicDirector"),
     import("../src/services/musicAudioTrim"),
     import("../src/services/storagePaths"),
   ]);
   db = dbModule.default;
   await dbModule.dbReady;
   library = libraryModule;
+  musicDirector = musicDirectorModule;
   trimMusicLibraryVersion = trimModule.trimMusicLibraryVersion;
   probeAudioDurationMs = trimModule.probeAudioDurationMs;
   projectMediaDirectory = paths.projectMediaDirectory;
@@ -129,6 +132,8 @@ test("legacy cue migration reuses the canonical library version without duplicat
   const canonical = await library.createMusicLibraryVersion({ projectId, editionId: Number(edition.id), model: "legacy:model", generationConfig: { durationSec: 30 } });
   const [assetsId] = await db("o_assets").insert({ projectId, name: "Audio", type: "audio", startTime: Date.now() });
   const [childAssetId] = await db("o_assets").insert({ projectId, name: "Audio.mp3", type: "audio", assetsId, startTime: Date.now() });
+  const [imageId] = await db("o_image").insert({ assetsId: childAssetId, filePath: `/${projectId}/assets/audio/legacy.mp3`, type: "audio", state: "complete" });
+  await db("o_assets").where("id", childAssetId).update({ imageId });
   await db("o_musicLibraryVersion").where("id", canonical.id).update({ assetsId, childAssetId, state: "complete" });
   await library.bindMusicCue({ projectId, cueId: Number(cueId), usageMode: "new", editionId: Number(edition.id), libraryVersionId: Number(canonical.id) });
   const [legacyCueAssetId] = await db("o_musicCueAsset").insert({ projectId, cueId, version: 1, assetsId, childAssetId, prompt: "", compiledPromptJson: "{}", model: "legacy:model", state: "complete", selected: 0, createTime: Date.now(), updateTime: Date.now() });
@@ -140,6 +145,11 @@ test("legacy cue migration reuses the canonical library version without duplicat
   assert.equal(Number((await db("o_musicCueBinding").where("cueId", cueId).first()).libraryVersionId), Number(canonical.id));
   assert.equal(Number((await db("o_musicLibraryItem").where({ projectId }).count("id as count").first()).count), 1);
   assert.equal(Number((await db("o_musicLibraryVersion").where({ projectId }).count("id as count").first()).count), 1);
+
+  const listedCue = (await musicDirector.listMusicCues({ projectId, scriptId: 301 }))[0];
+  assert.equal(Number(listedCue.assets[0].assetsId), Number(assetsId));
+  assert.equal(Number(listedCue.assets[0].audioAsset.id), Number(assetsId));
+  assert.match(listedCue.assets[0].audioAsset.sonAssets[0].src, /\/oss\/1900000000101\/assets\/audio\/legacy\.mp3/);
 });
 
 test("concurrent lyrics and prompt writes allocate unique versions and one active prompt", async () => {

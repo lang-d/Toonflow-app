@@ -4,6 +4,7 @@ import {
   AGENT_STREAM_IDLE_TIMEOUT_MS,
   AgentStreamIdleTimeoutError,
   AgentStreamLimitError,
+  AgentStreamMaxDurationError,
   agentTurnResultFromError,
   consumeAgentTurn,
   consumeFullStream,
@@ -144,6 +145,7 @@ test("agent stream completes normal reasoning and text chunks", async () => {
 
 test("structured agent turn preserves finish reason, usage, and objective tool results", async () => {
   const msg = new FakeMessage();
+  const toolLifecycle: Array<{ event: "started" | "finished"; toolCallId: string | null; toolName: string | null; success?: boolean }> = [];
   const result = await consumeAgentTurn({
     agentName: "testAgent",
     fullStream: streamChunks([
@@ -157,6 +159,12 @@ test("structured agent turn preserves finish reason, usage, and objective tool r
     }),
     initialMsg: msg,
     idleTimeoutMs: 1000,
+    onToolStarted: (input) => {
+      toolLifecycle.push({ event: "started", ...input });
+    },
+    onToolFinished: (input) => {
+      toolLifecycle.push({ event: "finished", ...input });
+    },
   });
 
   assert.equal(result.text, "done");
@@ -165,6 +173,10 @@ test("structured agent turn preserves finish reason, usage, and objective tool r
   assert.deepEqual(result.toolCalls, [{ toolCallId: "call-1", toolName: "readFacts" }]);
   assert.deepEqual(result.toolResults, [
     { toolCallId: "call-1", toolName: "readFacts", success: true, result: { ok: true } },
+  ]);
+  assert.deepEqual(toolLifecycle, [
+    { event: "started", toolCallId: "call-1", toolName: "readFacts" },
+    { event: "finished", toolCallId: "call-1", toolName: "readFacts", success: true },
   ]);
 });
 
@@ -199,7 +211,7 @@ test("agent stream idle timeout visibly errors and only aborts the model stream"
   assert.equal(userController.signal.aborted, false);
   assert.equal(msg.status, "error");
   assert.equal(msg.textStream.status, "error");
-  assert.match(msg.textStream.data, /AI 输出超过 5 分钟没有新内容/);
+  assert.match(msg.textStream.data, /AI 请求超过 5 分钟没有新活动/);
 });
 
 test("agent stream chunk error is surfaced to the message", async () => {
@@ -239,7 +251,53 @@ test("agent stream user abort stops without idle timeout text", async () => {
 
   assert.equal(msg.status, "stop");
   assert.equal(msg.textStream.status, "complete");
-  assert.doesNotMatch(msg.textStream.data, /AI 输出超过/);
+  assert.doesNotMatch(msg.textStream.data, /AI 请求超过/);
+});
+
+test("a terminal tool result can stop the root stream only after its result is observed", async () => {
+  const msg = new FakeMessage();
+  const controller = new AbortController();
+  let observed = false;
+  let iteratorReturned = false;
+  const stream: AsyncIterable<any> = {
+    [Symbol.asyncIterator]() {
+      let index = 0;
+      return {
+        next() {
+          if (index++ === 0) {
+            return Promise.resolve({
+              done: false,
+              value: { type: "tool-result", toolCallId: "terminal-1", toolName: "await_user_decision", output: { terminal: true } },
+            });
+          }
+          return new Promise<IteratorResult<any>>(() => undefined);
+        },
+        return() {
+          iteratorReturned = true;
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      };
+    },
+  };
+
+  await assert.rejects(
+    consumeAgentTurn({
+      agentName: "testAgent",
+      fullStream: stream,
+      initialMsg: msg,
+      userAbortSignal: controller.signal,
+      onToolResultObserved: ({ success, toolName }) => {
+        observed = success && toolName === "await_user_decision";
+        if (observed) controller.abort();
+      },
+      idleTimeoutMs: 1000,
+    }),
+    /Agent stream aborted/,
+  );
+
+  assert.equal(observed, true);
+  assert.equal(iteratorReturned, true);
+  assert.equal(msg.status, "stop");
 });
 
 test("tool input chunks keep the model stream active", async () => {
@@ -313,8 +371,9 @@ test("tool input byte limit still aborts oversized input", async () => {
   assert.equal(msg.status, "error");
 });
 
-test("tool execution suspends model idle timeout until its result arrives", async () => {
+test("tool execution is covered by the model idle timeout", async () => {
   const msg = new FakeMessage();
+  let modelAborted = false;
 
   async function* slowTool() {
     yield { type: "tool-call", toolCallId: "call-1", toolName: "childAgent" };
@@ -323,15 +382,55 @@ test("tool execution suspends model idle timeout until its result arrives", asyn
     yield { type: "text-delta", text: "finished" };
   }
 
-  const response = await consumeFullStream({
-    agentName: "testAgent",
-    fullStream: slowTool(),
-    initialMsg: msg,
-    idleTimeoutMs: 50,
-  });
+  await assert.rejects(
+    consumeFullStream({
+      agentName: "testAgent",
+      fullStream: slowTool(),
+      initialMsg: msg,
+      idleTimeoutMs: 50,
+      abortModelStream: () => {
+        modelAborted = true;
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentStreamIdleTimeoutError);
+      assert.equal(error.phase, "tool-running");
+      assert.deepEqual(error.activeTools, ["childAgent"]);
+      return true;
+    },
+  );
 
-  assert.equal(response, "finished");
-  assert.equal(msg.status, "complete");
+  assert.equal(modelAborted, true);
+  assert.equal(msg.status, "error");
+});
+
+test("absolute stream duration expires even while chunks continue", async () => {
+  const msg = new FakeMessage();
+  let modelAborted = false;
+
+  async function* activeForever() {
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      yield { type: "text-delta", text: "." };
+    }
+  }
+
+  await assert.rejects(
+    consumeFullStream({
+      agentName: "testAgent",
+      fullStream: activeForever(),
+      initialMsg: msg,
+      idleTimeoutMs: 100,
+      maxDurationMs: 35,
+      abortModelStream: () => {
+        modelAborted = true;
+      },
+    }),
+    AgentStreamMaxDurationError,
+  );
+
+  assert.equal(modelAborted, true);
+  assert.equal(msg.status, "error");
 });
 
 test("model idle timeout resumes after the last tool result", async () => {
@@ -340,7 +439,7 @@ test("model idle timeout resumes after the last tool result", async () => {
 
   async function* resultThenHang() {
     yield { type: "tool-call", toolCallId: "call-1", toolName: "childAgent" };
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     yield { type: "tool-result", toolCallId: "call-1", toolName: "childAgent", output: "ok" };
     await new Promise(() => undefined);
   }
@@ -362,7 +461,7 @@ test("model idle timeout resumes after the last tool result", async () => {
   assert.equal(msg.status, "error");
 });
 
-test("parallel tools keep idle timeout suspended until every result arrives", async () => {
+test("parallel tools complete when every result arrives within the idle timeout", async () => {
   const msg = new FakeMessage();
 
   async function* parallelTools() {
@@ -378,7 +477,7 @@ test("parallel tools keep idle timeout suspended until every result arrives", as
     agentName: "testAgent",
     fullStream: parallelTools(),
     initialMsg: msg,
-    idleTimeoutMs: 50,
+    idleTimeoutMs: 200,
   });
 
   assert.equal(response, "all done");

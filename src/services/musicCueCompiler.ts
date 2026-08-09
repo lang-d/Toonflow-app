@@ -81,7 +81,7 @@ export async function compileMusicCuePrompt(input: {
         durationParameter: false,
       };
   const result = await invokeAiObjectWithFallback({
-    modelKey: "productionAgent",
+    modelKey: "musicProductionAgent:executionAgent",
     label: "Music cue prompt",
     schema: promptSchema,
     system: [
@@ -197,7 +197,7 @@ export async function compileMusicLibraryPrompt(input: {
     ? resolveMusicGenerationDuration({ effectiveMusicDurationSec: requestedDurationSec, requestedDurationSec: input.requestedDurationSec, capabilities })
     : { effectiveMusicDurationSec: resolveSuggestedDuration(requestedDurationSec), generationDurationSec: undefined, hasSilentTail: false, durationParameter: false };
   const result = await invokeAiObjectWithFallback({
-    modelKey: "productionAgent",
+    modelKey: "musicProductionAgent:executionAgent",
     label: "Music library prompt",
     schema: promptSchema,
     system: [

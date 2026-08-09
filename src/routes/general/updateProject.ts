@@ -15,9 +15,11 @@ export default router.post(
     artStyle: z.string().optional().nullable(),
     videoRatio: z.string().optional().nullable(),
     projectType: z.string().optional().nullable(),
+    videoPromptType: z.string().trim().max(80).optional().nullable(),
   }),
   async (req, res) => {
     const { id, intro, type, artStyle, videoRatio, projectType } = req.body;
+    const videoPromptType = req.body.videoPromptType?.trim() || null;
 
     await u.db("o_project").where("id", id).update({
       intro,
@@ -25,6 +27,7 @@ export default router.post(
       artStyle,
       videoRatio,
       projectType,
+      videoPromptType,
     });
 
     res.status(200).send(success({ message: "修改成功" }));

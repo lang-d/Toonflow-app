@@ -222,7 +222,6 @@ export default ({ resTool, runContext, toolsNames }: ToolConfig) => {
           reason: input.summary || "",
           resultJson: { kind: "agent_completed", summary: input.summary ?? null },
         });
-        runContext.stopForTerminal();
         return { status: "completed", terminal: true, ...input };
       },
     }),
@@ -239,7 +238,6 @@ export default ({ resTool, runContext, toolsNames }: ToolConfig) => {
           reason: input.question,
           resultJson: { kind: "user_decision", ...input },
         });
-        runContext.stopForTerminal();
         return { status: "awaiting_user", terminal: true, ...input };
       },
     }),

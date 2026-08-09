@@ -136,13 +136,14 @@ declare const exports: {
   imageSubmit: (c: ImageConfig, m: ImageModel) => Promise<ImageSubmitResult>;
   imagePoll: (providerTaskId: string, m: ImageModel) => Promise<ImagePollResult>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>;
+  resolveVideoPromptModelId?: (model: VideoModel) => string | undefined;
   musicRequest: (c: MusicConfig, m: MusicModel) => Promise<string>;
   ttsRequest: (c: any, m: TTSModel) => Promise<string>;
 };
 
 const vendor: VendorConfig = {
   id: "dreamina",
-  version: "1.0",
+  version: "1.1",
   author: "ByteDance Dreamina",
   name: "即梦官方 CLI",
   description:
@@ -172,6 +173,9 @@ const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<str
   return dreaminaCli.videoRequest(config, model);
 };
 
+const resolveVideoPromptModelId = (model: VideoModel): string | undefined =>
+  /seedance(?:[-_.:]?2|2\.0)/i.test(model.modelName) ? "seedance-2" : undefined;
+
 const musicRequest = async (config: MusicConfig, model: MusicModel): Promise<string> => {
   return dreaminaCli.musicRequest(config, model);
 };
@@ -186,6 +190,7 @@ exports.imageRequest = imageRequest;
 exports.imageSubmit = imageSubmit;
 exports.imagePoll = imagePoll;
 exports.videoRequest = videoRequest;
+exports.resolveVideoPromptModelId = resolveVideoPromptModelId;
 exports.musicRequest = musicRequest;
 exports.ttsRequest = ttsRequest;
 

@@ -52,7 +52,7 @@ test("checkpoint compaction is one separate non-streaming model call without sch
   const source = fs.readFileSync(path.resolve("src/services/agentContextCompaction.ts"), "utf8");
   assert.match(source, /\.invoke\(\{/);
   assert.match(source, /maxRetries: 0/);
-  assert.match(source, /production-agent-checkpoint/);
+  assert.match(source, /agent-checkpoint/);
   assert.doesNotMatch(source, /agentWorkingContextSchema|parseAiJsonWithSchema|Output\.object/);
   assert.doesNotMatch(source, /prepareStep/);
   assert.match(source, /only when the supplied toolCalls\/toolResults prove that claim/);

@@ -6,7 +6,9 @@ export const AGENT_STREAM_MAX_TOOL_INPUT_BYTES = Number(process.env.AGENT_STREAM
 export const AGENT_STREAM_LIMIT_MESSAGE =
   "AI tool input exceeded the safety limit. The current agent run has been stopped; split the task or reduce one-shot output size.";
 export const AGENT_STREAM_IDLE_TIMEOUT_MESSAGE =
-  "AI 输出超过 5 分钟没有新内容，已自动结束本次任务，请检查模型服务或重试。";
+  "AI 请求超过 5 分钟没有新活动，已停止本次任务。请检查模型服务或重试。";
+export const AGENT_STREAM_MAX_DURATION_MESSAGE =
+  "AI 请求超过 30 分钟绝对时限，已停止本次任务。请缩小任务范围或重试。";
 
 const log = createLogger("agent-stream");
 
@@ -48,6 +50,17 @@ export type ConsumeFullStreamOptions = {
   projectId?: number | string;
   scriptId?: number | string;
   completion?: Promise<AgentModelCompletion | null>;
+  onToolStarted?: (input: { toolCallId: string | null; toolName: string | null }) => void | Promise<void>;
+  onToolFinished?: (input: {
+    toolCallId: string | null;
+    toolName: string | null;
+    success: boolean;
+  }) => void | Promise<void>;
+  onToolResultObserved?: (input: {
+    toolCallId: string | null;
+    toolName: string | null;
+    success: boolean;
+  }) => void;
 };
 
 export type AgentModelCompletion = {
@@ -86,9 +99,44 @@ export type AgentModelStreamScope = {
 };
 
 export class AgentStreamIdleTimeoutError extends Error {
-  constructor(message = AGENT_STREAM_IDLE_TIMEOUT_MESSAGE) {
+  readonly phase: AgentStreamPhase | "model_initializing";
+  readonly activeTools: string[];
+  readonly timeoutMs: number | null;
+
+  constructor(
+    message = AGENT_STREAM_IDLE_TIMEOUT_MESSAGE,
+    input: {
+      phase?: AgentStreamPhase | "model_initializing";
+      activeTools?: string[];
+      timeoutMs?: number | null;
+    } = {},
+  ) {
     super(message);
     this.name = "AgentStreamIdleTimeoutError";
+    this.phase = input.phase || "model-streaming";
+    this.activeTools = input.activeTools || [];
+    this.timeoutMs = input.timeoutMs ?? null;
+  }
+}
+
+export class AgentStreamMaxDurationError extends Error {
+  readonly phase: AgentStreamPhase | "model_initializing";
+  readonly activeTools: string[];
+  readonly timeoutMs: number | null;
+
+  constructor(
+    message = AGENT_STREAM_MAX_DURATION_MESSAGE,
+    input: {
+      phase?: AgentStreamPhase | "model_initializing";
+      activeTools?: string[];
+      timeoutMs?: number | null;
+    } = {},
+  ) {
+    super(message);
+    this.name = "AgentStreamMaxDurationError";
+    this.phase = input.phase || "model-streaming";
+    this.activeTools = input.activeTools || [];
+    this.timeoutMs = input.timeoutMs ?? null;
   }
 }
 
@@ -148,31 +196,49 @@ async function nextChunk<T>(
     userAbortSignal?: AbortSignal;
     abortModelStream?: () => void;
     idleTimeoutMs: number;
-    useIdleTimeout: boolean;
+    maxDurationMs: number;
+    elapsedMs: number;
+    idleTimeoutError: () => AgentStreamIdleTimeoutError;
+    maxDurationError: () => AgentStreamMaxDurationError;
     markIdleTimeout: () => void;
+    markMaxDuration: () => void;
   },
 ): Promise<IteratorResult<T>> {
   if (options.userAbortSignal?.aborted) throw new AgentStreamAbortError();
 
   let timer: NodeJS.Timeout | undefined;
+  let maxDurationTimer: NodeJS.Timeout | undefined;
   let abortHandler: (() => void) | undefined;
   const races: Promise<IteratorResult<T>>[] = [iterator.next()];
 
-  if (options.useIdleTimeout) {
-    races.push(
-      new Promise<IteratorResult<T>>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          options.markIdleTimeout();
-          try {
-            options.abortModelStream?.();
-          } catch {
-            // The timeout error remains authoritative if abort cleanup fails.
-          }
-          reject(new AgentStreamIdleTimeoutError());
-        }, options.idleTimeoutMs);
-      }),
-    );
-  }
+  races.push(
+    new Promise<IteratorResult<T>>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        options.markIdleTimeout();
+        try {
+          options.abortModelStream?.();
+        } catch {
+          // The timeout error remains authoritative if abort cleanup fails.
+        }
+        reject(options.idleTimeoutError());
+      }, options.idleTimeoutMs);
+    }),
+  );
+
+  const remainingDurationMs = Math.max(0, options.maxDurationMs - options.elapsedMs);
+  races.push(
+    new Promise<IteratorResult<T>>((_resolve, reject) => {
+      maxDurationTimer = setTimeout(() => {
+        options.markMaxDuration();
+        try {
+          options.abortModelStream?.();
+        } catch {
+          // The timeout error remains authoritative if abort cleanup fails.
+        }
+        reject(options.maxDurationError());
+      }, remainingDurationMs);
+    }),
+  );
 
   if (options.userAbortSignal) {
     races.push(
@@ -187,6 +253,7 @@ async function nextChunk<T>(
     return await Promise.race(races);
   } finally {
     if (timer) clearTimeout(timer);
+    if (maxDurationTimer) clearTimeout(maxDurationTimer);
     if (abortHandler) options.userAbortSignal?.removeEventListener("abort", abortHandler);
   }
 }
@@ -241,8 +308,10 @@ export async function consumeAgentTurn(options: ConsumeFullStreamOptions): Promi
   const maxToolInputBytes = options.maxToolInputBytes ?? AGENT_STREAM_MAX_TOOL_INPUT_BYTES;
   const iterator = options.fullStream[Symbol.asyncIterator]();
   const activeToolCallIds = new Set<string>();
+  const activeToolNames = new Map<string, string>();
   let phase: AgentStreamPhase = "model-streaming";
   let idleTimeoutTriggered = false;
+  let maxDurationTriggered = false;
   let msg = options.initialMsg;
   let text = msg.text();
   let thinking: ThinkingStreamLike | null = null;
@@ -288,19 +357,31 @@ export async function consumeAgentTurn(options: ConsumeFullStreamOptions): Promi
         userAbortSignal: options.userAbortSignal,
         abortModelStream: options.abortModelStream,
         idleTimeoutMs,
-        useIdleTimeout: phase === "model-streaming",
+        maxDurationMs,
+        elapsedMs: Date.now() - startedAt,
+        idleTimeoutError: () =>
+          new AgentStreamIdleTimeoutError(AGENT_STREAM_IDLE_TIMEOUT_MESSAGE, {
+            phase,
+            activeTools: [...activeToolNames.values()],
+            timeoutMs: idleTimeoutMs,
+          }),
+        maxDurationError: () =>
+          new AgentStreamMaxDurationError(AGENT_STREAM_MAX_DURATION_MESSAGE, {
+            phase,
+            activeTools: [...activeToolNames.values()],
+            timeoutMs: maxDurationMs,
+          }),
         markIdleTimeout: () => {
           idleTimeoutTriggered = true;
+        },
+        markMaxDuration: () => {
+          maxDurationTriggered = true;
         },
       });
       if (result.done) break;
 
       const chunk = result.value;
       chunkCount += 1;
-      if (Date.now() - startedAt > maxDurationMs) {
-        options.abortModelStream?.();
-        throw new AgentStreamLimitError("AI stream exceeded the maximum run duration. The current agent run has been stopped.");
-      }
       if (chunk?.type === "tool-input-delta") {
         toolInputChunkCount += 1;
         const delta = chunk?.text ?? chunk?.delta ?? chunk?.argsTextDelta ?? "";
@@ -332,8 +413,14 @@ export async function consumeAgentTurn(options: ConsumeFullStreamOptions): Promi
       if (chunk.type === "tool-call") {
         const toolCallId = getToolCallId(chunk);
         if (toolCallId) activeToolCallIds.add(toolCallId);
+        if (toolCallId) activeToolNames.set(toolCallId, getToolName(chunk) ?? "unknown");
         toolCalls.push({ toolCallId: toolCallId ?? null, toolName: getToolName(chunk) ?? null });
         setPhase("tool-running", chunk);
+        void Promise.resolve(
+          options.onToolStarted?.({ toolCallId: toolCallId ?? null, toolName: getToolName(chunk) ?? null }),
+        ).catch((error) => {
+          log.warn("Failed to record agent tool start", { event: "agent.tool-start.record-failed", ...logContext, error });
+        });
       } else if (
         chunk.type === "tool-result" ||
         chunk.type === "tool-error" ||
@@ -341,12 +428,35 @@ export async function consumeAgentTurn(options: ConsumeFullStreamOptions): Promi
       ) {
         const toolCallId = getToolCallId(chunk);
         if (toolCallId) activeToolCallIds.delete(toolCallId);
+        if (toolCallId) activeToolNames.delete(toolCallId);
         toolResults.push({
           toolCallId: toolCallId ?? null,
           toolName: getToolName(chunk) ?? null,
           success: chunk.type === "tool-result",
           result: chunk?.output ?? chunk?.result ?? chunk?.error ?? null,
         });
+        void Promise.resolve(
+          options.onToolFinished?.({
+            toolCallId: toolCallId ?? null,
+            toolName: getToolName(chunk) ?? null,
+            success: chunk.type === "tool-result",
+          }),
+        ).catch((error) => {
+          log.warn("Failed to record agent tool finish", { event: "agent.tool-finish.record-failed", ...logContext, error });
+        });
+        try {
+          options.onToolResultObserved?.({
+            toolCallId: toolCallId ?? null,
+            toolName: getToolName(chunk) ?? null,
+            success: chunk.type === "tool-result",
+          });
+        } catch (error) {
+          log.warn("Failed to handle observed agent tool result", {
+            event: "agent.tool-result.observer-failed",
+            ...logContext,
+            error,
+          });
+        }
         if (activeToolCallIds.size === 0) setPhase("model-streaming", chunk);
       }
 
@@ -405,18 +515,33 @@ export async function consumeAgentTurn(options: ConsumeFullStreamOptions): Promi
 
     if (
       err instanceof AgentStreamIdleTimeoutError ||
-      (idleTimeoutTriggered && isAbortError(err) && !options.userAbortSignal?.aborted)
+      err instanceof AgentStreamMaxDurationError ||
+      ((idleTimeoutTriggered || maxDurationTriggered) && isAbortError(err) && !options.userAbortSignal?.aborted)
     ) {
       const timeoutError =
-        err instanceof AgentStreamIdleTimeoutError ? err : new AgentStreamIdleTimeoutError();
+        err instanceof AgentStreamIdleTimeoutError || err instanceof AgentStreamMaxDurationError
+          ? err
+          : maxDurationTriggered
+            ? new AgentStreamMaxDurationError(AGENT_STREAM_MAX_DURATION_MESSAGE, {
+                phase,
+                activeTools: [...activeToolNames.values()],
+                timeoutMs: maxDurationMs,
+              })
+            : new AgentStreamIdleTimeoutError(AGENT_STREAM_IDLE_TIMEOUT_MESSAGE, {
+                phase,
+                activeTools: [...activeToolNames.values()],
+                timeoutMs: idleTimeoutMs,
+              });
       Promise.resolve(iterator.return?.()).catch(() => undefined);
       text.append(timeoutError.message);
       text.error();
       msg.error(timeoutError.message);
-      log.warn("Agent stream idle timeout", {
-        event: "agent.stream.idle-timeout",
+      const finishReason = timeoutError instanceof AgentStreamMaxDurationError ? "max-duration" : "idle-timeout";
+      log.warn("Agent stream timeout", {
+        event: `agent.stream.${finishReason}`,
         ...logContext,
         phase,
+        activeTools: [...activeToolNames.values()],
         activeToolCount: activeToolCallIds.size,
         chunkCount,
         durationMs: Date.now() - startedAt,
@@ -426,7 +551,7 @@ export async function consumeAgentTurn(options: ConsumeFullStreamOptions): Promi
         turnResult({
           text: fullResponse,
           state: "interrupted",
-          completion: { finishReason: "idle-timeout" },
+          completion: { finishReason },
           toolCalls,
           toolResults,
         }),
@@ -435,6 +560,7 @@ export async function consumeAgentTurn(options: ConsumeFullStreamOptions): Promi
     }
 
     if (isAbortError(err) || options.userAbortSignal?.aborted) {
+      Promise.resolve(iterator.return?.()).catch(() => undefined);
       text.complete();
       msg.stop();
       log.info("Agent stream aborted", {

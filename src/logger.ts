@@ -38,6 +38,7 @@ export interface LoggerStatus {
   totalSize: number;
   recentErrors: Array<Record<string, unknown>>;
   lastLogAtByRole: Record<string, number>;
+  outputSinks: Record<OutputSink, { available: boolean; failure?: { time: string; code: string; message: string } }>;
 }
 
 const DEFAULT_RETENTION_DAYS = 7;
@@ -48,6 +49,7 @@ const BASE64_PATTERN = /data:[^;]+;base64,[A-Za-z0-9+/=\r\n]+/gi;
 const ANSI_PATTERN = /\x1B\[[0-9;]*m/g;
 
 type ConsoleMethod = (...args: unknown[]) => void;
+type OutputSink = "stdout" | "stderr";
 
 let currentRole: LogRole = process.env.TOONFLOW_RUNTIME_ROLE || "script";
 let rootLogDir = path.join(appDataRoot(), "logs");
@@ -59,6 +61,9 @@ let originalConsole: Partial<Record<"log" | "info" | "warn" | "error" | "debug",
 let originalStdoutWrite: typeof process.stdout.write | null = null;
 let originalStderrWrite: typeof process.stderr.write | null = null;
 let writingRaw = false;
+const outputSinkAvailable: Record<OutputSink, boolean> = { stdout: true, stderr: true };
+let outputErrorListeners: Partial<Record<OutputSink, (error: Error) => void>> = {};
+let outputSinkFailures: Partial<Record<OutputSink, { time: string; code: string; message: string }>> = {};
 
 function dateKey(time = Date.now()) {
   return new Date(time).toISOString().slice(0, 10);
@@ -161,6 +166,62 @@ function consoleMethod(level: LogLevel): "log" | "info" | "warn" | "error" | "de
   return "info";
 }
 
+function outputSinkForLevel(level: LogLevel): OutputSink {
+  return level === "error" || level === "warn" ? "stderr" : "stdout";
+}
+
+function isBrokenOutputError(error: unknown) {
+  const code = String((error as { code?: unknown } | null)?.code || "").toUpperCase();
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED" || code === "ERR_STREAM_WRITE_AFTER_END";
+}
+
+function disableOutputSink(sink: OutputSink, error?: unknown) {
+  if (!outputSinkAvailable[sink]) return;
+  outputSinkAvailable[sink] = false;
+  if (!initialized || !error) return;
+  const failure = {
+    time: new Date().toISOString(),
+    code: String((error as { code?: unknown } | null)?.code || "OUTPUT_SINK_UNAVAILABLE"),
+    message: String((error as { message?: unknown } | null)?.message || error),
+  };
+  outputSinkFailures[sink] = failure;
+  // The failed sink has already been disabled, so this durable JSONL event cannot recurse through it.
+  writeLog("error", `Output mirror unavailable: ${sink}`, {
+    module: "logger",
+    event: "output-sink-unavailable",
+    outputSink: sink,
+    outputErrorCode: failure.code,
+    error,
+  });
+}
+
+function installOutputErrorListener(sink: OutputSink) {
+  if (outputErrorListeners[sink]) return;
+  const stream = sink === "stdout" ? process.stdout : process.stderr;
+  const listener = (error: Error) => {
+    // Never use console or writeLog here: this listener exists precisely because that output path failed.
+    if (isBrokenOutputError(error)) disableOutputSink(sink, error);
+  };
+  stream.on("error", listener);
+  outputErrorListeners[sink] = listener;
+}
+
+function installOutputErrorListeners() {
+  installOutputErrorListener("stdout");
+  installOutputErrorListener("stderr");
+}
+
+function removeOutputErrorListeners() {
+  for (const sink of ["stdout", "stderr"] as const) {
+    const listener = outputErrorListeners[sink];
+    if (listener) (sink === "stdout" ? process.stdout : process.stderr).removeListener("error", listener);
+  }
+  outputErrorListeners = {};
+  outputSinkAvailable.stdout = true;
+  outputSinkAvailable.stderr = true;
+  outputSinkFailures = {};
+}
+
 function formatConsole(level: LogLevel, entry: Record<string, unknown>) {
   const moduleName = entry.module ? `[${entry.module}]` : "";
   const eventName = entry.event ? ` ${entry.event}` : "";
@@ -190,7 +251,7 @@ export function writeLog(level: LogLevel, message: string, context: LogContext =
   if (diagnosticFile) entry.diagnosticFile = diagnosticFile;
   getStream(role, channel).write(line);
   const original = originalConsole[consoleMethod(level)];
-  if (original) {
+  if (original && outputSinkAvailable[outputSinkForLevel(level)]) {
     writingRaw = true;
     try {
       original(formatConsole(level, entry));
@@ -240,11 +301,29 @@ function hijackConsole() {
   originalStderrWrite = process.stderr.write.bind(process.stderr);
   process.stdout.write = ((chunk: any, ...rest: any[]) => {
     writeRaw("info", chunk);
-    return originalStdoutWrite!(chunk, ...rest);
+    if (!outputSinkAvailable.stdout) return true;
+    try {
+      return originalStdoutWrite!(chunk, ...rest);
+    } catch (error) {
+      if (isBrokenOutputError(error)) {
+        disableOutputSink("stdout", error);
+        return true;
+      }
+      throw error;
+    }
   }) as typeof process.stdout.write;
   process.stderr.write = ((chunk: any, ...rest: any[]) => {
     writeRaw("error", chunk);
-    return originalStderrWrite!(chunk, ...rest);
+    if (!outputSinkAvailable.stderr) return true;
+    try {
+      return originalStderrWrite!(chunk, ...rest);
+    } catch (error) {
+      if (isBrokenOutputError(error)) {
+        disableOutputSink("stderr", error);
+        return true;
+      }
+      throw error;
+    }
   }) as typeof process.stderr.write;
   hijacked = true;
 }
@@ -258,6 +337,7 @@ export function initLogger(options: LoggerInitOptions = {}) {
     if (!originalConsole[method]) originalConsole[method] = console[method].bind(console);
   }
   if (options.hijackConsole) hijackConsole();
+  installOutputErrorListeners();
   initialized = true;
   return logger;
 }
@@ -277,6 +357,7 @@ export function closeLogger() {
     originalStderrWrite = null;
     hijacked = false;
   }
+  removeOutputErrorListeners();
   initialized = false;
 }
 
@@ -354,6 +435,10 @@ export function getLoggerStatus(): LoggerStatus {
     totalSize,
     recentErrors: readRecentErrors(files),
     lastLogAtByRole,
+    outputSinks: {
+      stdout: { available: outputSinkAvailable.stdout, failure: outputSinkFailures.stdout },
+      stderr: { available: outputSinkAvailable.stderr, failure: outputSinkFailures.stderr },
+    },
   };
 }
 

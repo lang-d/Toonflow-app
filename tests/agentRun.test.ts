@@ -270,6 +270,26 @@ test("model-declared completion is a distinct terminal intent", () => {
   assert.equal(context.terminalIntent?.reason, "Read-only analysis is complete");
 });
 
+test("terminal intent keeps the first declaration and respects a user cancellation", () => {
+  const controller = new AbortController();
+  const context = service.createAgentRunContext("terminal-root-stop-test");
+  context.bindRootStop(() => controller.abort());
+  context.setAwaitingUser({ stage: "review", reason: "Needs a user decision" });
+  context.stopForTerminal();
+  context.setCompleted({ stage: "review", reason: "Late completion must not replace the decision" });
+
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(context.abortReason, "terminal_stop");
+  assert.equal(context.terminalIntent?.status, "awaiting_user");
+
+  const cancelled = service.createAgentRunContext("user-stop-wins-test");
+  cancelled.abortReason = "user_stop";
+  cancelled.setAwaitingUser({ stage: "review", reason: "Late tool result" });
+  cancelled.stopForTerminal();
+  assert.equal(cancelled.terminalIntent, undefined);
+  assert.equal(cancelled.abortReason, "user_stop");
+});
+
 test("context overflow counting is shared by every Turn and Subagent in one Run", () => {
   const context = service.createAgentRunContext("overflow-count-context");
   assert.equal(context.recordContextOverflow(), 1);

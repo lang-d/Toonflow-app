@@ -11,8 +11,8 @@ export const MAX_AGENT_TOOL_RESULT_CHARS = 12_000;
 export const MAX_AGENT_TURN_TOOL_RESULTS_CHARS = 24_000;
 export const MAX_AGENT_COMPACTION_ASSISTANT_CHARS = 12_000;
 export const MAX_AGENT_COMPACTION_TOOL_RESULTS_CHARS = MAX_AGENT_TURN_TOOL_RESULTS_CHARS;
-export const AGENT_CHECKPOINT_START = "<production-agent-checkpoint>";
-export const AGENT_CHECKPOINT_END = "</production-agent-checkpoint>";
+export const AGENT_CHECKPOINT_START = "<agent-checkpoint>";
+export const AGENT_CHECKPOINT_END = "</agent-checkpoint>";
 
 export type AgentTurnContextBoundary = {
   reason: "resolved_capacity";
@@ -31,7 +31,7 @@ export type ProductionAgentTurnInputGuard = {
   budget: ReturnType<typeof calculateAgentContextBudget>;
 };
 
-const AGENT_CHECKPOINT_SYSTEM = `You are the same Production Agent preserving your own working state across a technical context boundary. This is not a neutral summary and not a professional re-review. Do not call tools. Preserve the user objective and constraints, confirmed decisions, completed work, pending work, material findings with evidence references, exact completed ranges or cursors, and formal artifact or tool-result references. Do not invent completion or new findings. A tool may be recorded as actually called, successful, failed, or available only when the supplied toolCalls/toolResults prove that claim. A tool name mentioned only in assistantOutput is an unverified idea: omit it or explicitly label it unverified, and never promote it to a system capability or completed action. Keep the checkpoint concise enough to continue the same task without restarting completed work.
+const AGENT_CHECKPOINT_SYSTEM = `You are the same Agent preserving your own working state across a technical context boundary. This is not a neutral summary and not a professional re-review. Do not call tools. Preserve the user objective and constraints, confirmed decisions, completed work, pending work, material findings with evidence references, exact completed ranges or cursors, and formal artifact or tool-result references. Do not invent completion or new findings. A tool may be recorded as actually called, successful, failed, or available only when the supplied toolCalls/toolResults prove that claim. A tool name mentioned only in assistantOutput is an unverified idea: omit it or explicitly label it unverified, and never promote it to a system capability or completed action. Keep the checkpoint concise enough to continue the same task without restarting completed work.
 
 Return only one checkpoint enclosed by the exact markers ${AGENT_CHECKPOINT_START} and ${AGENT_CHECKPOINT_END}. The text inside may use natural-language headings and lists. Do not return JSON, Markdown fences, commentary outside the markers, or null.`;
 
@@ -69,7 +69,7 @@ export async function resolveAgentContextBudget(modelKey: Parameters<typeof u.Ai
 }
 
 function workingContextPrompt(objective: string, context: string) {
-  return `Create a compact replacement working checkpoint for continuing the same Production Agent task. Stable workflow and Skill instructions are supplied separately on every Turn and must not be copied into this checkpoint.
+  return `Create a compact replacement working checkpoint for continuing the same Agent task. Stable workflow and Skill instructions are supplied separately on every Turn and must not be copied into this checkpoint.
 
 Preserve the user's objective and constraints, confirmed decisions, completed work, pending work, material model-authored findings with their evidence references, exact completed data ranges or pagination cursors, and references to formal artifacts or recent tool results. Do not invent completion, quality conclusions, remaining ranges, or professional judgments. Database facts and tool outputs remain authoritative and should be represented by references rather than copied in full. Distinguish assistant plans from actual execution: only the supplied toolCalls/toolResults establish that a named tool was called or returned a result.
 

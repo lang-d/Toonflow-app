@@ -4,6 +4,7 @@ import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { createUnifiedTask, formatUnifiedTaskEnvelope } from "@/services/taskCoordinator";
+import { assertVideoPromptTypeForModel } from "@/services/videoPromptCompiler";
 
 const router = express.Router();
 const referenceSchema = z.object({
@@ -21,12 +22,14 @@ export default router.post(
     mode: z.string(),
     promptPrefix: z.string().optional(),
     promptSuffix: z.string().optional(),
+    videoPromptType: z.string().trim().max(80).optional().nullable(),
   }),
   async (req, res) => {
-    const { trackId, projectId, info, model, mode, promptPrefix, promptSuffix } = req.body;
+    const { trackId, projectId, info, model, mode, promptPrefix, promptSuffix, videoPromptType } = req.body;
     try {
       const track = await u.db("o_videoTrack").where({ id: trackId, projectId }).first();
       if (!track) throw new Error("轨道不存在或不属于当前项目");
+      await assertVideoPromptTypeForModel(model, videoPromptType);
       await u.db("o_videoTrack").where({ id: trackId }).update({ state: "生成中", reason: "" });
       const task = await createUnifiedTask({
         projectId,
@@ -49,6 +52,7 @@ export default router.post(
           mode,
           promptPrefix,
           promptSuffix,
+          videoPromptType,
         },
         priority: 100,
         maxAttempts: 1,

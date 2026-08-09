@@ -123,6 +123,7 @@ declare const exports: {
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any;
   imageRequest: (c: ImageConfig, m: ImageModel) => Promise<string>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>;
+  resolveVideoPromptModelId?: (model: VideoModel) => string | undefined;
   ttsRequest: (c: TTSConfig, m: TTSModel) => Promise<string>;
   checkForUpdates?: () => Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }>;
   updateVendor?: () => Promise<string>;
@@ -144,7 +145,7 @@ const TIMEOUT = 120_000;
 
 const vendor: VendorConfig = {
   id: "volcengineSd2",
-  version: "2.0",
+  version: "2.1",
   author: "toonflow",
   name: "火山引擎sd2.0真人",
   description: "火山引擎豆包大模型，支持文本、图片生成、视频生成等能力。\n\n需要在[火山引擎控制台](https://console.volcengine.com/ark)获取API密钥。",
@@ -820,8 +821,11 @@ const ttsRequest = async (config: TTSConfig, model: TTSModel): Promise<string> =
   return "";
 };
 
+const resolveVideoPromptModelId = (model: VideoModel): string | undefined =>
+  /^doubao-seedance-2-0(?:-fast)?-/.test(model.modelName) ? "seedance-2" : undefined;
+
 const checkForUpdates = async (): Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }> => {
-  return { hasUpdate: false, latestVersion: "2.0", notice: "" };
+  return { hasUpdate: false, latestVersion: "2.1", notice: "" };
 };
 
 const updateVendor = async (): Promise<string> => {
@@ -836,6 +840,7 @@ exports.vendor = vendor;
 exports.textRequest = textRequest;
 exports.imageRequest = imageRequest;
 exports.videoRequest = videoRequest;
+exports.resolveVideoPromptModelId = resolveVideoPromptModelId;
 exports.ttsRequest = ttsRequest;
 exports.checkForUpdates = checkForUpdates;
 exports.updateVendor = updateVendor;

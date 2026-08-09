@@ -18,7 +18,6 @@ import { isEletron } from "@/utils/getPath";
 import { isThumbnailImagePath, ThumbnailSize } from "@/utils/image";
 import { apiContract } from "@/middleware/apiContract";
 import { dbReady } from "@/utils/db";
-import { startVideoGenerationQueue, stopVideoGenerationQueue } from "@/utils/videoGenerationQueue";
 import { getTokenKey } from "@/services/authToken";
 import { enqueueThumbnail } from "@/services/thumbnailQueue";
 import { RUNTIME_API_HOST, RUNTIME_API_PORT } from "@/runtime/runtimeProtocol";
@@ -78,8 +77,6 @@ async function startServeOnce(options: { startQueue?: boolean; portRetryMs?: num
     event: "skills.builtin-production-workflow-sync",
     ...productionWorkflowSkillSync,
   });
-  if (options.startQueue !== false) startVideoGenerationQueue();
-
   await u.writeVersion();
   const io = new Server(server, { cors: { origin: "*" } });
   socketInit(io);
@@ -338,7 +335,6 @@ export default function startServe(options: { startQueue?: boolean; portRetryMs?
 
 // 支持await关闭
 export async function closeServe(): Promise<void> {
-  await stopVideoGenerationQueue();
   return new Promise((resolve, reject) => {
     if (server) {
       server.close((err?: Error) => {

@@ -122,6 +122,7 @@ declare const exports: {
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any;
   imageRequest: (c: ImageConfig, m: ImageModel) => Promise<string>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>;
+  resolveVideoPromptModelId?: (model: VideoModel) => string | undefined;
   ttsRequest: (c: TTSConfig, m: TTSModel) => Promise<string>;
   checkForUpdates?: () => Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }>;
   updateVendor?: () => Promise<string>;
@@ -133,7 +134,7 @@ declare const exports: {
 
 const vendor: VendorConfig = {
   id: "atlascloud",
-  version: "1.0",
+  version: "1.1",
   author: "AtlasCloud",
   name: "AtlasCloud MASS",
   description: "AtlasCloud 全模态平台接入 Toonflow。默认按官方文档填写文本、图片、视频与任务轮询路径。",
@@ -312,6 +313,11 @@ const resolveAtlasVideoModelKind = (modelName: string): AtlasVideoModelKind => {
   if (/^bytedance\/seedance-2\.0(?:-fast)?\/image-to-video$/.test(modelName)) return "seedanceImageToVideo";
   if (/^bytedance\/seedance-2\.0(?:-fast)?\/text-to-video$/.test(modelName)) return "seedanceTextToVideo";
   return "generic";
+};
+
+const resolveVideoPromptModelId = (model: VideoModel): string | undefined => {
+  const kind = resolveAtlasVideoModelKind(model.modelName);
+  return kind.startsWith("seedance") ? "seedance-2" : undefined;
 };
 
 const clampNumber = (value: unknown, min: number, max: number, fallback: number): number => {
@@ -582,6 +588,7 @@ exports.vendor = vendor;
 exports.textRequest = textRequest;
 exports.imageRequest = imageRequest;
 exports.videoRequest = videoRequest;
+exports.resolveVideoPromptModelId = resolveVideoPromptModelId;
 exports.ttsRequest = ttsRequest;
 exports.checkForUpdates = checkForUpdates;
 exports.updateVendor = updateVendor;

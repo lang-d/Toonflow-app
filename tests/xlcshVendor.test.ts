@@ -17,6 +17,14 @@ class FakeFormData {
   getHeaders() {
     return { "content-type": "multipart/form-data; boundary=xlcsh-test" };
   }
+
+  getLength(callback: (error: Error | null, length?: number) => void) {
+    const length = this.fields.reduce((total, field) => {
+      const valueLength = typeof field.value === "string" ? Buffer.byteLength(field.value) : Number(field.value?.length || 0);
+      return total + valueLength + 96;
+    }, 0) + 32;
+    callback(null, length);
+  }
 }
 
 function loadVendor(options: {
@@ -25,6 +33,7 @@ function loadVendor(options: {
   createError?: any;
   pollError?: any;
   buffer?: any;
+  fitImagesForMultipartBudget?: (images: string[], maxBytes: number) => Promise<string[]>;
 } = {}) {
   const calls: AxiosCall[] = [];
   const pollCalls: Array<{ interval: number; timeout: number }> = [];
@@ -58,6 +67,7 @@ function loadVendor(options: {
       axios,
       Buffer: options.buffer || Buffer,
       FormData: FakeFormData,
+      fitImagesForMultipartBudget: options.fitImagesForMultipartBudget || (async (images: string[]) => images),
       pollTask,
       logger: () => {},
       urlToBase64: async (url: string) => `data:video/mp4;base64,from:${url}`,
@@ -86,10 +96,10 @@ function formValues(form: FakeFormData, key: string) {
   return form.fields.filter((field) => field.key === key).map((field) => field.value);
 }
 
-test("XLCSH 2.0 exposes the three documented Seedance models", () => {
+test("XLCSH 2.0 exposes the three documented Seedance models and their canonical prompt model ID", () => {
   const runtime = loadVendor();
   assert.equal(runtime.exports.vendor.id, "xlcsh");
-  assert.equal(runtime.exports.vendor.version, "2.0");
+  assert.equal(runtime.exports.vendor.version, "2.0.2");
   assert.equal(runtime.exports.vendor.inputValues.baseUrl, "https://new.xlcsh.top/v1");
   assert.deepEqual(runtime.exports.vendor.models.map((model: any) => model.modelName), [
     "seedance-2.0",
@@ -100,6 +110,7 @@ test("XLCSH 2.0 exposes the three documented Seedance models", () => {
     assert.deepEqual(model.mode, ["text", "singleImage", "startEndRequired", ["imageReference:9", "audioReference:3"]]);
     assert.equal(model.durationResolutionMap[0].duration.length, 60);
     assert.deepEqual(model.durationResolutionMap[0].resolution, ["480p", "720p", "1080p", "4k"]);
+    assert.equal(runtime.exports.resolveVideoPromptModelId(model), "seedance-2");
   }
 });
 
@@ -229,6 +240,40 @@ test("XLCSH rejects invalid media contracts before submitting a paid request", a
     totalRuntime.exports.vendor.models[0],
   ));
   assert.equal(totalRuntime.calls.length, 0);
+});
+
+test("XLCSH adapts only oversized image uploads and keeps multipart field mapping intact", async () => {
+  const originalStart = image("oversized-start");
+  const originalEnd = image("oversized-end");
+  const fittedStart = image("fitted-start").replace("image/png", "image/webp");
+  const fittedEnd = image("fitted-end").replace("image/png", "image/webp");
+  const largeInputs = new Set([originalStart.split(",")[1], originalEnd.split(",")[1]]);
+  const fitCalls: Array<{ images: string[]; budget: number }> = [];
+  const runtime = loadVendor({
+    buffer: {
+      from: (value: string) => ({ length: largeInputs.has(value) ? 7 * 1024 * 1024 : Buffer.from(value, "base64").length }),
+    },
+    fitImagesForMultipartBudget: async (images, budget) => {
+      fitCalls.push({ images, budget });
+      return [fittedStart, fittedEnd];
+    },
+  });
+
+  await runtime.exports.videoRequest(videoConfig({
+    referenceList: [
+      { type: "image", sourceType: "base64", base64: originalStart },
+      { type: "image", sourceType: "base64", base64: originalEnd },
+    ],
+    mode: ["startEndRequired"],
+  }), runtime.exports.vendor.models[0]);
+
+  assert.equal(fitCalls.length, 1);
+  assert.deepEqual(fitCalls[0].images, [originalStart, originalEnd]);
+  assert.ok(fitCalls[0].budget > 0 && fitCalls[0].budget < 12 * 1024 * 1024);
+  const form = runtime.calls[0].body as FakeFormData;
+  assert.equal(formValues(form, "input_start_image")[0].length, Buffer.from("fitted-start").length);
+  assert.equal(formValues(form, "input_end_image")[0].length, Buffer.from("fitted-end").length);
+  await new Promise<void>((resolve, reject) => form.getLength((error, length) => error ? reject(error) : (length! <= 12 * 1024 * 1024 ? resolve() : reject(new Error("multipart remained oversized")))));
 });
 
 test("XLCSH surfaces missing task IDs, failed tasks, malformed completions, and provider errors", async () => {

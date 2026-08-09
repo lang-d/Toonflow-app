@@ -122,9 +122,16 @@ export async function activeMigrationBlockers(database: any = db) {
     )
     .select("taskId", "taskType", "status", "phase", "projectId");
   const video = await database("o_videoGenerationTask")
-    .whereIn("status", ACTIVE_PROVIDER_STATUSES)
-    .select("id", "status", "phase", "projectId", "submitId");
-  return { unified, video, count: unified.length + video.length };
+    .join("o_tasks", "o_tasks.id", "o_videoGenerationTask.taskCenterId")
+    .whereIn("o_tasks.status", ACTIVE_PROVIDER_STATUSES)
+    .select(
+      "o_videoGenerationTask.id",
+      "o_videoGenerationTask.projectId",
+      "o_videoGenerationTask.submitId",
+      "o_tasks.status",
+      "o_tasks.phase",
+    );
+  return { unified, video, count: unified.length };
 }
 
 export async function activeStorageMigrationTasks(database: any = db) {

@@ -122,6 +122,7 @@ declare const exports: {
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any;
   imageRequest: (c: ImageConfig, m: ImageModel) => Promise<string>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>;
+  resolveVideoPromptModelId?: (model: VideoModel) => string | undefined;
   ttsRequest: (c: TTSConfig, m: TTSModel) => Promise<string>;
   checkForUpdates?: () => Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }>;
   updateVendor?: () => Promise<string>;
@@ -133,7 +134,7 @@ declare const exports: {
 
 const vendor: VendorConfig = {
   id: "toonflow",
-  version: "3.0",
+  version: "3.1",
   author: "Toonflow",
   name: "Toonflow官方中转平台",
   description:
@@ -683,6 +684,12 @@ const ttsRequest = async (config: TTSConfig, model: TTSModel): Promise<string> =
   return "";
 };
 
+const resolveVideoPromptModelId = (model: VideoModel): string | undefined => {
+  if (model.modelName === "wan2.6") return "wan-2.6";
+  if (model.modelName === "Seedance 2.0") return "seedance-2";
+  return undefined;
+};
+
 const checkForUpdates = async (): Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }> => {
   const apiKey = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
   const baseUrl = vendor.inputValues.baseUrl;
@@ -731,6 +738,7 @@ exports.vendor = vendor;
 exports.textRequest = textRequest;
 exports.imageRequest = imageRequest;
 exports.videoRequest = videoRequest;
+exports.resolveVideoPromptModelId = resolveVideoPromptModelId;
 exports.ttsRequest = ttsRequest;
 exports.checkForUpdates = checkForUpdates;
 exports.updateVendor = updateVendor;

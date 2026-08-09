@@ -37,7 +37,9 @@ export type AgentRunContext = {
   contextOverflowCount: number;
   latestContextCheckpoint?: string;
   abortReason?: "user_stop" | "terminal_stop" | "replaced" | "timeout";
+  rootStop?: () => void;
   requestStop?: () => void;
+  bindRootStop(stop: () => void): void;
   markStage(stage: string, subAgent?: string): void;
   updateProgress(input: AgentRunProgressInput): Promise<void>;
   setPendingDecision(input: Omit<AgentRunTerminalIntent, "status">): void;
@@ -122,6 +124,7 @@ function normalizeRun(row: any) {
 
 const AGENT_RUN_TIMELINE_KIND: Record<string, string> = {
   agent_progress: "agent_progress",
+  agent_task_submitted: "agent_task_submitted",
   agent_output_archived: "agent_output_archived",
   stage: "stage",
   storyboard_table_decision_received: "storyboard_table_decision",
@@ -143,12 +146,18 @@ const AGENT_RUN_TIMELINE_KIND: Record<string, string> = {
   agent_turn_interrupted: "agent_turn_interrupted",
   agent_turn_continued: "agent_turn_continued",
   agent_turn_context_boundary: "agent_turn_context_boundary",
+  agent_turn_phase: "agent_turn_phase",
+  agent_turn_timeout: "agent_turn_timeout",
+  agent_tool_started: "agent_tool_started",
+  agent_tool_finished: "agent_tool_finished",
   agent_tool_result: "agent_tool_result",
   agent_context_compacted: "agent_context_compacted",
   agent_context_compaction_failed: "agent_context_compaction_failed",
   agent_resumable_checkpoint: "agent_resumable_checkpoint",
   agent_run_resumed_from: "agent_run_resumed_from",
   agent_continuation_exhausted: "agent_continuation_exhausted",
+  agent_terminal_correction_scheduled: "agent_terminal_correction_scheduled",
+  agent_terminal_correction_failed: "agent_terminal_correction_failed",
   terminal_declaration_missing: "terminal_declaration_missing",
   finished: "finished",
 };
@@ -563,6 +572,13 @@ export async function getAgentRunDetail(runId: string, knex = u.db) {
 }
 
 export function createAgentRunContext(runId: string): AgentRunContext {
+  const setTerminalIntent = (status: AgentRunTerminalIntent["status"], input: Omit<AgentRunTerminalIntent, "status">) => {
+    // A user cancellation is authoritative. The first declared terminal state is
+    // also final, so a late model/tool callback cannot revive or replace it.
+    if (context.abortReason === "user_stop" || context.terminalIntent) return;
+    context.terminalIntent = { ...input, status };
+    context.pendingDecision = undefined;
+  };
   const context: AgentRunContext = {
     runId,
     contextOverflowCount: 0,
@@ -580,20 +596,20 @@ export function createAgentRunContext(runId: string): AgentRunContext {
     clearPendingDecision() {
       context.pendingDecision = undefined;
     },
+    bindRootStop(stop) {
+      context.rootStop = stop;
+    },
     setCompleted(input) {
-      context.terminalIntent = { ...input, status: "completed" };
-      context.pendingDecision = undefined;
+      setTerminalIntent("completed", input);
     },
     setAwaitingUser(input) {
-      context.terminalIntent = { ...input, status: "awaiting_user" };
-      context.pendingDecision = undefined;
+      setTerminalIntent("awaiting_user", input);
     },
     setFailed(input) {
-      context.terminalIntent = { ...input, status: "failed" };
+      setTerminalIntent("failed", input);
     },
     setInterrupted(input) {
-      context.terminalIntent = { ...input, status: "interrupted" };
-      context.pendingDecision = undefined;
+      setTerminalIntent("interrupted", input);
     },
     recordContextOverflow() {
       context.contextOverflowCount += 1;
@@ -603,8 +619,9 @@ export function createAgentRunContext(runId: string): AgentRunContext {
       context.latestContextCheckpoint = checkpoint;
     },
     stopForTerminal() {
+      if (context.abortReason === "user_stop") return;
       context.abortReason = "terminal_stop";
-      context.requestStop?.();
+      (context.rootStop || context.requestStop)?.();
     },
   };
   return context;

@@ -51,3 +51,14 @@ test("video generation endpoints reject unavailable models before enqueueing", (
     );
   }
 });
+
+test("workbench endpoints validate a requested video prompt type before creating work", () => {
+  const endpointNames = ["generateVideoPrompt.ts", "batchGeneratePrompt.ts", "generateVideo.ts", "batchGenerateVideo.ts"];
+  for (const fileName of endpointNames) {
+    const source = fs.readFileSync(
+      path.join(root, "src", "routes", "production", "workbench", fileName),
+      "utf8",
+    );
+    assert.match(source, /assertVideoPromptTypeForModel\(model, videoPromptType\)/, fileName);
+  }
+});

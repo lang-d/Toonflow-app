@@ -46,6 +46,8 @@ before(async () => {
   await db.schema.createTable("o_project", (table: any) => {
     table.integer("id").primary();
     table.string("videoModel");
+    table.string("videoPromptType");
+    table.text("videoPromptTypeSelections");
     table.text("mode");
     table.string("artStyle");
   });
@@ -78,6 +80,7 @@ before(async () => {
     table.string("reviewState");
     table.text("reviewIssuesJson");
     table.text("prompt");
+    table.text("promptProfileJson");
   });
   await db.schema.createTable("o_storyboard", (table: any) => {
     table.integer("id").primary();
@@ -147,6 +150,7 @@ before(async () => {
     table.string("filePath");
     table.string("state");
     table.string("errorReason");
+    table.text("videoPromptProfileJson");
   });
   await db.schema.createTable("o_directorAsset", (table: any) => {
     table.increments("id");
@@ -187,6 +191,10 @@ before(async () => {
     table.string("vendorId");
     table.string("model");
     table.string("path");
+  });
+  await db.schema.createTable("o_vendorConfig", (table: any) => {
+    table.string("id").primary();
+    table.text("models");
   });
   await db.schema.createTable("o_prompt", (table: any) => {
     table.string("type");
@@ -463,6 +471,25 @@ test("workbench data exposes storyboard private audio references as local track 
   assert.equal(audio.media.path, audioPath);
   assert.equal(audio.media.source, "local");
   assert.equal(audio.media.sourceId, audioPath);
+});
+
+test("workbench data keeps persisted successful video candidates completed", async () => {
+  const getGenerateDataRoute = (await import("../src/routes/production/workbench/getGenerateData")).default;
+  await db("o_video").insert([
+    { id: 10001, projectId: 1, scriptId: 10, videoTrackId: 100, state: "生成成功" },
+    { id: 10002, projectId: 1, scriptId: 10, videoTrackId: 100, state: "已完成" },
+    { id: 10003, projectId: 1, scriptId: 10, videoTrackId: 100, state: "生成中" },
+    { id: 10004, projectId: 1, scriptId: 10, videoTrackId: 100, state: "生成失败" },
+  ]);
+
+  const response = await postRoute(getGenerateDataRoute, { projectId: 1, scriptId: 10 });
+  assert.equal(response.status, 200);
+  const track = response.body.data.trackList.find((item: any) => item.id === 100);
+  const states = new Map(track.videoList.map((item: any) => [item.id, item.state]));
+  assert.equal(states.get(10001), "已完成");
+  assert.equal(states.get(10002), "已完成");
+  assert.equal(states.get(10003), "生成中");
+  assert.equal(states.get(10004), "生成失败");
 });
 
 test("manual addTrack creates a complete empty video group without video model lookup", async () => {
@@ -786,6 +813,205 @@ test("video prompt uses the committed clean videoStyle as the exact stable style
     assert.match(compiled.text, /画面风格和类型：三维卡通乡村漫剧/);
     assert.match(compiled.text, /阵雨后屋檐断续滴水/);
     assert.match(compiled.text, /白鹅/);
+  } finally {
+    u.Ai = originalAi;
+  }
+});
+
+test("selected H3 project content profile extends the existing H3 system prompt without another model call", async () => {
+  const { compileWorkbenchVideoPrompt } = await import("../src/services/videoPromptCompiler");
+  const vendorDir = path.join(dataDir, "vendor");
+  fs.mkdirSync(vendorDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(vendorDir, "h3-test.ts"),
+    `const vendor = { models: [{ name: "H3", modelName: "MiniMax-H3", type: "video", mode: ["text"] }] };
+     const resolveVideoPromptModelId = (model: any) => model.modelName === "MiniMax-H3" ? "minimax-h3" : undefined;
+     exports.vendor = vendor;
+     exports.resolveVideoPromptModelId = resolveVideoPromptModelId;`,
+  );
+  await db("o_vendorConfig").insert({ id: "h3-test", models: "[]" });
+  const promptDir = path.join(u.getPath(["modelPrompt"]), "video");
+  fs.mkdirSync(promptDir, { recursive: true });
+  fs.writeFileSync(path.join(promptDir, "manual-h3.md"), "MANUAL H3 OVERRIDE", "utf8");
+  await db("o_modelPrompt").insert({ vendorId: "h3-test", model: "MiniMax-H3", path: "video/manual-h3.md" });
+  await db("o_project").insert({ id: 9031, videoModel: "h3-test:MiniMax-H3", videoPromptType: "3d-animation-short", mode: "text" });
+  await db("o_script").insert({ id: 9031, projectId: 9031 });
+  await db("o_videoTrack").insert({ id: 9331, projectId: 9031, scriptId: 9031, archived: 0 });
+  await db("o_storyboard").insert({
+    id: 9332,
+    projectId: 9031,
+    scriptId: 9031,
+    trackId: 9331,
+    index: 0,
+    factStatus: "ready",
+    factVersion: 3,
+    tableRowJson: JSON.stringify({
+      version: 3,
+      index: 0,
+      groupKey: "h3-content-test",
+      beatId: "h3-content-test-1",
+      durationSec: 4,
+      location: "yard",
+      timeOfDay: "day",
+      shotDescription: "A child lifts a paper boat from the puddle and holds it still at the end of the shot.",
+      shotSize: "medium",
+      dialogue: [],
+      soundEffects: [],
+      requiredAssets: [],
+    }),
+  });
+  const originalAi = u.Ai;
+  const calls: any[] = [];
+  u.Ai = {
+    ...u.Ai,
+    Text: () => ({
+      invoke: async (input: any) => {
+        calls.push(input);
+        return { text: "integrated_multimodal_description: A child lifts a paper boat from a puddle and holds it still." };
+      },
+    }),
+  };
+  try {
+    const result = await compileWorkbenchVideoPrompt({
+      projectId: 9031,
+      scriptId: 9031,
+      trackId: 9331,
+      references: [],
+      model: "h3-test:MiniMax-H3",
+      mode: "text",
+      videoPromptType: "3d-animation-short",
+    });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].system, /H3 single-shot expression skill: 3D animation short/);
+    assert.match(calls[0].system, /support point, weight transfer/);
+    assert.match(calls[0].system, /T2VA/);
+    assert.doesNotMatch(calls[0].system, /MANUAL H3 OVERRIDE/);
+    assert.match(result.systemPromptSource, /3d-animation-short\.md/);
+  } finally {
+    u.Ai = originalAi;
+  }
+});
+
+test("video prompt type selection is scoped to the exact model and model detail exposes its capability", async () => {
+  const vendorDir = path.join(dataDir, "vendor");
+  fs.mkdirSync(vendorDir, { recursive: true });
+  const source = `const vendor = { models: [{ name: "H3", modelName: "MiniMax-H3", type: "video", mode: ["text"] }] };
+    const resolveVideoPromptModelId = () => "minimax-h3";
+    exports.vendor = vendor;
+    exports.resolveVideoPromptModelId = resolveVideoPromptModelId;`;
+  fs.writeFileSync(path.join(vendorDir, "h3-selection-a.ts"), source);
+  fs.writeFileSync(path.join(vendorDir, "h3-selection-b.ts"), source);
+  await db("o_vendorConfig").insert([{ id: "h3-selection-a", models: "[]" }, { id: "h3-selection-b", models: "[]" }]);
+  await db("o_project").insert({
+    id: 9033,
+    videoModel: "h3-selection-a:MiniMax-H3",
+    videoPromptType: "3d-animation-short",
+    mode: "text",
+  });
+
+  const selection = await import("../src/services/videoPromptTypeSelection");
+  const route = (await import("../src/routes/modelSelect/getModelDetail")).default;
+  const firstDetail = await postRoute(route, { modelId: "h3-selection-a:MiniMax-H3", projectId: 9033 });
+  assert.equal(firstDetail.status, 200);
+  assert.equal(firstDetail.body.data.model, "h3-selection-a:MiniMax-H3");
+  assert.equal(firstDetail.body.data.videoPromptTypeCapability.options.length, 8);
+  assert.equal(firstDetail.body.data.videoPromptTypeCapability.options[0].value, "minimalist-product-ad");
+  assert.equal(firstDetail.body.data.selectedVideoPromptType, "3d-animation-short");
+
+  const migrated = await db("o_project").where({ id: 9033 }).first();
+  assert.equal(JSON.parse(migrated.videoPromptTypeSelections)["h3-selection-a:MiniMax-H3"], "3d-animation-short");
+  await selection.updateProjectVideoPromptTypeSelection(9033, "h3-selection-a:MiniMax-H3", "paper-collage-explainer");
+  await selection.updateProjectVideoPromptTypeSelection(9033, "h3-selection-b:MiniMax-H3", "handdrawn-live");
+  assert.equal(await selection.getProjectVideoPromptTypeSelection(9033, "h3-selection-a:MiniMax-H3"), "paper-collage-explainer");
+  assert.equal(await selection.getProjectVideoPromptTypeSelection(9033, "h3-selection-b:MiniMax-H3"), "handdrawn-live");
+  await selection.updateProjectVideoPromptTypeSelection(9033, "h3-selection-a:MiniMax-H3", null);
+  assert.equal(await selection.getProjectVideoPromptTypeSelection(9033, "h3-selection-a:MiniMax-H3"), null);
+  await assert.rejects(
+    () => selection.updateProjectVideoPromptTypeSelection(9033, "h3-selection-a:MiniMax-H3", "not-a-real-type"),
+    /不支持该视频类型/,
+  );
+});
+
+test("every H3 type profile receives a dedicated factual storyboard fixture in one compiler call", async () => {
+  const { compileWorkbenchVideoPrompt } = await import("../src/services/videoPromptCompiler");
+  const vendorDir = path.join(dataDir, "vendor");
+  fs.mkdirSync(vendorDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(vendorDir, "h3-fixture.ts"),
+    `const vendor = { models: [{ name: "H3", modelName: "MiniMax-H3", type: "video", mode: ["text"] }] };
+     const resolveVideoPromptModelId = (model: any) => model.modelName === "MiniMax-H3" ? "minimax-h3" : undefined;
+     exports.vendor = vendor;
+     exports.resolveVideoPromptModelId = resolveVideoPromptModelId;`,
+  );
+  await db("o_vendorConfig").insert({ id: "h3-fixture", models: "[]" });
+  await db("o_project").insert({ id: 9032, videoModel: "h3-fixture:MiniMax-H3", mode: "text" });
+  await db("o_script").insert({ id: 9032, projectId: 9032 });
+  const fixtures = [
+    { type: "minimalist-product-ad", evidence: "brass kettle", rule: /one evidenced visual lead/, shot: "A brass kettle lid lifts on its visible hinge, steam escapes once, and the kettle settles closed in the same warm kitchen light." },
+    { type: "3d-animation-short", evidence: "fox braces", rule: /support point, weight transfer/, shot: "A fox braces both feet against a fallen branch, lifts it with visible weight, then regains balance while holding the branch." },
+    { type: "papercraft-stop-motion", evidence: "paper bridge", rule: /cut edges, paper fibres, folds, seams, tabs, hinges/, shot: "A layered paper bridge folds upward on its visible tabs; the small paper boat passes beneath and the bridge settles back." },
+    { type: "brand-promo", evidence: "checkout screen", rule: /verifiable asset truth/, shot: "The existing checkout screen changes from the supplied empty cart state to the supplied confirmed order state; the camera holds on the result." },
+    { type: "mv-subtitle", evidence: "Stay here", rule: /designed spatial visual layer/, shot: "At the spoken line 'Stay here', the supplied words remain beside the singer for the stated beat while she turns toward the window." },
+    { type: "co-op-game-intro", evidence: "two supplied player cards", rule: /verified UI hierarchy/, shot: "The two supplied player cards remain at opposite sides as the two avatars press the confirmed join control together and the existing ready state appears." },
+    { type: "paper-collage-explainer", evidence: "cut-paper raindrop", rule: /controlled halftone texture/, shot: "A cut-paper raindrop slides across the supplied collage field, presses the paper seed into place, and both layers settle." },
+    { type: "handdrawn-live", evidence: "chalk line", rule: /same drawn entity/, shot: "A chalk line touches the real window latch, continuously folds into a small drawn bird, then flies along the same window frame as the camera follows late." },
+  ];
+  for (const [index, fixture] of fixtures.entries()) {
+    const trackId = 9400 + index;
+    await db("o_videoTrack").insert({ id: trackId, projectId: 9032, scriptId: 9032, archived: 0 });
+    await db("o_storyboard").insert({
+      id: 9500 + index,
+      projectId: 9032,
+      scriptId: 9032,
+      trackId,
+      index: 0,
+      factStatus: "ready",
+      factVersion: 3,
+      tableRowJson: JSON.stringify({
+        version: 3,
+        index: 0,
+        groupKey: `h3-fixture-${index}`,
+        beatId: `h3-fixture-${index}-1`,
+        durationSec: 4,
+        location: "test space",
+        timeOfDay: "day",
+        shotDescription: fixture.shot,
+        shotSize: "medium",
+        dialogue: [],
+        soundEffects: [],
+        requiredAssets: [],
+      }),
+    });
+  }
+  const originalAi = u.Ai;
+  const calls: any[] = [];
+  u.Ai = {
+    ...u.Ai,
+    Text: () => ({
+      invoke: async (input: any) => {
+        calls.push(input);
+        return { text: "integrated_multimodal_description: The factual action completes in one continuous shot.\noverall_soundscape: natural scene sound.\nnon_diegetic_music: N/A" };
+      },
+    }),
+  };
+  try {
+    for (const [index, fixture] of fixtures.entries()) {
+      const result = await compileWorkbenchVideoPrompt({
+        projectId: 9032,
+        scriptId: 9032,
+        trackId: 9400 + index,
+        references: [],
+        model: "h3-fixture:MiniMax-H3",
+        mode: "text",
+        videoPromptType: fixture.type,
+      });
+      const request = calls.at(-1);
+      const context = request.messages.find((item: any) => item.role === "user")?.content || "";
+      assert.match(request.system, fixture.rule);
+      assert.match(context, new RegExp(fixture.evidence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+      assert.match(result.systemPromptSource, new RegExp(`${fixture.type}\\.md`));
+    }
+    assert.equal(calls.length, fixtures.length);
   } finally {
     u.Ai = originalAi;
   }

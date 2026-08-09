@@ -68,12 +68,12 @@ export default function agentProxy(kind: AgentKind) {
           callbacks.set(callbackId, possibleCallback);
         }
         if (!port) {
-          if (kind === "productionAgent" && eventName === "chat") {
+          if ((kind === "productionAgent" || kind === "musicProductionAgent") && eventName === "chat") {
             const auth = socket.handshake.auth || {};
             socket.emit("agent:run:update", {
-              agentKey: "productionAgent",
+              agentKey: kind,
               projectId: Number(auth.projectId),
-              scriptId: Number(auth.scriptId),
+              scriptId: auth.scriptId == null || auth.scriptId === "" ? null : Number(auth.scriptId),
               serverTime: Date.now(),
               rejected: true,
               code: "AGENT_UNAVAILABLE",

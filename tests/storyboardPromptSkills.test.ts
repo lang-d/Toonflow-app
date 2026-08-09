@@ -16,7 +16,11 @@ const panelReview = skill("production_supervision_storyboard_panel.md");
 const stageSource = fs.readFileSync(path.join(root, "src", "services", "productionStageSkills.ts"), "utf8");
 const agentSource = fs.readFileSync(path.join(root, "src", "agents", "productionAgent", "index.ts"), "utf8");
 const toolsSource = fs.readFileSync(path.join(root, "src", "agents", "productionAgent", "tools.ts"), "utf8");
+const videoPromptCompiler = fs.readFileSync(path.join(root, "src", "services", "videoPromptCompiler.ts"), "utf8");
 const seedance = fs.readFileSync(path.join(root, "data", "modelPrompt", "video", "seedance2Multi-parameterMode.md"), "utf8");
+const h3 = fs.readFileSync(path.join(root, "data", "modelPrompt", "video", "minimaxH3VideoMode.md"), "utf8");
+const videoProfileMap = JSON.parse(fs.readFileSync(path.join(root, "data", "modelPrompt", "video", "profileMap.json"), "utf8"));
+const h3ContentCoverage = fs.readFileSync(path.join(root, "data", "modelPrompt", "video", "h3Content", "officialSourceCoverage.md"), "utf8");
 const otherVideoProfiles = [
   "universalMulti-parameterMode.md",
   "universalFirstAndLastFrameMode.md",
@@ -132,18 +136,26 @@ test("reviews audit V3 chronology and splitting without restoring deleted fields
 test("Seedance profile branches V3 initial-frame handling on visualStart", () => {
   assert.match(seedance, /`visualStart=storyboardReference`/);
   assert.match(seedance, /唯一初始视觉依据/);
+  assert.match(seedance, /与当前 `storyboardId` 对应的图片 token/);
+  assert.match(seedance, /`@ImageN` 作为本镜首帧，随后/);
   assert.match(seedance, /不(?:再)?用文字复述人物站位、景别、机位、构图/);
   assert.match(seedance, /`visualStart=textFallback`/);
   assert.match(seedance, /完整 `shotDescription`/);
+  assert.match(seedance, /即使引用清单中有角色图、场景图、道具图或合图，也不得写“沿用 `@ImageN`”或“以 `@ImageN` 开拍”/);
+  assert.match(seedance, /普通资产图.*不能自行升级为某条分镜的首帧/);
   assert.match(seedance, /`shotDescription` 是 V3 的唯一时间事实正文/);
   assert.match(seedance, /不要另行设计(?:一套)?情绪表演/);
   assert.match(seedance, /已明确的视线、表情、呼吸、手部或姿态变化，按其发生时段执行/);
   assert.match(seedance, /`voiceTone`.*不推断或新增视觉表情/);
   assert.match(seedance, /不要查找或推断 `visibleEmotion`、`characters\[\]`/);
+  assert.match(seedance, /主体与起点 → 连续动作\/变化 → 结束状态 → 必要运镜、台词和画内声音/);
+  assert.match(seedance, /不额外拆分时间段，不新增镜头、转场或其他组内容/);
   assert.match(seedance, /可为 Seedance 2\.0 重组、压缩和强化提示语/);
   assert.match(seedance, /不得替换或反转人物\/物件、空间方向、动作结果、时间顺序与因果/);
   const outputExample = seedance.match(/## 输出\s*([\s\S]*?)## 自检/)?.[1] || "";
-  assert.match(outputExample, /开拍画面：\{有对应分镜图时沿用 @ImageN；无分镜图时依据本条分镜事实建立\}/);
+  assert.match(outputExample, /有对应分镜图时，镜头正文以“`@ImageN` 作为本镜首帧，随后/);
+  assert.match(outputExample, /无对应分镜图时，直接写主体、起点和后续变化/);
+  assert.doesNotMatch(outputExample, /开拍画面：|沿用 @ImageN|依据本条分镜事实建立/);
   assert.doesNotMatch(outputExample, /textFallback|storyboardReference|visualStart/);
 });
 
@@ -156,6 +168,79 @@ test("all active video profiles consume the same reduced handoff contract", () =
     assert.match(profile, /`voiceTone`.*(?:视觉表情|视觉)/);
     assert.doesNotMatch(profile, /Emotion: \{visibleEmotion\}|Characters: \{characters\}|\{groupIntent\}/);
   }
+});
+
+test("MiniMax H3 profile follows the official mode-specific timeline and reference contract", () => {
+  const h3Profile = videoProfileMap.find((profile: any) => profile.modelId === "minimax-h3");
+  assert.deepEqual(
+    videoProfileMap.filter((profile: any) => profile.modelId !== "minimax-h3"),
+    [
+      { modelId: "seedance-2", path: "video/seedance2Multi-parameterMode.md" },
+      { modelId: "wan-2.6", path: "video/wan2.6Single-imageFirstFrameMode.md" },
+    ],
+  );
+  assert.equal(h3Profile?.path, "video/minimaxH3VideoMode.md");
+  assert.equal(h3Profile?.referenceDialect, "h3");
+  assert.deepEqual(
+    h3Profile?.contentProfiles?.map((profile: any) => profile.id),
+    [
+      "minimalist-product-ad",
+      "3d-animation-short",
+      "papercraft-stop-motion",
+      "brand-promo",
+      "mv-subtitle",
+      "co-op-game-intro",
+      "paper-collage-explainer",
+      "handdrawn-live",
+    ],
+  );
+  assert.doesNotMatch(videoPromptCompiler, /MiniMax-H3|seedance2Multi-parameterMode|wan2\.6Single-imageFirstFrameMode/);
+  assert.match(videoPromptCompiler, /resolveVideoPromptModelId/);
+  assert.match(videoPromptCompiler, /profileMap\.json/);
+  assert.match(h3, /`factVersion=3`: `shotDescription` is the only chronological source/);
+  assert.match(h3, /`voiceTone` may guide vocal delivery only/);
+  assert.match(h3, /non_diegetic_music: N\/A/);
+  assert.match(h3, /image `@ImageN` -> `<Picture N>`/);
+  assert.match(h3, /`singleImage`: `<Picture 1>` is the first frame/);
+  assert.match(h3, /`startEndRequired`: `<Picture 1>` is the first frame and `<Picture 2>` is the last frame/);
+  assert.match(h3, /`startFrameOptional`: one supplied image is the last frame/);
+  assert.match(h3, /Select exactly one final format/);
+  assert.match(h3, /For the target video, at 0\.00 seconds/);
+  assert.match(h3, /How the reference pictures align with the target video/);
+  assert.match(h3, /subject_definitions:/);
+  assert.match(h3, /retention_analysis:/);
+  assert.match(h3, /detailed_description:/);
+  assert.match(h3, /<Subject N>/);
+  assert.match(h3, /<Picture N>/);
+  assert.match(h3, /<Video N>/);
+  assert.match(h3, /<Audio N>/);
+  assert.match(h3, /Never add BGM, score, OST, or audience-only music/);
+  assert.match(h3, /Do not infer content from asset names, reference order, `visibleEmotion`, `characters\[\]`/);
+  const h3ContentContracts: Record<string, RegExp[]> = {
+    "minimalist-product-ad": [/Product-shot visual grammar/, /Drive motion from an actual edge/, /one evidenced visual lead/],
+    "3d-animation-short": [/Animation staging grammar/, /support point, weight transfer/, /preparation, action, overshoot, follow-through/],
+    "papercraft-stop-motion": [/Papercraft space and material grammar/, /cut edges, paper fibres, folds, seams, tabs, hinges/, /small stepped move/],
+    "brand-promo": [/Promotional single-shot grammar/, /verifiable asset truth/, /fact-led progression/],
+    "mv-subtitle": [/Typography and rhythm grammar/, /designed spatial visual layer/, /timed audio\/lyric fact/],
+    "co-op-game-intro": [/Game-opening composition grammar/, /two-player\/co-operative game opening/, /verified UI hierarchy/],
+    "paper-collage-explainer": [/Collage visual grammar/, /controlled halftone texture/, /tactile assembly/],
+    "handdrawn-live": [/Fusion and contact grammar/, /same drawn entity/, /continuous route/],
+  };
+  for (const profile of h3Profile?.contentProfiles || []) {
+    const content = fs.readFileSync(path.join(root, "data", "modelPrompt", profile.path), "utf8");
+    assert.match(content, /## Scope and fact inheritance/);
+    assert.match(content, /## Timeline compilation|## Stop-motion timeline compilation/);
+    assert.match(content, /## Missing-fact policy and boundaries/);
+    assert.match(content, /## Final check/);
+    assert.match(content, /[Oo]mit|[Ww]ithout/);
+    assert.match(content, /formal `videoStyle`/);
+    assert.match(content, /no-BGM rule/);
+    for (const rule of h3ContentContracts[profile.id]) assert.match(content, rule);
+    assert.match(h3ContentCoverage, new RegExp(`## \`${profile.id}\``));
+  }
+  assert.match(h3ContentCoverage, /This is a non-runtime audit record/);
+  assert.match(h3ContentCoverage, /Retained for one shot/);
+  assert.match(h3ContentCoverage, /Excluded:/);
 });
 
 test("deprecated visual storyboard manuals remain outside active stages", () => {

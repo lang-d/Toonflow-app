@@ -21,9 +21,11 @@ export default router.post(
     projectType: z.string(),
     imageQuality: z.string(),
     mode: z.string(),
+    videoPromptType: z.string().trim().max(80).optional().nullable(),
   }),
   async (req, res) => {
     const { id, name, intro, type, artStyle, videoRatio, directorManual, imageModel, videoModel, imageQuality, projectType, mode } = req.body;
+    const videoPromptType = req.body.videoPromptType?.trim() || null;
 
     await u.db("o_project").where("id", id).update({
       name,
@@ -37,6 +39,7 @@ export default router.post(
       imageQuality,
       projectType,
       mode,
+      videoPromptType,
     });
 
     res.status(200).send(success({ message: "编辑项目成功" }));

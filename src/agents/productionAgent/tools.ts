@@ -765,7 +765,6 @@ export default (toolCpnfig: ToolConfig) => {
           reason: input.summary || "",
           resultJson: { kind: "agent_completed", summary: input.summary ?? null },
         });
-        runContext.stopForTerminal();
         return { status: "completed", terminal: true, ...input };
       },
     }),
@@ -1509,7 +1508,6 @@ export default (toolCpnfig: ToolConfig) => {
               reason: message || "Storyboard table commit failed.",
               errorJson: result.error,
             });
-            runContext?.stopForTerminal();
             return {
               ...result,
               status: result.status,

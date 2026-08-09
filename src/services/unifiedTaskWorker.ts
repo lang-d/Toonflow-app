@@ -17,8 +17,10 @@ import {
   pruneTaskEvents,
   renewUnifiedTaskLease,
   updateUnifiedTask,
+  whereRunnableUnifiedTask,
   type UnifiedTaskType,
 } from "@/services/taskCoordinator";
+import { executeVideoGenerationTask } from "@/services/videoQueue/taskHandler";
 import { generateProjectSnapshot, importPortableProject } from "@/services/projectPortable";
 import { performStorageMigration } from "@/services/storageMigration";
 import { isImageGenerationTask, shouldDeferImageFlowCandidate } from "@/services/unifiedTaskDispatchPolicy";
@@ -69,12 +71,18 @@ const handlers: Record<string, TaskHandler> = {
   "image-flow": async (payload, task) => executeImageFlowTask(payload, task),
   "workbench-prompt": async (payload, task) => {
     const result = await generateWorkbenchVideoPromptResult(payload, { taskId: task.taskId, legacyTaskId: task.id });
-    await u.db("o_videoTrack").where({ id: payload.trackId }).update({ prompt: result.text, state: "已完成", reason: "" });
+    await u.db("o_videoTrack").where({ id: payload.trackId }).update({
+      prompt: result.text,
+      promptProfileJson: JSON.stringify(result.promptProfile),
+      state: "已完成",
+      reason: "",
+    });
     return {
       businessId: payload.trackId,
       diagnosticFile: result.diagnosticFile,
       factSourceSummary: result.factSourceSummary,
       groupSummary: result.groupSummary,
+      promptProfile: result.promptProfile,
     };
   },
   "asset-image": async (payload, task) => executeAssetImageTask(payload, task),
@@ -101,6 +109,7 @@ const handlers: Record<string, TaskHandler> = {
   "music-audio-trim": async (payload, task) => executeMusicAudioTrimTask(payload, task),
   "project-context-pack-generate": async (payload, task) => executeProjectContextPackGenerateTask(payload, task),
   "script-asset-extract": async (payload, task) => executeScriptAssetExtractionTask(payload, task),
+  "video-generation": async (payload, task) => executeVideoGenerationTask(payload, task),
 };
 
 function getTaskExecutionTimeoutMs(task: any) {
@@ -134,7 +143,7 @@ const DEFAULT_LIMITS: Record<UnifiedTaskType, number> = {
   image: 5,
   asset: 5,
   storyboard: 2,
-  video: 1,
+  video: 4,
   audio: 2,
   media: 2,
   maintenance: 1,
@@ -205,22 +214,56 @@ export async function recoverInterruptedUnifiedTasks(database: any = db, exclude
   const rows = await database("o_tasks")
     .whereNotNull("handler")
     .whereIn("status", ["submitting", "processing"])
-    .where((builder: any) => builder.whereNull("leaseExpiresAt").orWhere("leaseExpiresAt", "<", now));
+    // Provider polling deliberately releases its local lease while it waits for
+    // availableAt. A missing lease is therefore normal, not evidence of a crash.
+    // Only an expired lease proves a worker died while it owned an execution step.
+    .whereNotNull("leaseExpiresAt")
+    .where("leaseExpiresAt", "<", now);
   let recoveredCount = 0;
   for (const task of rows) {
     if (excludeTaskIds.has(Number(task.id))) continue;
     recoveredCount += 1;
-    if (task.providerTaskId) {
+    let providerTaskId = task.providerTaskId || null;
+    if (task.handler === "video-generation" && !providerTaskId) {
+      let queueTaskId = 0;
+      try {
+        queueTaskId = Number(task.payloadJson ? JSON.parse(task.payloadJson)?.queueTaskId : 0);
+      } catch {
+        // The detail lookup below can still recover legacy tasks through taskCenterId.
+      }
+      const detail = await database("o_videoGenerationTask")
+        .where((builder: any) => {
+          if (queueTaskId > 0) builder.where("id", queueTaskId);
+          else builder.where("taskCenterId", task.id);
+        })
+        .first();
+      providerTaskId = detail?.submitId || null;
+    }
+    if (providerTaskId) {
       console.warn("[unified-task-worker] recovering provider task", {
         taskId: task.id,
         businessType: task.businessType,
         businessId: task.businessId,
         phase: task.phase,
-        providerTaskId: task.providerTaskId,
+        providerTaskId,
+      });
+      await updateUnifiedTask(task.id, {
+        status: task.handler === "video-generation" ? "processing" : "queued",
+        phase: "resume-provider-query",
+        providerTaskId,
+        availableAt: now,
+        clearLease: true,
+      }, database);
+    } else if (task.handler === "video-generation") {
+      console.warn("[unified-task-worker] requeueing interrupted video task before provider id was saved", {
+        taskId: task.id,
+        businessId: task.businessId,
+        phase: task.phase,
       });
       await updateUnifiedTask(task.id, {
         status: "queued",
-        phase: "resume-provider-query",
+        phase: "queued",
+        progress: null,
         availableAt: now,
         clearLease: true,
       }, database);
@@ -282,11 +325,7 @@ export async function startUnifiedTaskWorker(
       .where((builder: any) => builder.whereNull("businessType").orWhereNot("businessType", "project-snapshot"))
       .first();
     if (activeUnifiedTask) return true;
-    const activeVideoTask = await (db as any)("o_videoGenerationTask")
-      .where("projectId", projectId)
-      .whereIn("status", ["queued", "submitting", "confirming", "processing"])
-      .first();
-    return Boolean(activeVideoTask);
+    return false;
   };
 
   const execute = async (task: any) => {
@@ -381,10 +420,7 @@ export async function startUnifiedTaskWorker(
     try {
       const recovered = await recoverInterruptedUnifiedTasks(db, runningTaskIds);
       if (recovered) console.warn("[unified-task-worker] recovered interrupted tasks before dispatch", { recovered });
-      const candidates = await (db as any)("o_tasks")
-        .where("status", "queued")
-        .whereNotNull("handler")
-        .where((builder: any) => builder.whereNull("availableAt").orWhere("availableAt", "<=", Date.now()))
+      const candidates = await whereRunnableUnifiedTask((db as any)("o_tasks"), Date.now())
         .orderBy("priority", "desc")
         .orderBy("createdAt", "asc")
         .limit(50);

@@ -1,0 +1,25 @@
+[
+  {
+    "modelId": "minimax-h3",
+    "path": "video/minimaxH3VideoMode.md",
+    "referenceDialect": "h3",
+    "contentProfiles": [
+      { "id": "minimalist-product-ad", "label": "极简产品广告", "path": "video/h3Content/minimalist-product-ad.md" },
+      { "id": "3d-animation-short", "label": "3D 动画短片", "path": "video/h3Content/3d-animation-short.md" },
+      { "id": "papercraft-stop-motion", "label": "定格纸艺讲解", "path": "video/h3Content/papercraft-stop-motion.md" },
+      { "id": "brand-promo", "label": "品牌宣传片", "path": "video/h3Content/brand-promo.md" },
+      { "id": "mv-subtitle", "label": "MV 字幕视频", "path": "video/h3Content/mv-subtitle.md" },
+      { "id": "co-op-game-intro", "label": "双人合作游戏开场", "path": "video/h3Content/co-op-game-intro.md" },
+      { "id": "paper-collage-explainer", "label": "纸张拼贴讲解", "path": "video/h3Content/paper-collage-explainer.md" },
+      { "id": "handdrawn-live", "label": "手绘转真人视频", "path": "video/h3Content/handdrawn-live.md" }
+    ]
+  },
+  {
+    "modelId": "seedance-2",
+    "path": "video/seedance2Multi-parameterMode.md"
+  },
+  {
+    "modelId": "wan-2.6",
+    "path": "video/wan2.6Single-imageFirstFrameMode.md"
+  }
+]

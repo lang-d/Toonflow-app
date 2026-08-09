@@ -68,7 +68,7 @@ export const vendorConfigSchemaBase = z.object({
     z.object({
       key: z.string(),
       label: z.string(),
-      type: z.enum(["text", "password", "url"]),
+      type: z.enum(["text", "password", "url", "textarea"]),
       required: z.boolean(),
       placeholder: z.string().optional(),
     }),

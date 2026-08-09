@@ -57,7 +57,7 @@ function textTooGeneric(text: string) {
 
 async function runAiReview(input: { system: string; payload: unknown }) {
   return invokeAiObjectWithFallback({
-    modelKey: "productionAgent",
+    modelKey: "musicProductionAgent:supervisionAgent",
     label: "Music review",
     schema: reviewSchema,
     system: input.system,

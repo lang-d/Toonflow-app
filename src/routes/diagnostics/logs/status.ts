@@ -16,6 +16,7 @@ export default router.post("/", async (_req, res) => {
       fileCount: status.files.length,
       recentErrors: status.recentErrors,
       lastLogAtByRole: status.lastLogAtByRole,
+      outputSinks: status.outputSinks,
       runtime: {
         supervisor: getRuntimeSupervisorSnapshot(),
         connections: getRuntimeConnections(),

@@ -10,12 +10,21 @@ import {
   createAgentRunContext,
   finishAgentRun,
   getActiveAgentRun,
+  getResumableAgentInterruption,
+  getUnresolvedAgentDecision,
   interruptExpiredAgentRuns,
   recordAgentRunEvent,
   updateAgentRunHeartbeat,
   type AgentRunContext,
   type AgentRunStatus,
 } from "@/services/agentRun";
+import { recordAgentTaskSubmitted } from "@/agents/shared/tools";
+import {
+  createRunStateRestoreBarrier,
+  createSharedAgentResTool,
+  sharedAgentRoom,
+  sharedAgentRunUpdate,
+} from "@/socket/routes/sharedAgentLifecycle";
 import {
   musicAgentRunScriptId,
   musicEpisodeIsolationKey,
@@ -51,6 +60,8 @@ type SubmittedMusicTask = {
   taskId: string;
   targetType: string;
   targetId?: string | number | null;
+  legacyTaskId?: number;
+  status?: string;
 };
 
 function normalizeMode(input: any, scriptId: number | null): MusicScopeMode {
@@ -71,6 +82,18 @@ function runScope(context: MusicProductionAgentSocketContext) {
     projectId: context.projectId,
     scriptId: musicAgentRunScriptId(context),
   };
+}
+
+function socketScope(context: MusicProductionAgentSocketContext) {
+  return {
+    projectId: context.projectId,
+    scriptId: musicAgentRunScriptId(context),
+    isolationKey: context.isolationKey,
+  };
+}
+
+function musicAgentRoom(context: MusicProductionAgentSocketContext) {
+  return sharedAgentRoom("musicProductionAgent", socketScope(context));
 }
 
 async function validateMusicProductionAgentContext(input: any): Promise<MusicProductionAgentSocketContext> {
@@ -127,34 +150,53 @@ export default (nsp: Namespace) => {
     }
 
     console.log("[musicProductionAgent] connected:", socket.id, context.isolationKey);
-    let resTool = new ResTool(socket, { projectId: context.projectId, scriptId: context.scriptId, mode: context.mode });
+    socket.join(musicAgentRoom(context));
+    const createScopedResTool = (targetContext: MusicProductionAgentSocketContext) =>
+      createSharedAgentResTool(nsp, "musicProductionAgent", socketScope(targetContext), {
+        projectId: targetContext.projectId,
+        scriptId: targetContext.scriptId,
+        mode: targetContext.mode,
+      });
+    let resTool = createScopedResTool(context);
     const thinkConfig: agent.AgentContext["thinkConfig"] = { think: false, thinlLevel: 0 };
 
-    const emitRunUpdate = (payload: Record<string, unknown>) => {
-      socket.emit("agent:run:update", {
-        agentKey: "musicProductionAgent",
-        projectId: context.projectId,
-        scriptId: context.scriptId,
-        serverTime: Date.now(),
-        ...payload,
-      });
+    const emitRunUpdate = (payload: Record<string, unknown>, targetContext: MusicProductionAgentSocketContext = context) => {
+      socket.emit("agent:run:update", sharedAgentRunUpdate("musicProductionAgent", socketScope(targetContext), payload));
     };
-
-    void getActiveAgentRun(runScope(context))
-      .then((activeRun) => {
-        if (!activeRun) return;
-        void recordAgentRunEvent(activeRun.runId, "client_resumed", { socketId: socket.id, isolationKey: context.isolationKey });
-        emitRunUpdate({ status: activeRun.status, activeRun, resumed: true });
-      })
-      .catch((error) => console.warn("[musicProductionAgent] failed to restore active run:", u.error(error).message));
+    const broadcastRunUpdate = (payload: Record<string, unknown>, targetContext: MusicProductionAgentSocketContext = context) => {
+      nsp
+        .to(musicAgentRoom(targetContext))
+        .emit("agent:run:update", sharedAgentRunUpdate("musicProductionAgent", socketScope(targetContext), payload));
+    };
+    let restoreBarrier = createRunStateRestoreBarrier({
+      nsp,
+      socket,
+      agentKey: "musicProductionAgent",
+      scope: socketScope(context),
+    });
 
     socket.on("updateContext", async (data, callback) => {
       try {
-        const activeRun = await getActiveAgentRun(runScope(context));
-        if (activeRun) throw new Error("music production agent is running; stop it before switching context");
+        const previousContext = context;
+        const previousBarrier = restoreBarrier;
+        await previousBarrier.wait(socketScope(previousContext));
+        if (context.isolationKey !== previousContext.isolationKey) throw new Error("music production agent context changed while updating context");
         const nextContext = await validateMusicProductionAgentContext(data);
+        if (nextContext.isolationKey === previousContext.isolationKey) {
+          callback?.({ success: true, isolationKey: context.isolationKey });
+          return;
+        }
+        socket.leave(musicAgentRoom(previousContext));
         context = nextContext;
-        resTool = new ResTool(socket, { projectId: context.projectId, scriptId: context.scriptId, mode: context.mode });
+        socket.join(musicAgentRoom(context));
+        resTool = createScopedResTool(context);
+        restoreBarrier = createRunStateRestoreBarrier({
+          nsp,
+          socket,
+          agentKey: "musicProductionAgent",
+          scope: socketScope(context),
+        });
+        await restoreBarrier.wait(socketScope(context));
         callback?.({ success: true, isolationKey: context.isolationKey });
       } catch (error) {
         callback?.({ success: false, message: u.error(error).message });
@@ -162,44 +204,85 @@ export default (nsp: Namespace) => {
     });
 
     socket.on("chat", async (data: { content: string }) => {
+      const chatContext = context;
+      const chatBarrier = restoreBarrier;
+      const chatResTool = resTool;
       const content = String(data?.content || "").trim();
-      if (!content) return;
-
-      const scope = runScope(context);
-      const activeRun = await getActiveAgentRun(scope);
-      if (activeRun) {
-        emitRunUpdate({ status: activeRun.status, activeRun, rejected: true, reason: "A Music Agent chat is already running for this scope." });
+      try {
+        await chatBarrier.wait(socketScope(chatContext));
+        if (context.isolationKey !== chatContext.isolationKey) throw new Error("music production agent context changed before chat acceptance");
+      } catch (error) {
+        emitRunUpdate(
+          { rejected: true, code: "CHAT_STATE_RESTORE_FAILED", reason: u.error(error).message },
+          chatContext,
+        );
+        return;
+      }
+      if (!content) {
+        emitRunUpdate({ rejected: true, code: "INVALID_CHAT_MESSAGE", reason: "消息内容不能为空。" }, chatContext);
         return;
       }
 
-      const msg = resTool.newMessage("assistant", "Music Director");
-      const createdRun = await createAgentRun({ ...scope, isolationKey: context.isolationKey, messageId: msg.id });
-      if (!createdRun.created) {
-        emitRunUpdate({ status: createdRun.activeRun.status, activeRun: createdRun.activeRun, rejected: true, reason: "A Music Agent chat is already running for this scope." });
-        return;
-      }
+      const accepted = await (async () => {
+        const scope = runScope(chatContext);
+        const activeRun = await getActiveAgentRun(scope);
+        if (activeRun) {
+          emitRunUpdate({ status: activeRun.status, activeRun, rejected: true, code: "RUN_ALREADY_RUNNING", reason: "A Music Agent chat is already running for this scope." }, chatContext);
+          return null;
+        }
+
+        const [awaitingUser, resumableInterruption] = await Promise.all([
+          getUnresolvedAgentDecision(scope),
+          getResumableAgentInterruption({ ...scope, isolationKey: chatContext.isolationKey }),
+        ]);
+        const awaitingContinuation = awaitingUser ? { kind: "awaiting_user" as const, ...awaitingUser } : null;
+        const resumableContinuation = resumableInterruption
+          ? { kind: "resumable_interruption" as const, ...resumableInterruption }
+          : null;
+        const continuation =
+          Number(resumableContinuation?.run.startedAt || 0) > Number(awaitingContinuation?.run.startedAt || 0)
+            ? resumableContinuation
+            : awaitingContinuation;
+
+        const msg = chatResTool.newMessage("assistant", "Music Director");
+        const createdRun = await createAgentRun({ ...scope, isolationKey: chatContext.isolationKey, messageId: msg.id });
+        if (!createdRun.created) {
+          emitRunUpdate({ status: createdRun.activeRun.status, activeRun: createdRun.activeRun, rejected: true, code: "RUN_ALREADY_RUNNING", reason: "A Music Agent chat is already running for this scope." }, chatContext);
+          return null;
+        }
+        return { continuation, msg, createdRun };
+      })().catch((error) => {
+        emitRunUpdate({ rejected: true, code: "CHAT_ACCEPT_FAILED", reason: u.error(error).message }, chatContext);
+        return null;
+      });
+      if (!accepted) return;
+      const { continuation, msg, createdRun } = accepted;
 
       const controller = new AbortController();
       const runContext = createAgentRunContext(createdRun.run.runId);
-      runContext.requestStop = () => controller.abort();
-      registerMusicAgentRunControl(context.isolationKey, { runId: createdRun.run.runId, controller, runContext });
+      runContext.bindRootStop(() => controller.abort());
+      registerMusicAgentRunControl(chatContext.isolationKey, { runId: createdRun.run.runId, controller, runContext });
       const submittedTasks = new Map<string, SubmittedMusicTask>();
       const heartbeatTimer = setInterval(() => {
         void updateAgentRunHeartbeat(createdRun.run.runId).catch((error) => console.warn("[musicProductionAgent] heartbeat failed:", u.error(error).message));
       }, AGENT_RUN_HEARTBEAT_INTERVAL_MS);
 
-      emitRunUpdate({ status: "running", run: createdRun.run });
+      broadcastRunUpdate({ status: "running", run: createdRun.run }, chatContext);
       const ctx: agent.AgentContext = {
         socket,
-        isolationKey: context.isolationKey,
+        isolationKey: chatContext.isolationKey,
         text: content,
         userMessageTime: new Date(msg.datetime).getTime() - 1,
         abortSignal: controller.signal,
-        resTool,
+        resTool: chatResTool,
         msg,
         thinkConfig,
         runContext,
-        onTaskQueued: (task) => submittedTasks.set(task.taskId, task),
+        continuation,
+        onTaskQueued: async (task) => {
+          submittedTasks.set(task.taskId, task);
+          await recordAgentTaskSubmitted(runContext.runId, task);
+        },
       };
 
       let finalStatus: AgentRunStatus = "failed";
@@ -207,7 +290,10 @@ export default (nsp: Namespace) => {
       let finalError: unknown = { code: "AGENT_TERMINAL_DECLARATION_MISSING" };
       try {
         await agent.runDecisionAI(ctx);
-        if (runContext.terminalIntent) {
+        if (runContext.abortReason === "user_stop") {
+          finalStatus = "cancelled";
+          finalReason = "Music Agent was stopped by the user.";
+        } else if (runContext.terminalIntent) {
           finalStatus = runContext.terminalIntent.status;
           finalReason = runContext.terminalIntent.reason;
           finalError = runContext.terminalIntent.errorJson;
@@ -217,11 +303,14 @@ export default (nsp: Namespace) => {
           });
         }
       } catch (error: any) {
-        if (runContext.terminalIntent) {
+        if (runContext.abortReason === "user_stop") {
+          finalStatus = "cancelled";
+          finalReason = "Music Agent was stopped by the user.";
+        } else if (runContext.terminalIntent) {
           finalStatus = runContext.terminalIntent.status;
           finalReason = runContext.terminalIntent.reason;
           finalError = runContext.terminalIntent.errorJson;
-        } else if (runContext.abortReason === "user_stop" || controller.signal.aborted) {
+        } else if (controller.signal.aborted) {
           finalStatus = "cancelled";
           finalReason = "Music Agent was stopped by the user.";
         } else {
@@ -250,19 +339,19 @@ export default (nsp: Namespace) => {
             currentSubAgent: runContext.terminalIntent?.subAgent,
           });
           if (finished) {
-            await appendTerminalMemory(context, finalStatus, taskList, finalReason).catch((error) => {
+            await appendTerminalMemory(chatContext, finalStatus, taskList, finalReason).catch((error) => {
               console.warn("[musicProductionAgent] failed to persist terminal memory:", u.error(error).message);
             });
           }
         } catch (error) {
           console.error("[musicProductionAgent] failed to persist terminal run status:", u.error(error).message);
         } finally {
-          clearMusicAgentRunControl(context.isolationKey, createdRun.run.runId);
+          clearMusicAgentRunControl(chatContext.isolationKey, createdRun.run.runId);
         }
         if (finished) {
-          emitRunUpdate({ status: finished.status, run: finished });
+          broadcastRunUpdate({ status: finished.status, run: finished }, chatContext);
         } else {
-          emitRunUpdate({ status: "running", runId: createdRun.run.runId, terminalPersistenceFailed: true });
+          broadcastRunUpdate({ status: "running", runId: createdRun.run.runId, terminalPersistenceFailed: true }, chatContext);
         }
       }
     });

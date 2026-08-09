@@ -25,9 +25,11 @@ export interface TaskEvent {
   targetType?: string;
   targetId?: string;
   nodeId?: string;
+  /** Business object affected by the task (for video generation, this is videoId). */
+  businessId?: number;
   status: TaskStatus;
   phase?: string;
-  progress?: number;
+  progress?: number | null;
   result?: Record<string, unknown>;
   reason?: string;
   updatedAt: number;
@@ -41,7 +43,7 @@ export interface CreateUnifiedTaskInput {
   taskType: UnifiedTaskType;
   status?: TaskStatus;
   phase?: string;
-  progress?: number;
+  progress?: number | null;
   targetType?: string;
   targetId?: string | number;
   nodeId?: string;
@@ -100,6 +102,7 @@ function taskEventRow(task: any, resultJson?: string | null, reason?: string) {
     targetType: task.targetType || null,
     targetId: task.targetId == null ? null : String(task.targetId),
     nodeId: task.nodeId || null,
+    businessId: task.businessId ?? null,
     status: task.status || toTaskStatus(task.state) || "pending",
     phase: task.phase || null,
     progress: task.progress ?? null,
@@ -132,7 +135,7 @@ export async function createUnifiedTask(input: CreateUnifiedTaskInput, database:
       taskType: input.taskType,
       status,
       phase: input.phase || status,
-      progress: input.progress ?? 0,
+      progress: input.progress === undefined ? 0 : input.progress,
       targetType: input.targetType || null,
       targetId: input.targetId == null ? null : String(input.targetId),
       nodeId: input.nodeId || null,
@@ -215,7 +218,7 @@ export async function adoptLegacyTask(
     taskType: input.taskType,
     status,
     phase: input.phase || status,
-    progress: input.progress ?? 0,
+    progress: input.progress === undefined ? 0 : input.progress,
     targetType: input.targetType || null,
     targetId: input.targetId == null ? null : String(input.targetId),
     nodeId: input.nodeId || null,
@@ -258,14 +261,18 @@ export async function adoptLegacyTask(
 export interface UpdateUnifiedTaskInput {
   status?: TaskStatus;
   phase?: string;
-  progress?: number;
+  progress?: number | null;
+  payload?: unknown;
   result?: Record<string, unknown>;
   reason?: string;
-  providerTaskId?: string;
+  providerTaskId?: string | null;
   providerSubmittedAt?: number | null;
-  availableAt?: number;
+  availableAt?: number | null;
   leaseExpiresAt?: number | null;
   clearLease?: boolean;
+  expectedVersion?: number;
+  expectedStatus?: TaskStatus | TaskStatus[];
+  expectedProviderTaskId?: string | null;
 }
 
 export async function updateUnifiedTask(taskIdOrLegacyId: string | number, patch: UpdateUnifiedTaskInput, database: any = db) {
@@ -278,19 +285,27 @@ export async function updateUnifiedTask(taskIdOrLegacyId: string | number, patch
         : await query.where("taskId", taskIdOrLegacyId).first();
     if (!current) return null;
     const terminal = patch.status && ["completed", "failed", "cancelled"].includes(patch.status);
+    if (patch.expectedVersion !== undefined && Number(current.version || 0) !== patch.expectedVersion) return null;
+    if (patch.expectedStatus !== undefined) {
+      const statuses = Array.isArray(patch.expectedStatus) ? patch.expectedStatus : [patch.expectedStatus];
+      if (!statuses.includes(current.status)) return null;
+    }
+    if (patch.expectedProviderTaskId !== undefined && (current.providerTaskId || null) !== patch.expectedProviderTaskId) return null;
+    const payloadJson = patch.payload === undefined ? current.payloadJson : compactJson(patch.payload);
     const resultJson = patch.result === undefined ? current.resultJson : compactJson(patch.result);
     const nextVersion = Number(current.version || 0) + 1;
     const update: Record<string, unknown> = {
       version: nextVersion,
       updateTime: now,
       resultJson,
+      payloadJson,
     };
     if (patch.status) {
       update.status = patch.status;
       update.state = toLegacyTaskState(patch.status);
     }
     if (patch.phase !== undefined) update.phase = patch.phase;
-    if (patch.progress !== undefined) update.progress = Math.max(0, Math.min(100, patch.progress));
+    if (patch.progress !== undefined) update.progress = patch.progress == null ? null : Math.max(0, Math.min(100, patch.progress));
     if (patch.reason !== undefined) update.reason = patch.reason.slice(0, 4096);
     if (patch.providerTaskId !== undefined) update.providerTaskId = patch.providerTaskId;
     if (patch.providerSubmittedAt !== undefined) update.providerSubmittedAt = patch.providerSubmittedAt;
@@ -301,7 +316,11 @@ export async function updateUnifiedTask(taskIdOrLegacyId: string | number, patch
       update.leaseOwner = null;
       update.leaseExpiresAt = null;
     }
-    await trx("o_tasks").where("id", current.id).update(update);
+    const updated = await trx("o_tasks")
+      .where("id", current.id)
+      .where("version", current.version)
+      .update(update);
+    if (!updated) return null;
     const task = { ...current, ...update };
     const [eventId] = await trx("o_taskEvent").insert(taskEventRow(task, resultJson, patch.reason));
     taskLog.info("Unified task updated", {
@@ -320,22 +339,39 @@ export async function updateUnifiedTask(taskIdOrLegacyId: string | number, patch
   });
 }
 
-export async function claimUnifiedTask(workerId: string, leaseMs = 120_000, database: any = db, candidateId?: number) {
-  const now = Date.now();
-  const candidateQuery = database("o_tasks")
-    .where("status", "queued")
+export function whereRunnableUnifiedTask(query: any, now = Date.now()) {
+  return query
+    .where((builder: any) => {
+      builder.where("status", "queued").orWhere((video: any) => {
+        video
+          .where("handler", "video-generation")
+          .where("status", "processing")
+          .whereIn("phase", [
+            "confirming",
+            "processing",
+            "remote_reconcile",
+            "remote_unavailable_reconcile",
+            "resume-provider-query",
+          ]);
+      });
+    })
     .whereNotNull("handler")
     .where((builder: any) => builder.whereNull("availableAt").orWhere("availableAt", "<=", now))
     .where((builder: any) => builder.whereNull("leaseExpiresAt").orWhere("leaseExpiresAt", "<", now));
+}
+
+export async function claimUnifiedTask(workerId: string, leaseMs = 120_000, database: any = db, candidateId?: number) {
+  const now = Date.now();
+  const candidateQuery = whereRunnableUnifiedTask(database("o_tasks"), now);
   if (candidateId != null) candidateQuery.where("id", candidateId);
   const candidate = await candidateQuery.orderBy("priority", "desc").orderBy("createdAt", "asc").first();
   if (!candidate) return null;
   const claimed = await database("o_tasks")
-    .where({ id: candidate.id, status: "queued" })
+    .where({ id: candidate.id, status: candidate.status, version: candidate.version })
     .where((builder: any) => builder.whereNull("leaseExpiresAt").orWhere("leaseExpiresAt", "<", now))
     .update({
       status: "processing",
-      phase: "claimed",
+      phase: candidate.status === "queued" ? "claimed" : candidate.phase,
       state: toLegacyTaskState("processing"),
       leaseOwner: workerId,
       leaseExpiresAt: now + leaseMs,
@@ -447,9 +483,10 @@ export function formatTaskEvent(row: any): TaskEvent {
     targetType: row.targetType || undefined,
     targetId: row.targetId || undefined,
     nodeId: row.nodeId || undefined,
+    businessId: row.businessId == null ? undefined : Number(row.businessId),
     status: row.status,
     phase: row.phase || undefined,
-    progress: row.progress == null ? undefined : Number(row.progress),
+    progress: row.progress == null ? null : Number(row.progress),
     result: normalizeTaskResultSync(parseJsonObject(row.resultJson)),
     reason: row.reason || undefined,
     updatedAt: Number(row.createdAt),
@@ -486,6 +523,7 @@ export async function getTaskSnapshot(
       targetType: row.targetType,
       targetId: row.targetId,
       nodeId: row.nodeId,
+      businessId: row.businessId,
       status: row.status || toTaskStatus(row.state) || "pending",
       phase: row.phase,
       progress: row.progress,

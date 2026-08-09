@@ -1,5 +1,6 @@
 import { z } from "zod";
 import u from "@/utils";
+import { getAudioAssetResponse } from "@/services/audioAssetResponse";
 import { invokeAiObjectWithFallback, parseAiJsonWithSchema } from "@/services/aiJsonObject";
 import { readConfiguredSkill } from "@/services/skillResolver";
 import { getProjectContextPack } from "@/services/projectMaterial";
@@ -18,7 +19,7 @@ const musicBibleSchema = z.object({
   sourceSummary: jsonRecord.default({}),
 });
 
-const musicCueSchema = z.object({
+const musicCueCommonSchema = z.object({
   cueKey: z.string(),
   cueType: z.string(),
   title: z.string().optional(),
@@ -30,12 +31,30 @@ const musicCueSchema = z.object({
   estimatedMinDurationSec: z.number().int().positive().max(900).optional(),
   estimatedMaxDurationSec: z.number().int().positive().max(900).optional(),
   durationConfidence: z.enum(["low", "medium", "high"]).default("medium"),
-  usageMode: z.enum(["reuse", "new", "silence"]).default("new"),
-  editionId: z.number().int().positive().optional(),
-  libraryVersionId: z.number().int().positive().optional(),
   promptBrief: z.string().optional(),
   musicSpec: jsonRecord.default({}),
 });
+
+export const musicCueSchema = z.intersection(
+  musicCueCommonSchema,
+  z.discriminatedUnion("usageMode", [
+    z.object({
+      usageMode: z.literal("reuse"),
+      editionId: z.number().int().positive(),
+      libraryVersionId: z.number().int().positive().optional(),
+    }),
+    z.object({
+      usageMode: z.literal("new"),
+      editionId: z.number().int().positive().optional(),
+      libraryVersionId: z.number().int().positive().optional(),
+    }),
+    z.object({
+      usageMode: z.literal("silence"),
+      editionId: z.null().optional(),
+      libraryVersionId: z.null().optional(),
+    }),
+  ]),
+);
 
 const musicLibraryEditionPlanSchema = z.object({
   editionKey: z.string(),
@@ -193,7 +212,7 @@ export async function generateMusicBible(input: { projectId: number; instruction
   ]);
   const context = await collectMusicContext({ projectId: input.projectId, mode: "concept" });
   const result = await invokeAiObjectWithFallback({
-    modelKey: "productionAgent",
+    modelKey: "musicProductionAgent:executionAgent",
     label: "Music bible",
     schema: musicBibleSchema,
     system: [
@@ -242,7 +261,7 @@ export async function generateMusicPlan(input: {
   ]);
   const context = await collectMusicContext({ projectId: input.projectId, scriptId: input.scriptId, mode: input.mode });
   const result = await invokeAiObjectWithFallback({
-    modelKey: "productionAgent",
+    modelKey: "musicProductionAgent:executionAgent",
     label: "Music plan",
     schema: musicPlanSchema,
     system: [
@@ -250,6 +269,7 @@ export async function generateMusicPlan(input: {
       "Mode contract: concept returns recommendations only; project returns libraryItems and no episode cues; episode returns semantic cues and never creates project libraryItems in the AI response.",
       "Episode cues are split by sustained narrative and musical meaning, never by camera cuts or storyboard rows. One cue may cover many shots and scenes.",
       "Every episode cue chooses usageMode reuse, new, or silence. Reuse existing library editions whenever they satisfy the narrative function.",
+      "A reuse cue must copy one exact editionId from selectedContext.musicLibrary. Include libraryVersionId only when choosing one exact completedVersions id. Never output reuse without a real editionId, and never infer ids from titles.",
       "All durations are pre-edit estimates. Use semantic script/director anchors, not final timecodes.",
       technique.content,
     ].join("\n\n"),
@@ -286,8 +306,6 @@ export async function generateMusicPlan(input: {
     if (estimated != null && (minimum == null || maximum == null || minimum > estimated || estimated > maximum)) {
       throw new Error(`Cue ${cue.cueKey} has an invalid estimated duration range`);
     }
-    if (cue.usageMode === "reuse" && cue.editionId == null) throw new Error(`Cue ${cue.cueKey} uses reuse but does not identify an existing edition`);
-    if (cue.usageMode === "silence" && (cue.editionId != null || cue.libraryVersionId != null)) throw new Error(`Silence cue ${cue.cueKey} cannot reference music assets`);
   }
   const version = await nextVersion("o_musicPlan", {
     projectId: input.projectId,
@@ -526,9 +544,18 @@ export async function listMusicCues(input: { projectId: number; scriptId?: numbe
     "cueId",
     cues.map((cue: any) => cue.id),
   );
+  const assetsWithAudio = await Promise.all(
+    assets.map(async (asset: any) => ({
+      ...asset,
+      audioAsset: asset.assetsId ? await getAudioAssetResponse(Number(asset.assetsId)) : null,
+    })),
+  );
   const assetsByCue = new Map<number, any[]>();
-  for (const asset of assets) {
+  for (const asset of assetsWithAudio) {
     const list = assetsByCue.get(Number(asset.cueId)) || [];
+    // A cue candidate points at an audio parent asset. Return the same
+    // playable-media shape as music-library versions so consumers do not
+    // mistake a completed candidate for one without audio.
     list.push(asset);
     assetsByCue.set(Number(asset.cueId), list);
   }

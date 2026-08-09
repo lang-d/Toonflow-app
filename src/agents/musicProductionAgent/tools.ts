@@ -41,19 +41,19 @@ import {
 import { listAvailableMusicModels } from "@/services/musicModelCapability";
 import { getProjectDefaultMusicModel } from "@/services/musicModelSelection";
 import { readMusicModelProfile } from "@/services/musicCueCompiler";
-import type { AgentRunContext } from "@/services/agentRun";
+import { accessProductionResource, createProductionResourceRef } from "@/services/productionResource";
 
 type MusicToolConfig = {
   resTool: ResTool;
   msg: ReturnType<ResTool["newMessage"]>;
-  onTaskQueued?: (task: { taskId: string; targetType: string; targetId?: string | number | null }) => void;
-  runContext?: AgentRunContext;
+  onTaskQueued?: (task: { taskId: string; targetType: string; targetId?: string | number | null; legacyTaskId?: number; status?: string }) => void | Promise<void>;
 };
 
 export const musicProductionToolNames = [
   "list_available_music_models",
   "read_music_model_profile",
-  "update_agent_progress",
+  "get_music_production_resource",
+  "resource_access",
   "generate_music_bible",
   "review_music_bible",
   "generate_music_plan",
@@ -109,19 +109,19 @@ function contextMode(resTool: ResTool): MusicScopeMode {
 function thinking(config: MusicToolConfig, title: string) {
   const stream = config.msg.thinking(title);
   return {
-    done(result: unknown) {
-      reportQueuedTasks(config, result);
+    async done(result: unknown) {
+      await reportQueuedTasks(config, result);
       stream.complete({ title, text: typeof result === "string" ? result : JSON.stringify(result) });
       return result;
     },
   };
 }
 
-function reportQueuedTasks(config: MusicToolConfig, value: unknown, seen = new Set<unknown>()) {
+async function reportQueuedTasks(config: MusicToolConfig, value: unknown, seen = new Set<unknown>()): Promise<void> {
   if (!value || seen.has(value)) return;
   if (typeof value === "string") {
     try {
-      reportQueuedTasks(config, JSON.parse(value), seen);
+      await reportQueuedTasks(config, JSON.parse(value), seen);
     } catch {
       // Plain Agent text is not a task envelope.
     }
@@ -131,18 +131,20 @@ function reportQueuedTasks(config: MusicToolConfig, value: unknown, seen = new S
   seen.add(value);
   const record = value as Record<string, unknown>;
   if (typeof record.taskId === "string" && typeof record.targetType === "string") {
-    config.onTaskQueued?.({
+    await config.onTaskQueued?.({
       taskId: record.taskId,
       targetType: record.targetType,
       targetId: typeof record.targetId === "string" || typeof record.targetId === "number" ? record.targetId : null,
+      legacyTaskId: typeof record.legacyTaskId === "number" ? record.legacyTaskId : undefined,
+      status: typeof record.status === "string" ? record.status : undefined,
     });
   }
-  Object.values(record).forEach((item) => reportQueuedTasks(config, item, seen));
+  for (const item of Object.values(record)) await reportQueuedTasks(config, item, seen);
 }
 
 async function queueTaskResult(config: MusicToolConfig, result: Promise<unknown>) {
   const resolved = await result;
-  reportQueuedTasks(config, resolved);
+  await reportQueuedTasks(config, resolved);
   return resolved;
 }
 
@@ -204,33 +206,43 @@ export default function useMusicProductionTools(config: MusicToolConfig) {
     execute: async ({ model }) => ({ model, profile: await readMusicModelProfile(model) }),
   });
 
-  const update_agent_progress = tool({
-    description: "Report the current business progress for this run. This records a timeline fact and does not end the run.",
-    inputSchema: jsonSchema<{ stage: string; subAgent?: string; title: string; detail?: string; phase?: string }>(
-      z.object({ stage: z.string().min(1).max(100), subAgent: z.string().min(1).max(100).optional(), title: z.string().min(1).max(300), detail: z.string().max(2000).optional(), phase: z.string().max(80).optional() }).toJSONSchema(),
+  const get_music_production_resource = tool({
+    description: "Return a version-bound resourceRef for the current episode script, director plan or storyboard. Project music scope has no single episode resource.",
+    inputSchema: jsonSchema<{ key: "script" | "scriptPlan" | "storyboard" }>(
+      z.object({ key: z.enum(["script", "scriptPlan", "storyboard"]) }).toJSONSchema(),
     ),
-    execute: async (input) => {
-      if (!config.runContext) throw new Error("Agent run context is unavailable");
-      await config.runContext.updateProgress(input);
-      return { recorded: true };
+    execute: async ({ key }) => {
+      const scriptId = contextScriptId(config.resTool);
+      if (scriptId == null) throw new Error("An episode scriptId is required to access a production resource");
+      return createProductionResourceRef(projectIdFrom(config.resTool), scriptId, key);
     },
   });
 
-  const complete_agent_run = tool({
-    description: "Explicitly finish this Agent Run after the requested work is complete. This records the model-declared terminal state and does not alter music business facts or task status.",
-    inputSchema: jsonSchema<{ stage: string; subAgent?: string; summary?: string }>(
-      z.object({ stage: z.string().min(1).max(100), subAgent: z.string().min(1).max(100).optional(), summary: z.string().max(2000).optional() }).toJSONSchema(),
+  const resource_access = tool({
+    description: "Read, search or stat a version-bound episode production resource. Follow nextCursor until eof when complete coverage is required.",
+    inputSchema: jsonSchema<{
+      resourceRef: string;
+      operation: "stat" | "search" | "read";
+      query?: string;
+      position?: number;
+      cursor?: string;
+      limit?: number;
+    }>(
+      z
+        .object({
+          resourceRef: z.string().min(1),
+          operation: z.enum(["stat", "search", "read"]),
+          query: z.string().optional(),
+          position: z.number().int().min(0).optional(),
+          cursor: z.string().optional(),
+          limit: z.number().int().positive().optional(),
+        })
+        .toJSONSchema(),
     ),
     execute: async (input) => {
-      if (!config.runContext) throw new Error("Agent Run context is required to complete a run");
-      config.runContext.setCompleted({
-        stage: input.stage,
-        subAgent: input.subAgent,
-        reason: input.summary || "",
-        resultJson: { kind: "agent_completed", summary: input.summary ?? null },
-      });
-      config.runContext.stopForTerminal();
-      return { status: "completed", terminal: true, ...input };
+      const scriptId = contextScriptId(config.resTool);
+      if (scriptId == null) throw new Error("An episode scriptId is required to access a production resource");
+      return accessProductionResource({ projectId: projectIdFrom(config.resTool), scriptId }, input);
     },
   });
 
@@ -644,8 +656,8 @@ export default function useMusicProductionTools(config: MusicToolConfig) {
   return {
     list_available_music_models,
     read_music_model_profile,
-    update_agent_progress,
-    complete_agent_run,
+    get_music_production_resource,
+    resource_access,
     generate_music_bible,
     review_music_bible,
     generate_music_plan,

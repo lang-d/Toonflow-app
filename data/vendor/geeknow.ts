@@ -103,6 +103,7 @@ declare const exports: {
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any;
   imageRequest: (c: ImageConfig, m: ImageModel) => Promise<string>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>;
+  resolveVideoPromptModelId?: (model: VideoModel) => string | undefined;
   ttsRequest: (c: TTSConfig, m: TTSModel) => Promise<string>;
   checkForUpdates?: () => Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }>;
   updateVendor?: () => Promise<string>;
@@ -110,7 +111,7 @@ declare const exports: {
 
 const vendor: VendorConfig = {
   id: "geeknow",
-  version: "1.1",
+  version: "1.2",
   author: "Toonflow",
   name: "Geeknow API",
   description:
@@ -557,6 +558,9 @@ const buildVideoBody = async (config: VideoConfig, model: VideoModel): Promise<R
   return await buildGenericVideoBody(config, model);
 };
 
+const resolveVideoPromptModelId = (model: VideoModel): string | undefined =>
+  model.modelName.startsWith("seedance-2.0") ? "seedance-2" : undefined;
+
 const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3) => {
   return createOpenAI({ baseURL: getBaseUrl(), apiKey: getApiKey() }).chat(model.modelName);
 };
@@ -647,7 +651,7 @@ const ttsRequest = async (config: TTSConfig, model: TTSModel): Promise<string> =
 };
 
 const checkForUpdates = async (): Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }> => {
-  return { hasUpdate: false, latestVersion: "1.1", notice: "Geeknow API vendor is up to date." };
+  return { hasUpdate: false, latestVersion: "1.2", notice: "Geeknow API vendor is up to date." };
 };
 
 const updateVendor = async (): Promise<string> => {
@@ -658,6 +662,7 @@ exports.vendor = vendor;
 exports.textRequest = textRequest;
 exports.imageRequest = imageRequest;
 exports.videoRequest = videoRequest;
+exports.resolveVideoPromptModelId = resolveVideoPromptModelId;
 exports.ttsRequest = ttsRequest;
 exports.checkForUpdates = checkForUpdates;
 exports.updateVendor = updateVendor;

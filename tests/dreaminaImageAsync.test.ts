@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   buildImageArgs,
@@ -8,8 +11,10 @@ import {
   discoverMusicCommandsFromHelp,
   extractMusicDurationRange,
   extractSupportedFlags,
+  findFirstDreaminaImageFile,
   parseDreaminaImagePollOutput,
   parseDreaminaTaskOutput,
+  resolveDreaminaImagePollResult,
 } from "../src/utils/dreaminaCli";
 
 test("Dreamina image async output keeps querying tasks pending", () => {
@@ -69,7 +74,108 @@ test("Dreamina 5.0 text-to-image args retain the CLI model key and remain asynch
   assert.equal(imageArgs.command, "text2image");
   assert.equal(imageArgs.args.includes("--resolution_type=4k"), true);
   assert.equal(imageArgs.args.includes("--model_version=5.0"), true);
+  assert.equal(imageArgs.args.includes("--generate_num=1"), true);
   assert.equal(imageArgs.args.some((arg) => arg.startsWith("--poll=")), false);
+});
+
+test("Dreamina image args keep an explicit requested count and reject invalid counts", () => {
+  const explicit = buildImageArgs(
+    { prompt: "test", size: "2K", aspectRatio: "16:9", generateCount: 3 },
+    { name: "image", modelName: "text2image:5.0", type: "image" } as any,
+  );
+  assert.equal(explicit.args.includes("--generate_num=3"), true);
+  assert.throws(
+    () => buildImageArgs(
+      { prompt: "test", size: "2K", aspectRatio: "16:9", generateCount: 1.5 },
+      { name: "image", modelName: "text2image:5.0", type: "image" } as any,
+    ),
+    /generateCount must be an integer from 1 to 10/,
+  );
+});
+
+test("Dreamina image polling accepts the first downloadable result without waiting for all provider candidates", () => {
+  const submitId = "image-submit-a";
+  const querying = parseDreaminaImagePollOutput(
+    JSON.stringify({ submit_id: submitId, gen_status: "querying", image_url: "https://example.com/early.png" }),
+    submitId,
+  );
+  const early = resolveDreaminaImagePollResult(querying, {
+    data: "data:image/png;base64,EARLY",
+    rawOutput: "querying",
+    failureFallback: "unexpected failure",
+  });
+  assert.equal(early.completed, true);
+  assert.equal(early.data, "data:image/png;base64,EARLY");
+
+  const unknown = parseDreaminaImagePollOutput("temporary query transport issue", submitId);
+  const unknownResult = resolveDreaminaImagePollResult(unknown, {
+    rawOutput: "temporary query transport issue",
+    failureFallback: "unexpected failure",
+  });
+  assert.equal(unknownResult.completed, false);
+
+  const stillGenerating = resolveDreaminaImagePollResult(
+    parseDreaminaImagePollOutput(JSON.stringify({ submit_id: submitId, gen_status: "querying" }), submitId),
+    { rawOutput: "still generating", failureFallback: "unexpected failure" },
+  );
+  assert.equal(stillGenerating.completed, false);
+
+  const success = parseDreaminaImagePollOutput(
+    JSON.stringify({ submit_id: submitId, gen_status: "success", image_url: "https://example.com/final.png" }),
+    submitId,
+  );
+  const complete = resolveDreaminaImagePollResult(success, {
+    data: success.imageUrl,
+    rawOutput: "success",
+    failureFallback: "unexpected failure",
+  });
+  assert.equal(complete.completed, true);
+  assert.equal(complete.data, "https://example.com/final.png");
+
+  const noResultYet = resolveDreaminaImagePollResult(success, {
+    rawOutput: "success without media",
+    failureFallback: "unexpected failure",
+  });
+  assert.equal(noResultYet.completed, false);
+
+  const failed = parseDreaminaImagePollOutput(
+    JSON.stringify({ submit_id: submitId, gen_status: "failed", fail_reason: "provider rejected request" }),
+    submitId,
+  );
+  const failure = resolveDreaminaImagePollResult(failed, {
+    rawOutput: "failed",
+    failureFallback: "unexpected failure",
+  });
+  assert.equal(failure.completed, true);
+  assert.equal(failure.error, "provider rejected request");
+
+  const finishWithoutMedia = resolveDreaminaImagePollResult(
+    parseDreaminaImagePollOutput(JSON.stringify({ submit_id: submitId, gen_status: "querying", queue_info: { queue_status: "Finish" } }), submitId),
+    { rawOutput: "finish without media", failureFallback: "unexpected failure" },
+  );
+  assert.equal(finishWithoutMedia.completed, false);
+
+  const finishWithFirstImage = resolveDreaminaImagePollResult(
+    parseDreaminaImagePollOutput(JSON.stringify({ submit_id: submitId, gen_status: "querying", queue_info: { queue_status: "Finish" } }), submitId),
+    { data: "data:image/png;base64,FIRST", rawOutput: "finish with first image", failureFallback: "unexpected failure" },
+  );
+  assert.equal(finishWithFirstImage.completed, true);
+  assert.equal(finishWithFirstImage.data, "data:image/png;base64,FIRST");
+});
+
+test("Dreamina multi-image downloads persist the first generated image only", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "toonflow-dreamina-first-image-"));
+  try {
+    const baseTime = new Date("2026-08-09T15:50:37.000Z");
+    for (const [name, offset] of [["task_image_4.png", 3], ["task_image_1.png", 0], ["task_image_2.png", 1], ["task_image_3.png", 2]] as const) {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, name);
+      fs.utimesSync(file, baseTime, new Date(baseTime.getTime() + offset * 1000));
+    }
+    assert.equal(path.basename(findFirstDreaminaImageFile(dir) || ""), "task_image_1.png");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("Dreamina music commands are discovered only from CLI help", () => {

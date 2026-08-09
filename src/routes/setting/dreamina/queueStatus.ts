@@ -8,28 +8,31 @@ export default router.post("/", async (_req, res) => {
   try {
     const now = Date.now();
     const rows = await u
-      .db("o_videoGenerationTask")
-      .where("vendorId", "dreamina")
-      .whereIn("status", ["queued", "submitting", "confirming", "processing"])
+      .db("o_videoGenerationTask as detail")
+      .join("o_tasks as task", "task.id", "detail.taskCenterId")
+      .where("detail.vendorId", "dreamina")
+      .whereIn("task.status", ["pending", "queued", "submitting", "processing"])
       .select(
-        "id",
-        "videoId",
-        "model",
-        "providerModelKey",
-        "providerAccountId",
-        "providerSubmittedAt",
-        "submitId",
-        "phase",
-        "status",
-        "state",
-        "nextSubmitTime",
-        "nextPollTime",
-        "pollCount",
-        "providerQueueStatus",
-        "providerQueueIndex",
-        "providerQueueLength",
-        "startTime",
-        "updateTime",
+        "detail.id",
+        "detail.videoId",
+        "detail.model",
+        "detail.providerModelKey",
+        "detail.providerCapacityKey",
+        "detail.providerAccountId",
+        "task.providerSubmittedAt as providerSubmittedAt",
+        "task.providerTaskId as submitId",
+        "detail.nextSubmitTime",
+        "detail.nextPollTime",
+        "detail.pollCount",
+        "detail.providerQueueStatus",
+        "detail.providerQueueIndex",
+        "detail.providerQueueLength",
+        "detail.startTime",
+        "detail.updateTime",
+        "task.status as status",
+        "task.phase as phase",
+        "task.state as state",
+        "task.progress as progress",
       );
     const tasks = rows.map((row) => ({
       ...row,
@@ -66,15 +69,15 @@ export default router.post("/", async (_req, res) => {
           capacityBlocked: false,
         };
       item.total += 1;
-      if (row.status === "submitting") {
+      if (row.phase === "submitting") {
         item.submitting += 1;
         item.occupiedSlots += 1;
-      } else if (row.status === "confirming") {
+      } else if (row.phase === "confirming") {
         item.confirming += 1;
         item.occupiedSlots += 1;
-      } else if (row.status === "processing") {
+      } else if (row.status === "processing" && row.providerCapacityKey) {
         item.processing += 1;
-        item.knownActive += 1;
+        if (row.submitId) item.knownActive += 1;
         item.occupiedSlots += 1;
       } else {
         item.waiting += 1;

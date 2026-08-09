@@ -1,4 +1,4 @@
-// @db-hash 8a91586d34eb760e0751a0eafc49537d
+// @db-hash 08205a93798403aa8cd2b87baf1277eb
 //该文件由脚本自动生成，请勿手动修改
 
 export interface memories {
@@ -432,6 +432,8 @@ export interface o_project {
   'type'?: string | null;
   'userId'?: number | null;
   'videoModel'?: string | null;
+  'videoPromptType'?: string | null;
+  'videoPromptTypeSelections'?: string | null;
   'videoRatio'?: string | null;
 }
 export interface o_projectMaterial {
@@ -597,6 +599,7 @@ export interface o_storyRevisionMap {
   'sourceArtifactId': number;
 }
 export interface o_taskEvent {
+  'businessId'?: number | null;
   'createdAt': number;
   'id'?: number;
   'legacyTaskId'?: number | null;
@@ -687,6 +690,7 @@ export interface o_video {
   'scriptId'?: number | null;
   'state'?: string | null;
   'time'?: number | null;
+  'videoPromptProfileJson'?: string | null;
   'videoTrackId'?: number | null;
 }
 export interface o_videoGenerationTask {
@@ -708,6 +712,7 @@ export interface o_videoGenerationTask {
   'pollCount'?: number | null;
   'projectId'?: number | null;
   'providerAccountId'?: string | null;
+  'providerCapacityKey'?: string | null;
   'providerModelKey'?: string | null;
   'providerQueueIndex'?: number | null;
   'providerQueueLength'?: number | null;
@@ -749,6 +754,7 @@ export interface o_videoTrack {
   'musicPlanJson'?: string | null;
   'projectId'?: number | null;
   'prompt'?: string | null;
+  'promptProfileJson'?: string | null;
   'reason'?: string | null;
   'reviewIssuesJson'?: string | null;
   'reviewState'?: string | null;

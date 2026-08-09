@@ -25,7 +25,7 @@ export async function generateMusicLyricsDraft(input: {
   if (input.basedOnId != null && !base) throw new Error("Base lyrics version does not exist");
   const skill = await readMusicSkill("music_lyrics_technique.md", "Write singable lyrics from the confirmed music work brief. Keep a clear point of view and structure.");
   const result = await invokeAiObjectWithFallback({
-    modelKey: "productionAgent",
+    modelKey: "musicProductionAgent:executionAgent",
     label: "Music lyrics",
     schema: lyricsSchema,
     system: [

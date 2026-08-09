@@ -4,10 +4,8 @@ import u from "@/utils";
 import Memory from "@/utils/agent/memory";
 import { getProjectContextPack } from "@/services/projectMaterial";
 import { readConfiguredSkill } from "@/services/skillResolver";
-import {
-  consumeFullStream as consumeAgentFullStream,
-  createAgentModelStreamScope,
-} from "@/agents/shared/streaming";
+import { runAgentRuntime } from "@/agents/shared/runtime";
+import { createSharedAgentTools } from "@/agents/shared/tools";
 import useMusicProductionTools from "@/agents/musicProductionAgent/tools";
 import {
   musicProjectIsolationKey,
@@ -15,7 +13,7 @@ import {
   type MusicScopeInput,
 } from "@/services/musicScope";
 import { listMusicCues, parseJsonValue, type MusicScopeMode } from "@/services/musicDirector";
-import { recordAgentModelStreamFinished, type AgentRunContext } from "@/services/agentRun";
+import type { AgentRunContext } from "@/services/agentRun";
 import { readScriptContent } from "@/services/scriptWorkspaceText";
 
 export interface AgentContext {
@@ -26,8 +24,21 @@ export interface AgentContext {
   abortSignal?: AbortSignal;
   resTool: ResTool;
   msg: ReturnType<ResTool["newMessage"]>;
-  onTaskQueued?: (task: { taskId: string; targetType: string; targetId?: string | number | null }) => void;
+  onTaskQueued?: (task: { taskId: string; targetType: string; targetId?: string | number | null; legacyTaskId?: number; status?: string }) => void | Promise<void>;
   runContext?: AgentRunContext;
+  continuation?: {
+    kind: "awaiting_user" | "resumable_interruption";
+    run: {
+      runId: string;
+      reason: string | null;
+      currentStage: string | null;
+      currentSubAgent: string | null;
+      resultJson: string | null;
+      startedAt: number | null;
+    };
+    decision?: unknown;
+    checkpoint?: unknown;
+  } | null;
   thinkConfig: {
     think: boolean;
     thinlLevel: 0 | 1 | 2 | 3;
@@ -217,6 +228,20 @@ async function ensureMusicProductionAgentDeploy() {
     desc: "配乐创作讨论和任务调度",
     copyWhenEmpty: true,
   });
+  await ensureAgentDeployRow({
+    key: "musicProductionAgent:executionAgent",
+    fallbackKey: "productionAgent",
+    name: "配乐生产 Agent：执行层",
+    desc: "Music Bible、配乐计划、歌词与提示词创作执行",
+    copyWhenEmpty: true,
+  });
+  await ensureAgentDeployRow({
+    key: "musicProductionAgent:supervisionAgent",
+    fallbackKey: "productionAgent:supervisionAgent",
+    name: "配乐生产 Agent：监督层",
+    desc: "Music Bible、配乐计划、歌词与提示词审核",
+    copyWhenEmpty: true,
+  });
 
   const agentUseMode = await u.db("o_setting").where("key", "agentUseMode").first();
   if (agentUseMode?.value === "1") {
@@ -231,6 +256,20 @@ async function ensureMusicProductionAgentDeploy() {
   }
 }
 
+function buildContinuationPrompt(continuation: AgentContext["continuation"]) {
+  if (!continuation) return "";
+  if (continuation.kind === "resumable_interruption") {
+    return `## Resumable prior Music Agent Chat checkpoint (non-authoritative)\nThe current user message is authoritative. Resume only when it asks to continue.\n- sourceRunId: ${continuation.run.runId}\n- stage: ${continuation.run.currentStage || "unknown"}\n- checkpoint: ${JSON.stringify(continuation.checkpoint)}`;
+  }
+  return `## Recent awaiting-user Music Agent run (non-authoritative)\nUse current formal music tools before acting on versions or task results.\n- sourceRunId: ${continuation.run.runId}\n- stage: ${continuation.run.currentStage || "unknown"}\n- question: ${continuation.run.reason || ""}\n- context: ${JSON.stringify(continuation.decision)}`;
+}
+
+function contextOverflowFeedback(ctx: AgentContext) {
+  const feedback = ctx.resTool.newMessage("assistant", "配乐导演");
+  feedback.text("当前 Chat 因供应商连续两次报告上下文溢出而安全中断，工作断点已保存。可以发送“继续”在新 Chat 中恢复，或切换更大上下文模型后继续。");
+  feedback.complete();
+}
+
 export async function runDecisionAI(ctx: AgentContext) {
   const projectId = Number(ctx.resTool.data.projectId);
   const scriptId = ctx.resTool.data.scriptId == null ? null : Number(ctx.resTool.data.scriptId);
@@ -241,9 +280,14 @@ export async function runDecisionAI(ctx: AgentContext) {
   }
   await ensureMusicProductionAgentDeploy();
 
-  const currentMemory = new Memory("musicProductionAgent", ctx.isolationKey);
-  await currentMemory.add("user", ctx.text, ctx.userMessageTime == null ? undefined : { createTime: ctx.userMessageTime });
+  const currentMemory = new Memory("musicProductionAgent", ctx.isolationKey, {
+    autoSummarize: false,
+    allowedRoles: ["user", "assistant:final", "assistant:project-music-note", "assistant:episode-music-note"],
+    includeSummaries: false,
+    includeAutomaticRag: false,
+  });
   const currentMem = await currentMemory.get(ctx.text);
+  await currentMemory.add("user", ctx.text, ctx.userMessageTime == null ? undefined : { createTime: ctx.userMessageTime });
 
   const projectKey = musicProjectIsolationKey(projectId);
   const projectMemory = projectKey === ctx.isolationKey ? currentMemory : new Memory("musicProductionAgent", projectKey);
@@ -251,52 +295,65 @@ export async function runDecisionAI(ctx: AgentContext) {
   const prompt = await readPrompt();
   const readOnlyContext = await buildReadOnlyProductionContext({ projectId, scriptId, mode });
 
-  const modelStreamScope = createAgentModelStreamScope(ctx.abortSignal);
-  try {
-    const { fullStream } = await u.Ai.Text(
-      "musicProductionAgent:decisionAgent",
-      ctx.thinkConfig.think,
-      ctx.thinkConfig.thinlLevel,
-    ).stream({
-      messages: [
-        { role: "system", content: prompt },
-        {
-          role: "assistant",
-          content: [
-            buildMemPrompt("Project Music Memory", projectMem),
-            projectKey === ctx.isolationKey ? "" : buildMemPrompt("Episode Music Memory", currentMem),
-            `## Read-only Production Context\n${JSON.stringify(readOnlyContext, null, 2)}`,
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
-        },
-        { role: "user", content: ctx.text },
-      ],
-      abortSignal: modelStreamScope.signal,
-      tools: {
-        ...currentMemory.getTools(),
-        ...useMusicProductionTools({ resTool: ctx.resTool, msg: ctx.msg, onTaskQueued: ctx.onTaskQueued, runContext: ctx.runContext }),
-      },
-      onFinish: async (completion) => {
-        if (ctx.runContext) {
-          await recordAgentModelStreamFinished(ctx.runContext.runId, completion).catch((error) => {
-            console.warn("[musicProductionAgent] failed to record model stream completion:", u.error(error).message);
-          });
-        }
-        await currentMemory.add("assistant:decision", stripXmlTags(completion.text), { createTime: new Date(ctx.msg.datetime).getTime() });
-      },
+  const initialContext = [
+    buildMemPrompt("Project Music Memory", projectMem),
+    projectKey === ctx.isolationKey ? "" : buildMemPrompt("Episode Music Memory", currentMem),
+    buildContinuationPrompt(ctx.continuation),
+    `## Read-only Production Context\n${JSON.stringify(readOnlyContext, null, 2)}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const buildSharedTools = () =>
+    createSharedAgentTools({
+      runContext: ctx.runContext,
+      projectId,
+      scriptId,
+      projectScopeScriptId: 0,
+      taskTargetTypes: ["musicBible", "musicPlan", "musicPrompt", "musicLyrics", "musicCueAsset", "musicLibraryVersion"],
     });
 
-    await consumeAgentFullStream({
-      agentName: "musicProductionAgent:decisionAgent",
-      fullStream,
-      initialMsg: ctx.msg,
-      userAbortSignal: ctx.abortSignal,
-      abortModelStream: modelStreamScope.abort,
-      projectId,
-      scriptId: scriptId ?? undefined,
-    });
-  } finally {
-    modelStreamScope.dispose();
-  }
+  await runAgentRuntime({
+    agentName: "musicProductionAgent:decisionAgent",
+    agentLabel: "Music Production Agent",
+    modelKey: "musicProductionAgent:decisionAgent",
+    stableInstructions: prompt,
+    objective: ctx.text,
+    initialContext,
+    stage: "musicDecision",
+    subAgent: "decisionAgent",
+    projectId,
+    scriptId,
+    think: ctx.thinkConfig.think,
+    thinkLevel: ctx.thinkConfig.thinlLevel,
+    abortSignal: ctx.abortSignal,
+    runContext: ctx.runContext,
+    message: {
+      get: () => ctx.msg,
+      set: (message) => {
+        ctx.msg = message;
+      },
+      create: () => ctx.resTool.newMessage("assistant", "配乐导演"),
+    },
+    buildTools: () => ({
+      ...currentMemory.getTools(),
+      ...useMusicProductionTools({
+        resTool: ctx.resTool,
+        msg: ctx.msg,
+        onTaskQueued: ctx.onTaskQueued,
+      }),
+      ...buildSharedTools(),
+    }),
+    terminalCorrection: {
+      maxAttempts: 1,
+      buildTools: () => {
+        const { await_user_decision, complete_agent_run } = buildSharedTools();
+        return { await_user_decision, complete_agent_run };
+      },
+    },
+    onRepeatedContextOverflow: () => contextOverflowFeedback(ctx),
+  });
+
+  const finalMemory = stripXmlTags(ctx.runContext?.terminalIntent?.reason || "");
+  if (finalMemory) await currentMemory.add("assistant:final", finalMemory, { createTime: Date.now() });
 }

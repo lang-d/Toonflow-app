@@ -30,6 +30,7 @@ export default function runCode(code: string, vendor?: Record<string, any>) {
     createGoogleGenerativeAI,
     zipImage,
     zipImageResolution,
+    fitImagesForMultipartBudget,
     urlToBase64,
     mergeImages,
     pollTask,
@@ -78,6 +79,48 @@ export async function zipImageResolution(completeBase64: string, width: number, 
   const buffer = Buffer.from(completeBase64.split(",")[1], "base64");
   const out = await sharp(buffer).resize(width, height).toBuffer();
   return `data:image/jpeg;base64,${out.toString("base64")}`;
+}
+
+/**
+ * Produces in-memory WebP transport copies that fit an explicit combined
+ * binary-size budget. Persisted project images are never read or written here.
+ */
+export async function fitImagesForMultipartBudget(imageDataUrls: string[], maxBytes: number): Promise<string[]> {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) throw new Error("Image transport budget must be greater than zero");
+  if (!imageDataUrls.length) return [];
+
+  const sourceBuffers = imageDataUrls.map((value) => {
+    const match = String(value || "").match(/^data:image\/[^;,]+;base64,([A-Za-z0-9+/=\s]+)$/i);
+    if (!match) throw new Error("Image transport adaptation requires image Data URIs");
+    return Buffer.from(match[1].replace(/\s/g, ""), "base64");
+  });
+  if (sourceBuffers.reduce((total, item) => total + item.length, 0) <= maxBytes) return imageDataUrls;
+
+  const candidates = [
+    { maxEdge: 2048, quality: 88 },
+    { maxEdge: 1536, quality: 88 },
+    { maxEdge: 1280, quality: 84 },
+    { maxEdge: 1024, quality: 80 },
+    { maxEdge: 896, quality: 76 },
+    { maxEdge: 768, quality: 72 },
+    { maxEdge: 640, quality: 68 },
+    { maxEdge: 512, quality: 64 },
+  ];
+  for (const { maxEdge, quality } of candidates) {
+    const outputs = await Promise.all(
+      sourceBuffers.map((buffer) =>
+        sharp(buffer)
+          .rotate()
+          .resize({ width: maxEdge, height: maxEdge, fit: "inside", withoutEnlargement: true })
+          .webp({ quality, alphaQuality: 100, smartSubsample: true })
+          .toBuffer(),
+      ),
+    );
+    if (outputs.reduce((total, item) => total + item.length, 0) <= maxBytes) {
+      return outputs.map((buffer) => `data:image/webp;base64,${buffer.toString("base64")}`);
+    }
+  }
+  throw new Error(`Selected image references cannot fit the ${Math.floor(maxBytes / 1024 / 1024)} MiB XLCSH upload budget`);
 }
 
 //url转Base64

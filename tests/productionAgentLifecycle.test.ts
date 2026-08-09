@@ -6,10 +6,12 @@ import test from "node:test";
 const source = fs.readFileSync(path.join(process.cwd(), "src", "socket", "routes", "productionAgent.ts"), "utf8");
 const runRegistrySource = fs.readFileSync(path.join(process.cwd(), "src", "services", "productionAgentRunRegistry.ts"), "utf8");
 const agentProxySource = fs.readFileSync(path.join(process.cwd(), "src", "socket", "routes", "agentProxy.ts"), "utf8");
+const sharedLifecycleSource = fs.readFileSync(path.join(process.cwd(), "src", "socket", "routes", "sharedAgentLifecycle.ts"), "utf8");
+const sharedRuntimeSource = fs.readFileSync(path.join(process.cwd(), "src", "agents", "shared", "runtime.ts"), "utf8");
 
 test("production agent disconnect detaches the client without aborting the run", () => {
-  assert.match(source, /recordAgentRunEvent\(currentRunContext\.runId, "client_detached"/);
-  assert.match(source, /recordAgentRunEvent\(activeRun\.runId, "client_resumed"/);
+  assert.match(source, /recordAgentRunEvent\(runId, "client_detached"/);
+  assert.match(sharedLifecycleSource, /recordAgentRunEvent\(activeRun\.runId, "client_resumed"/);
   assert.doesNotMatch(source, /abortReason\s*=\s*"socket_disconnect"/);
   assert.doesNotMatch(source, /socket\.on\("disconnect"[\s\S]{0,800}abortController\?\.abort\(\)/);
   assert.doesNotMatch(source, /Socket disconnected before the Production Agent chat completed/);
@@ -20,15 +22,25 @@ test("production agent broadcasts lifecycle updates to the script room and resto
   assert.match(source, /socket\.join\(productionAgentRoom\(context\)\)/);
   assert.match(source, /socket\.leave\(productionAgentRoom\(context\)\)/);
   assert.match(source, /const createScopedResTool = \(targetContext: ProductionAgentSocketContext\) =>/);
-  assert.match(source, /new ResTool\([\s\S]{0,180}nsp\.to\(productionAgentRoom\(targetContext\)\)\.emit\(event, \.\.\.args\)/);
+  assert.match(source, /createSharedAgentResTool\(/);
+  assert.match(sharedLifecycleSource, /new ResTool\([\s\S]{0,220}sharedAgentRoom\(agentKey, scope\)/);
   assert.match(source, /\.to\(productionAgentRoom\(targetContext\)\)[\s\S]{0,100}\.emit\("agent:run:update"/);
-  assert.match(source, /let runStateRestorePromise = beginRunStateRestore\(context\)/);
-  assert.match(source, /await waitForRunStateRestore\(context, runStateRestorePromise\)/);
-  assert.match(source, /getLatestAgentRun\(scope\)/);
-  assert.match(source, /latestRun[\s\S]{0,400}terminal: latestRun\.status !== "running"/);
+  assert.match(source, /let runStateRestoreBarrier = createRunStateRestoreBarrier\(\{/);
+  assert.match(source, /await runStateRestoreBarrier\.wait\(context\)/);
+  assert.match(sharedLifecycleSource, /getLatestAgentRun\(sharedAgentRunScope/);
+  assert.match(sharedLifecycleSource, /latestRun[\s\S]{0,400}terminal: latestRun\.status !== "running"/);
   assert.match(source, /getResumableAgentInterruption/);
   assert.match(source, /agent_run_resumed_from/);
   assert.match(source, /kind: "resumable_interruption"/);
+});
+
+test("production socket switching does not stop or block a run in another episode scope", () => {
+  assert.doesNotMatch(source, /production agent is running; stop it before switching context/);
+  assert.doesNotMatch(source, /let abortController|let currentRunContext|let heartbeatTimer/);
+  assert.match(source, /const chatContext = context/);
+  assert.match(source, /const currentController = new AbortController\(\)/);
+  assert.match(source, /attachedRuns\.set\(createdRun\.run\.runId, chatContext\.isolationKey\)/);
+  assert.match(source, /clearProductionAgentRunControl\(chatContext\.isolationKey, createdRun\.run\.runId\)/);
 });
 
 test("production agent uses the restored Run lifecycle instead of chat acknowledgements", () => {
@@ -37,11 +49,11 @@ test("production agent uses the restored Run lifecycle instead of chat acknowled
 
   const updateContextAt = source.indexOf('socket.on("updateContext"');
   const updateContextSuccessAt = source.indexOf("callback?.({ success: true })", updateContextAt);
-  const updateContextRestoreAt = source.indexOf("await waitForRunStateRestore(previousContext", updateContextAt);
+  const updateContextRestoreAt = source.indexOf("await previousRestoreBarrier.wait(previousContext)", updateContextAt);
   assert.ok(updateContextRestoreAt > updateContextAt && updateContextSuccessAt > updateContextRestoreAt);
 
   const chatAt = source.indexOf('socket.on("chat"');
-  const restoreAt = source.indexOf("await waitForRunStateRestore(chatContext", chatAt);
+  const restoreAt = source.indexOf("await chatRestoreBarrier.wait(chatContext)", chatAt);
   const activeRunAt = source.indexOf("activeRun = await getActiveAgentRun", chatAt);
   const createdAt = source.indexOf("createdRun = await createAgentRun({", chatAt);
   const runningAt = source.indexOf('broadcastRunUpdate({ status: "running", run: createdRun.run }, chatContext)', chatAt);
@@ -53,7 +65,7 @@ test("production agent uses the restored Run lifecycle instead of chat acknowled
   assert.match(source, /code: "RUN_ALREADY_RUNNING"/);
   assert.match(source, /code: "CHAT_ACCEPT_FAILED"/);
   assert.match(source, /const emitChatRejected = \(/);
-  assert.match(agentProxySource, /kind === "productionAgent" && eventName === "chat"/);
+  assert.match(agentProxySource, /kind === "productionAgent" \|\| kind === "musicProductionAgent"/);
   assert.match(agentProxySource, /socket\.emit\("agent:run:update", \{/);
   assert.match(agentProxySource, /rejected: true,[\s\S]{0,100}code: "AGENT_UNAVAILABLE"/);
   assert.doesNotMatch(agentProxySource, /rejectPendingCallbacks|clientMessageId|accepted: false/);
@@ -112,6 +124,17 @@ test("production agent requires a model-declared terminal state", () => {
   assert.match(productionAgentSource, /agent_turn_continued/);
 });
 
+test("production decision agent delegates technical Turn execution to the shared runtime", () => {
+  assert.match(productionAgentSource, /export async function runDecisionAI\(ctx: AgentContext\)[\s\S]{0,5000}runAgentRuntime\(\{/);
+  assert.match(sharedRuntimeSource, /while \(!input\.runContext\?\.terminalIntent\)/);
+  assert.match(sharedRuntimeSource, /recordAgentModelStreamFinished/);
+  assert.match(sharedRuntimeSource, /agent_resumable_checkpoint/);
+  assert.match(productionAgentSource, /requireTerminalIntent: false/);
+  assert.match(sharedRuntimeSource, /input\.requireTerminalIntent === false[\s\S]{0,120}!isRecoverableTurn\(turn\)/);
+  assert.match(sharedRuntimeSource, /const previousStop = input\.runContext\?\.requestStop/);
+  assert.match(sharedRuntimeSource, /input\.runContext\.requestStop = previousStop/);
+});
+
 test("production agent uses one bounded continuation path for decision and child Turns", () => {
   assert.ok((productionAgentSource.match(/continueProductionAgentContext\(\{/g) || []).length >= 2);
   assert.ok((productionAgentSource.match(/createProductionAgentTurnInputGuard\(\{/g) || []).length >= 2);
@@ -154,10 +177,9 @@ test("production agent abort is addressed by isolation key and run id without lo
   assert.match(source, /stopProductionAgentRunControl\(context\.isolationKey, runId\)/);
   assert.match(source, /recordAgentRunEvent\(runId, "abort_unavailable"/);
   assert.match(source, /broadcastRunUpdate\(\{ status: "running", run: activeRun, stopping: true \}\)/);
-  assert.match(
-    source,
-    /else if \(runContext\.abortReason === "user_stop"\) \{\s*finalStatus = "cancelled";\s*finalReason = "用户已停止当前 Production Agent chat。";/,
-  );
+  assert.match(source, /runContext\.bindRootStop\(\(\) => currentController\.abort\(\)\)/);
+  assert.match(source, /if \(runContext\.abortReason === "user_stop"\) \{[\s\S]{0,220}else if \(runContext\.terminalIntent\)/);
+  assert.match(sharedRuntimeSource, /onToolResultObserved: \(\{ success \}\) => \{[\s\S]{0,140}stopForTerminal/);
   assert.match(source, /finishAgentRun\(createdRun\.run\.runId, \{\s*status: finalStatus,/);
   assert.doesNotMatch(source, /finishAgentRun\(runId, \{\s*status: "cancelled"/);
 });

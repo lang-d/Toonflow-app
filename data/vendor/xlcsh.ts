@@ -1,6 +1,6 @@
 /**
  * Toonflow AI vendor: XLCSH Seedance 2
- * @version 2.0
+ * @version 2.0.2
  */
 
 type VideoMode =
@@ -101,6 +101,7 @@ interface ParsedMedia {
 declare const axios: any;
 declare const Buffer: any;
 declare const FormData: any;
+declare const fitImagesForMultipartBudget: (imageDataUrls: string[], maxBytes: number) => Promise<string[]>;
 declare const logger: (msg: string) => void;
 declare const urlToBase64: (url: string) => Promise<string>;
 declare const pollTask: (fn: () => Promise<PollResult>, interval?: number, timeout?: number) => Promise<PollResult>;
@@ -109,6 +110,7 @@ declare const exports: {
   textRequest: (m: TextModel, t: boolean, tl: 0 | 1 | 2 | 3) => any;
   imageRequest: (c: ImageConfig, m: ImageModel) => Promise<string>;
   videoRequest: (c: VideoConfig, m: VideoModel) => Promise<string>;
+  resolveVideoPromptModelId?: (model: VideoModel) => string | undefined;
   ttsRequest: (c: TTSConfig, m: TTSModel) => Promise<string>;
   checkForUpdates?: () => Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }>;
   updateVendor?: () => Promise<string>;
@@ -116,6 +118,7 @@ declare const exports: {
 
 const DURATIONS = Array.from({ length: 60 }, (_, index) => index + 1);
 const RESOLUTIONS = ["480p", "720p", "1080p", "4k"];
+const SEEDANCE_MODEL_IDS = new Set(["seedance-2.0", "seedance-2.0-unlimited", "seedance-2.0-mini"]);
 const MAX_IMAGE_COUNT = 9;
 const MAX_AUDIO_COUNT = 3;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -135,7 +138,7 @@ const videoModel = (name: string, modelName: string): VideoModel => ({
 
 const vendor: VendorConfig = {
   id: "xlcsh",
-  version: "2.0",
+  version: "2.0.2",
   author: "Toonflow",
   name: "XLCSH Seedance 2",
   description: "Seedance 2.0 video generation through the XLCSH task API.",
@@ -221,25 +224,11 @@ const appendTextFields = (form: any, fields: Record<string, string | number | bo
   for (const [key, value] of Object.entries(fields)) form.append(key, String(value));
 };
 
-const buildVideoRequest = (config: VideoConfig, model: VideoModel) => {
-  const fields = buildRequestFields(config, model);
-  const references = config.referenceList || [];
-  if (references.some((item) => item.type === "video")) throw new Error("XLCSH Seedance 2 does not support local video references");
-  const imageRefs = references.filter((item) => item.type === "image");
-  const audioRefs = references.filter((item) => item.type === "audio");
-  if (imageRefs.length > MAX_IMAGE_COUNT) throw new Error("XLCSH Seedance 2 supports at most 9 images across keyframes and references");
-  if (audioRefs.length > MAX_AUDIO_COUNT) throw new Error("XLCSH Seedance 2 supports at most 3 audio references");
-  if (!imageRefs.length && !audioRefs.length) return { body: fields, headers: { ...getHeaders(), "Content-Type": "application/json" } };
-
-  const images = imageRefs.map((item) => parseMediaDataUri(item.base64, "image"));
-  const audios = audioRefs.map((item) => parseMediaDataUri(item.base64, "audio"));
-  const mediaBytes = [...images, ...audios].reduce((total, item) => total + item.bytes, 0);
-  if (mediaBytes > MAX_MULTIPART_BYTES) throw new Error("XLCSH Seedance 2 multipart media must not exceed 12 MiB in total");
-
+const createMultipartForm = (fields: Record<string, string | number | boolean>, images: ParsedMedia[], audios: ParsedMedia[], mode: VideoMode[]) => {
   const form = new FormData();
   appendTextFields(form, fields);
-  const startEnd = config.mode.includes("startEndRequired");
-  const singleImage = config.mode.includes("singleImage");
+  const startEnd = mode.includes("startEndRequired");
+  const singleImage = mode.includes("singleImage");
   let imageIndex = 0;
   if (startEnd) {
     if (images.length < 2) throw new Error("XLCSH Seedance 2 start-end mode requires a start image and an end image");
@@ -255,6 +244,48 @@ const buildVideoRequest = (config: VideoConfig, model: VideoModel) => {
   }
   for (const audio of audios) {
     form.append("input_audio", audio.buffer, { filename: `reference.${audio.extension}`, contentType: audio.mimeType });
+  }
+  return form;
+};
+
+const multipartLength = async (form: any): Promise<number> => await new Promise((resolve, reject) => {
+  if (typeof form?.getLength !== "function") return reject(new Error("XLCSH multipart form cannot measure request size"));
+  form.getLength((error: any, length: number) => error ? reject(error) : resolve(Number(length)));
+});
+
+const formatMiB = (bytes: number) => (Math.max(0, bytes) / 1024 / 1024).toFixed(2);
+
+const multipartLimitError = (images: ParsedMedia[], audios: ParsedMedia[], totalBytes: number) =>
+  new Error(`XLCSH Seedance 2 multipart request exceeds 12 MiB after image transport optimization (images ${formatMiB(images.reduce((total, item) => total + item.bytes, 0))} MiB, audio ${formatMiB(audios.reduce((total, item) => total + item.bytes, 0))} MiB, request ${formatMiB(totalBytes)} MiB)`);
+
+const buildVideoRequest = async (config: VideoConfig, model: VideoModel) => {
+  const fields = buildRequestFields(config, model);
+  const references = config.referenceList || [];
+  if (references.some((item) => item.type === "video")) throw new Error("XLCSH Seedance 2 does not support local video references");
+  const imageRefs = references.filter((item) => item.type === "image");
+  const audioRefs = references.filter((item) => item.type === "audio");
+  if (imageRefs.length > MAX_IMAGE_COUNT) throw new Error("XLCSH Seedance 2 supports at most 9 images across keyframes and references");
+  if (audioRefs.length > MAX_AUDIO_COUNT) throw new Error("XLCSH Seedance 2 supports at most 3 audio references");
+  if (!imageRefs.length && !audioRefs.length) return { body: fields, headers: { ...getHeaders(), "Content-Type": "application/json" } };
+
+  let images = imageRefs.map((item) => parseMediaDataUri(item.base64, "image"));
+  const audios = audioRefs.map((item) => parseMediaDataUri(item.base64, "audio"));
+  let form = createMultipartForm(fields, images, audios, config.mode);
+  let requestBytes = await multipartLength(form);
+  if (requestBytes > MAX_MULTIPART_BYTES) {
+    let imageBudget = MAX_MULTIPART_BYTES - (requestBytes - images.reduce((total, item) => total + item.bytes, 0));
+    if (imageBudget <= 0) throw multipartLimitError(images, audios, requestBytes);
+    for (let attempt = 0; attempt < 3 && requestBytes > MAX_MULTIPART_BYTES; attempt += 1) {
+      const adaptedDataUrls = await fitImagesForMultipartBudget(imageRefs.map((item) => item.base64), imageBudget);
+      images = adaptedDataUrls.map((value) => parseMediaDataUri(value, "image"));
+      form = createMultipartForm(fields, images, audios, config.mode);
+      requestBytes = await multipartLength(form);
+      const fixedBytes = requestBytes - images.reduce((total, item) => total + item.bytes, 0);
+      imageBudget = Math.min(imageBudget - 1, MAX_MULTIPART_BYTES - fixedBytes);
+      if (imageBudget <= 0) break;
+    }
+    if (requestBytes > MAX_MULTIPART_BYTES) throw multipartLimitError(images, audios, requestBytes);
+    logger(`XLCSH image transport adapted: multipart ${formatMiB(requestBytes)} MiB`);
   }
   return { body: form, headers: { ...getHeaders(), ...form.getHeaders() } };
 };
@@ -273,7 +304,7 @@ const imageRequest = async (_config: ImageConfig, _model: ImageModel): Promise<s
 const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<string> => {
   logger(`Submitting XLCSH Seedance 2 video task: ${model.modelName}`);
   try {
-    const request = buildVideoRequest(config, model);
+    const request = await buildVideoRequest(config, model);
     const created = await axios.post(`${getBaseUrl()}/videos`, request.body, { headers: request.headers, timeout: 900000 });
     const taskId = taskIdFrom(created.data);
     if (!taskId) throw new Error("XLCSH Seedance 2 video submission did not return a task ID");
@@ -305,9 +336,12 @@ const ttsRequest = async (_config: TTSConfig, _model: TTSModel): Promise<string>
   throw new Error("XLCSH Seedance 2 does not provide text-to-speech");
 };
 
+const resolveVideoPromptModelId = (model: VideoModel): string | undefined =>
+  SEEDANCE_MODEL_IDS.has(model.modelName) ? "seedance-2" : undefined;
+
 const checkForUpdates = async (): Promise<{ hasUpdate: boolean; latestVersion: string; notice: string }> => ({
   hasUpdate: false,
-  latestVersion: "2.0",
+  latestVersion: "2.0.2",
   notice: "XLCSH Seedance 2 vendor is up to date.",
 });
 
@@ -317,6 +351,7 @@ exports.vendor = vendor;
 exports.textRequest = textRequest;
 exports.imageRequest = imageRequest;
 exports.videoRequest = videoRequest;
+exports.resolveVideoPromptModelId = resolveVideoPromptModelId;
 exports.ttsRequest = ttsRequest;
 exports.checkForUpdates = checkForUpdates;
 exports.updateVendor = updateVendor;
